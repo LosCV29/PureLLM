@@ -92,7 +92,7 @@ PROVIDER_DEFAULT_MODELS: Final = {
 # Suggested models per provider (for UI hints)
 PROVIDER_MODELS: Final = {
     PROVIDER_LM_STUDIO: ["local-model", "qwen2.5-7b-instruct", "llama-3.2-3b"],
-    PROVIDER_OPENAI: ["gpt-4o", "gpt-4o-mini", "gpt-4o-search-preview", "gpt-4o-mini-search-preview", "gpt-4-turbo", "gpt-3.5-turbo"],
+    PROVIDER_OPENAI: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
     PROVIDER_ANTHROPIC: ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"],
     PROVIDER_GOOGLE: ["gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"],
     PROVIDER_GROQ: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
