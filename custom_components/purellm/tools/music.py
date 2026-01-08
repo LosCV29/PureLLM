@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -9,6 +10,27 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
+
+# Regex to strip emojis (they don't parse well over TTS)
+EMOJI_PATTERN = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"  # emoticons
+    "\U0001F300-\U0001F5FF"  # symbols & pictographs
+    "\U0001F680-\U0001F6FF"  # transport & map symbols
+    "\U0001F1E0-\U0001F1FF"  # flags
+    "\U00002700-\U000027BF"  # dingbats
+    "\U0001F900-\U0001F9FF"  # supplemental symbols
+    "\U0001FA00-\U0001FA6F"  # chess symbols
+    "\U0001FA70-\U0001FAFF"  # symbols extended
+    "\U00002600-\U000026FF"  # misc symbols
+    "]+",
+    flags=re.UNICODE
+)
+
+
+def strip_emojis(text: str) -> str:
+    """Remove emojis from text for TTS compatibility."""
+    return EMOJI_PATTERN.sub("", text).strip()
 
 
 class MusicController:
@@ -195,16 +217,17 @@ class MusicController:
                     blocking=True
                 )
 
-        # Natural response - include name and room
+        # Natural response - strip emojis for TTS
+        clean_query = strip_emojis(query)
         shuffled = shuffle or media_type == "genre"
         if shuffled:
-            response = f"Now shuffling {query} in the {room}."
+            response = f"Now shuffling {clean_query} in the {room}."
         else:
-            response = f"Now playing {query} in the {room}."
+            response = f"Now playing {clean_query} in the {room}."
 
         return {
             "status": "ok",
-            "name": query,
+            "name": clean_query,
             "type": media_type,
             "room": room,
             "response_text": response
@@ -446,13 +469,14 @@ class MusicController:
                 blocking=True
             )
 
-            # Natural response - include playlist name and room
+            # Natural response - strip emojis for TTS
+            clean_name = strip_emojis(matched_name)
             return {
                 "status": "ok",
-                "name": matched_name,
+                "name": clean_name,
                 "type": media_type_to_use,
                 "room": room,
-                "response_text": f"Now shuffling the playlist '{matched_name}' in the {room}."
+                "response_text": f"Now shuffling the playlist '{clean_name}' in the {room}."
             }
 
         except Exception as search_err:
