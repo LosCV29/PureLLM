@@ -92,11 +92,8 @@ from .const import (
 
 # Import from new modules
 from .utils.parsing import parse_entity_config, parse_list_config
-from .utils.fuzzy_matching import find_entity_by_name
-from .utils.helpers import format_human_readable_state, get_friendly_name
 
 from .tools.definitions import build_tools, ToolConfig
-from .tools.registry import ToolRegistry
 
 # Tool handlers
 from .tools import weather as weather_tool
@@ -155,7 +152,6 @@ class PureLLMConversationEntity(ConversationEntity):
             "weather": 0, "places": 0, "restaurants": 0, "news": 0,
             "sports": 0, "wikipedia": 0, "llm": 0, "stocks": 0,
         }
-        self._tokens_used = {"input": 0, "output": 0}
 
         # Caches
         self._tools: list[dict] | None = None
