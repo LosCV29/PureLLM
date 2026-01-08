@@ -356,6 +356,10 @@ class PureLLMConversationEntity(ConversationEntity):
         system_prompt = self._get_effective_system_prompt()
         max_tokens = self._calculate_max_tokens(user_text)
 
+        # Debug: log tool names
+        tool_names = [t["function"]["name"] for t in tools]
+        _LOGGER.info("Tools available (%d): %s", len(tools), tool_names)
+
         # Route to appropriate provider
         try:
             if self.provider in OPENAI_COMPATIBLE_PROVIDERS or self.provider == PROVIDER_AZURE:
@@ -473,6 +477,9 @@ class PureLLMConversationEntity(ConversationEntity):
                     tc for tc in tool_calls_buffer
                     if tc.get("id") and tc.get("function", {}).get("name")
                 ]
+                _LOGGER.info("LLM response - text: '%s', tool_calls: %d, valid: %d",
+                             accumulated_content[:100] if accumulated_content else "(none)",
+                             len(tool_calls_buffer), len(valid_tool_calls))
 
                 unique_tool_calls = []
                 for tc in valid_tool_calls:
