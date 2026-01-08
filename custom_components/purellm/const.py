@@ -82,7 +82,7 @@ PROVIDER_DEFAULT_MODELS: Final = {
     PROVIDER_LM_STUDIO: "local-model",
     PROVIDER_OPENAI: "gpt-4o-mini",
     PROVIDER_ANTHROPIC: "claude-sonnet-4-20250514",
-    PROVIDER_GOOGLE: "gemini-1.5-flash",
+    PROVIDER_GOOGLE: "gemini-2.0-flash",
     PROVIDER_GROQ: "llama-3.3-70b-versatile",
     PROVIDER_OPENROUTER: "openai/gpt-4o-mini",
     PROVIDER_AZURE: "gpt-4o-mini",  # Deployment name configured in Azure
@@ -94,7 +94,7 @@ PROVIDER_MODELS: Final = {
     PROVIDER_LM_STUDIO: ["local-model", "qwen2.5-7b-instruct", "llama-3.2-3b"],
     PROVIDER_OPENAI: ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
     PROVIDER_ANTHROPIC: ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"],
-    PROVIDER_GOOGLE: ["gemini-1.5-pro", "gemini-1.5-flash", "gemini-2.0-flash-exp"],
+    PROVIDER_GOOGLE: ["gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"],
     PROVIDER_GROQ: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
     PROVIDER_OPENROUTER: ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet", "google/gemini-flash-1.5"],
     PROVIDER_AZURE: ["gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-35-turbo"],
@@ -134,6 +134,7 @@ CONF_ENABLE_THERMOSTAT: Final = "enable_thermostat"
 CONF_ENABLE_DEVICE_STATUS: Final = "enable_device_status"
 CONF_ENABLE_WIKIPEDIA: Final = "enable_wikipedia"
 CONF_ENABLE_MUSIC: Final = "enable_music"
+CONF_ENABLE_WEB_SEARCH: Final = "enable_web_search"  # Gemini search grounding
 
 DEFAULT_ENABLE_WEATHER: Final = True
 DEFAULT_ENABLE_CALENDAR: Final = True
@@ -147,6 +148,7 @@ DEFAULT_ENABLE_THERMOSTAT: Final = True
 DEFAULT_ENABLE_DEVICE_STATUS: Final = True
 DEFAULT_ENABLE_WIKIPEDIA: Final = True
 DEFAULT_ENABLE_MUSIC: Final = False  # Requires Music Assistant + player config
+DEFAULT_ENABLE_WEB_SEARCH: Final = False  # Requires Google provider
 
 # =============================================================================
 # ENTITY CONFIGURATION - User-defined entities

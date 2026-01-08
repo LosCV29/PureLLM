@@ -36,6 +36,7 @@ from .const import (
     CONF_ENABLE_DEVICE_STATUS,
     CONF_ENABLE_MUSIC,
     CONF_ENABLE_NEWS,
+    CONF_ENABLE_WEB_SEARCH,
     CONF_ENABLE_PLACES,
     CONF_ENABLE_RESTAURANTS,
     CONF_ENABLE_SPORTS,
@@ -65,6 +66,7 @@ from .const import (
     DEFAULT_ENABLE_DEVICE_STATUS,
     DEFAULT_ENABLE_MUSIC,
     DEFAULT_ENABLE_NEWS,
+    DEFAULT_ENABLE_WEB_SEARCH,
     DEFAULT_ENABLE_PLACES,
     DEFAULT_ENABLE_RESTAURANTS,
     DEFAULT_ENABLE_SPORTS,
@@ -235,6 +237,7 @@ class PureLLMConversationEntity(ConversationEntity):
         self.enable_device_status = config.get(CONF_ENABLE_DEVICE_STATUS, DEFAULT_ENABLE_DEVICE_STATUS)
         self.enable_wikipedia = config.get(CONF_ENABLE_WIKIPEDIA, DEFAULT_ENABLE_WIKIPEDIA)
         self.enable_music = config.get(CONF_ENABLE_MUSIC, DEFAULT_ENABLE_MUSIC)
+        self.enable_web_search = config.get(CONF_ENABLE_WEB_SEARCH, DEFAULT_ENABLE_WEB_SEARCH)
 
         # Entity configuration
         self.room_player_mapping = parse_entity_config(config.get(CONF_ROOM_PLAYER_MAPPING, DEFAULT_ROOM_PLAYER_MAPPING))
@@ -658,7 +661,7 @@ class PureLLMConversationEntity(ConversationEntity):
         system_prompt: str,
         max_tokens: int,
     ) -> str:
-        """Call Google Gemini API."""
+        """Call Google Gemini API with optional search grounding."""
         # Convert tools to Gemini format
         function_declarations = []
         for tool in tools:
@@ -683,8 +686,17 @@ class PureLLMConversationEntity(ConversationEntity):
                 "contents": contents,
                 "generationConfig": {"maxOutputTokens": max_tokens, "temperature": self.temperature},
             }
+
+            # Build tools array - include search grounding if enabled
+            gemini_tools = []
+            if self.enable_web_search:
+                # Google Search grounding - model will search when needed
+                gemini_tools.append({"google_search": {}})
+                _LOGGER.debug("Google Search grounding enabled")
             if function_declarations:
-                payload["tools"] = [{"functionDeclarations": function_declarations}]
+                gemini_tools.append({"functionDeclarations": function_declarations})
+            if gemini_tools:
+                payload["tools"] = gemini_tools
 
             url = f"{self.base_url}/models/{self.model}:generateContent"
             headers = {"x-goog-api-key": self.api_key}
