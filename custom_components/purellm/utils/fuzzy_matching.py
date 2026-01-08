@@ -19,6 +19,33 @@ from homeassistant.helpers import entity_registry as er
 
 _LOGGER = logging.getLogger(__name__)
 
+# Domains that should be prioritized for device control (actual controllable devices)
+# Lower number = higher priority
+DOMAIN_PRIORITY = {
+    "light": 1,
+    "switch": 1,
+    "fan": 1,
+    "cover": 1,
+    "lock": 1,
+    "climate": 2,
+    "vacuum": 2,
+    "media_player": 2,
+    "scene": 3,
+    "script": 3,
+    "automation": 4,
+    "input_boolean": 5,
+    "humidifier": 2,
+    "siren": 2,
+    # Helper/sensor domains - lowest priority for device control
+    "select": 10,
+    "number": 10,
+    "input_number": 10,
+    "input_select": 10,
+    "input_text": 10,
+    "sensor": 20,
+    "binary_sensor": 20,
+}
+
 # Module-level cache for entity lookups (name→entity_id only, NOT states)
 # This caches the resolution of device names to entity IDs
 # States are always fetched fresh via hass.states.get()
@@ -216,42 +243,51 @@ def _find_entity_by_query(
     ent_reg = er.async_get(hass)
     all_states = {s.entity_id: s for s in hass.states.async_all()}
 
-    partial_matches: list[tuple[int, str, str]] = []
+    # partial_matches: (match_priority, domain_priority, entity_id, friendly_name)
+    partial_matches: list[tuple[int, int, str, str]] = []
+
+    def get_domain_priority(entity_id: str) -> int:
+        """Get priority for an entity's domain (lower = better for device control)."""
+        domain = entity_id.split(".")[0] if "." in entity_id else ""
+        return DOMAIN_PRIORITY.get(domain, 8)  # Default priority 8 for unknown domains
 
     for entity_entry in ent_reg.entities.values():
         state = all_states.get(entity_entry.entity_id)
         friendly_name = state.attributes.get("friendly_name", "") if state else ""
+        domain_pri = get_domain_priority(entity_entry.entity_id)
 
         # PRIORITY 3: Exact match on entity registry alias
         if entity_entry.aliases:
             for alias in entity_entry.aliases:
                 if alias.lower() == query_lower:
-                    return (entity_entry.entity_id, friendly_name or alias)
-                if _words_match(query_lower, alias.lower()):
-                    partial_matches.append((4, entity_entry.entity_id, friendly_name or alias))
+                    # For exact matches, still consider domain priority
+                    partial_matches.append((3, domain_pri, entity_entry.entity_id, friendly_name or alias))
+                elif _words_match(query_lower, alias.lower()):
+                    partial_matches.append((4, domain_pri, entity_entry.entity_id, friendly_name or alias))
 
         # PRIORITY 5: Exact match on friendly name
         if friendly_name:
             fn_lower = friendly_name.lower()
             if fn_lower == query_lower:
-                partial_matches.append((5, entity_entry.entity_id, friendly_name))
+                partial_matches.append((5, domain_pri, entity_entry.entity_id, friendly_name))
             elif _words_match(query_lower, fn_lower):
-                partial_matches.append((6, entity_entry.entity_id, friendly_name))
+                partial_matches.append((6, domain_pri, entity_entry.entity_id, friendly_name))
 
     # Check states not in entity registry
     for entity_id, state in all_states.items():
         if entity_id not in {e.entity_id for e in ent_reg.entities.values()}:
             friendly_name = state.attributes.get("friendly_name", "")
+            domain_pri = get_domain_priority(entity_id)
             if friendly_name:
                 fn_lower = friendly_name.lower()
                 if fn_lower == query_lower:
-                    partial_matches.append((5, entity_id, friendly_name))
+                    partial_matches.append((5, domain_pri, entity_id, friendly_name))
                 elif _words_match(query_lower, fn_lower):
-                    partial_matches.append((6, entity_id, friendly_name))
+                    partial_matches.append((6, domain_pri, entity_id, friendly_name))
 
-    # Return best match
+    # Return best match - sort by match priority first, then domain priority
     if partial_matches:
-        partial_matches.sort(key=lambda x: x[0])
-        return (partial_matches[0][1], partial_matches[0][2])
+        partial_matches.sort(key=lambda x: (x[0], x[1]))
+        return (partial_matches[0][2], partial_matches[0][3])
 
     return (None, None)
