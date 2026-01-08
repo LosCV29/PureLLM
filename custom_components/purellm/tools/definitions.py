@@ -228,21 +228,21 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control MUSIC playback via Music Assistant. Rooms: {rooms_list}. For 'shuffle' action: searches playlists by artist/genre name and returns the ACTUAL playlist name found - use response_text verbatim. IMPORTANT: This is ONLY for music/audio, NOT for blinds/shades/devices!",
+            f"Control MUSIC playback via Music Assistant. Rooms: {rooms_list}. Use for ANY music command: play, pause, skip, transfer, etc.",
             {
                 "action": {
                     "type": "string",
                     "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"],
-                    "description": "Use 'shuffle' when user wants to shuffle music by artist/genre - it searches playlists and confirms the exact playlist name found. Use 'restart_track' to replay from beginning."
+                    "description": "play=start music, pause=pause, resume=unpause, stop=stop, skip_next=next track/skip, skip_previous=previous track/go back, restart_track=replay from beginning, what_playing=current song info, transfer=move music to different room, shuffle=shuffle playlist/artist"
                 },
-                "query": {"type": "string", "description": "For shuffle: artist name or genre (e.g., 'Bad Bunny', 'hip hop'). For play: artist first then song name."},
-                "room": {"type": "string", "description": f"Target room: {rooms_list}"},
+                "query": {"type": "string", "description": "For play/shuffle: artist, song, or genre (e.g., 'Bad Bunny', 'hip hop')"},
+                "room": {"type": "string", "description": f"Target room for play/transfer. Available: {rooms_list}"},
                 "media_type": {
                     "type": "string",
                     "enum": ["artist", "album", "track", "playlist", "genre"],
-                    "description": "For 'shuffle' action, this is ignored (auto-searches playlists then artists). For 'play': use 'track' for specific songs, 'artist' for general artist music."
+                    "description": "For 'play': use 'track' for specific songs, 'artist' for artist music, 'playlist' for playlists"
                 },
-                "shuffle": {"type": "boolean", "description": "Enable shuffle mode (for 'play' action only, 'shuffle' action always shuffles)"}
+                "shuffle": {"type": "boolean", "description": "Enable shuffle mode for 'play' action"}
             },
             ["action"]
         ))

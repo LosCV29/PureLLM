@@ -360,12 +360,15 @@ class MusicController:
         target_players = ctx["target_players"]
         player_states = ctx["player_states"]
 
-        _LOGGER.info("Looking for active player...")
+        _LOGGER.info("Transfer request: room='%s', target_players=%s", room, target_players)
+        _LOGGER.info("Player states: %s", {k: v["state"] for k, v in player_states.items()})
+        _LOGGER.info("Last played player: %s", self._last_played_player)
+
         source = self._find_active_player(player_states)
         if not source:
-            return {"error": "No music playing to transfer"}
+            return {"error": f"No music playing to transfer. Player states: {[f'{k}={v['state']}' for k,v in player_states.items()]}"}
         if not target_players:
-            return {"error": f"No target room specified. Available: {', '.join(self._players.keys())}"}
+            return {"error": f"No target room '{room}' found. Available: {', '.join(self._players.keys())}"}
 
         target = target_players[0]
         _LOGGER.info("Transferring from %s to %s", source, target)
