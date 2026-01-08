@@ -1,4 +1,4 @@
-"""Web search tool handler using Google Custom Search."""
+"""Web search tool handler using Tavily API."""
 from __future__ import annotations
 
 import logging
@@ -9,86 +9,91 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Google Custom Search API endpoint
-GOOGLE_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
-
-# You'll need to create a Programmable Search Engine at:
-# https://programmablesearchengine.google.com/
-# Use "Search the entire web" option
-DEFAULT_SEARCH_ENGINE_ID = "a47cf232001e64cb8"  # Public web search engine
+# Tavily API endpoint
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 
 
 async def web_search(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
-    api_key: str,
+    tavily_api_key: str,
     track_api_call: callable,
 ) -> dict[str, Any]:
-    """Search the web for current information.
+    """Search the web for current information using Tavily.
 
     Args:
         arguments: Dict with 'query' (required) and optional 'num_results' (1-10)
         session: aiohttp client session
-        api_key: Google API key (same as Places API key)
+        tavily_api_key: Tavily API key
         track_api_call: Callback to track API usage
 
     Returns:
         Dict with search results or error
     """
     query = arguments.get("query", "").strip()
-    num_results = min(max(arguments.get("num_results", 3), 1), 10)
+    num_results = min(max(arguments.get("num_results", 5), 1), 10)
 
     if not query:
         return {"error": "No search query provided"}
 
-    if not api_key:
-        return {"error": "Google API key not configured. Add it in API Keys settings."}
+    if not tavily_api_key:
+        return {"error": "Tavily API key not configured. Get one at tavily.com and add it in API Keys settings."}
 
-    _LOGGER.info("Web search: '%s'", query)
+    _LOGGER.info("Tavily web search: '%s'", query)
     track_api_call("web_search")
 
     try:
-        params = {
-            "key": api_key,
-            "cx": DEFAULT_SEARCH_ENGINE_ID,
-            "q": query,
-            "num": num_results,
+        payload = {
+            "api_key": tavily_api_key,
+            "query": query,
+            "search_depth": "basic",  # "basic" or "advanced" (advanced costs more)
+            "include_answer": True,  # Get AI-generated answer
+            "include_raw_content": False,
+            "max_results": num_results,
         }
 
-        async with session.get(GOOGLE_SEARCH_URL, params=params, timeout=10) as response:
+        async with session.post(TAVILY_SEARCH_URL, json=payload, timeout=15) as response:
             if response.status != 200:
                 error_text = await response.text()
-                _LOGGER.error("Google Search API error: %s", error_text)
+                _LOGGER.error("Tavily API error: %s", error_text)
 
-                # Common error handling
-                if response.status == 403:
-                    return {"error": "Google Search API access denied. Enable Custom Search API in Google Cloud Console."}
+                if response.status == 401:
+                    return {"error": "Invalid Tavily API key. Check your key at tavily.com"}
                 elif response.status == 429:
-                    return {"error": "Search rate limit exceeded. Try again later."}
+                    return {"error": "Tavily rate limit exceeded. Try again later."}
 
                 return {"error": f"Search failed: {response.status}"}
 
             data = await response.json()
 
-        # Parse search results
-        items = data.get("items", [])
-        if not items:
+        # Tavily returns an AI-generated answer plus sources
+        answer = data.get("answer", "")
+        results = data.get("results", [])
+
+        if not results and not answer:
             return {"message": f"No results found for '{query}'"}
 
-        results = []
-        for item in items:
-            results.append({
+        # Format results for the LLM
+        formatted_results = []
+        for item in results:
+            formatted_results.append({
                 "title": item.get("title", ""),
-                "snippet": item.get("snippet", ""),
-                "link": item.get("link", ""),
+                "content": item.get("content", ""),  # Tavily gives full content, not just snippets
+                "url": item.get("url", ""),
+                "score": item.get("score", 0),  # Relevance score
             })
 
-        return {
+        response_data = {
             "query": query,
-            "results": results,
-            "total_results": data.get("searchInformation", {}).get("totalResults", "0"),
+            "results": formatted_results,
         }
 
+        # Include Tavily's AI answer if available (very useful for voice)
+        if answer:
+            response_data["answer"] = answer
+
+        return response_data
+
     except Exception as e:
-        _LOGGER.error("Web search error: %s", e, exc_info=True)
+        _LOGGER.error("Tavily search error: %s", e, exc_info=True)
         return {"error": f"Search failed: {str(e)}"}

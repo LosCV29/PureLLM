@@ -49,6 +49,7 @@ from .const import (
     CONF_CUSTOM_LONGITUDE,
     CONF_OPENWEATHERMAP_API_KEY,
     CONF_GOOGLE_PLACES_API_KEY,
+    CONF_TAVILY_API_KEY,
     CONF_YELP_API_KEY,
     CONF_NEWSAPI_KEY,
     # Feature toggles
@@ -82,6 +83,7 @@ from .const import (
     DEFAULT_CUSTOM_LONGITUDE,
     DEFAULT_OPENWEATHERMAP_API_KEY,
     DEFAULT_GOOGLE_PLACES_API_KEY,
+    DEFAULT_TAVILY_API_KEY,
     DEFAULT_YELP_API_KEY,
     DEFAULT_NEWSAPI_KEY,
     DEFAULT_ENABLE_WEATHER,
@@ -955,6 +957,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_GOOGLE_PLACES_API_KEY,
                         default=current.get(CONF_GOOGLE_PLACES_API_KEY, DEFAULT_GOOGLE_PLACES_API_KEY),
+                    ): str,
+                    vol.Optional(
+                        CONF_TAVILY_API_KEY,
+                        default=current.get(CONF_TAVILY_API_KEY, DEFAULT_TAVILY_API_KEY),
                     ): str,
                     vol.Optional(
                         CONF_YELP_API_KEY,

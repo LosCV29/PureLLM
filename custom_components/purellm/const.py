@@ -228,10 +228,14 @@ DEFAULT_CUSTOM_LONGITUDE: Final = 0.0
 # =============================================================================
 CONF_OPENWEATHERMAP_API_KEY: Final = "openweathermap_api_key"
 CONF_GOOGLE_PLACES_API_KEY: Final = "google_places_api_key"
+CONF_GOOGLE_SEARCH_ENGINE_ID: Final = "google_search_engine_id"
+CONF_TAVILY_API_KEY: Final = "tavily_api_key"
 CONF_YELP_API_KEY: Final = "yelp_api_key"
 CONF_NEWSAPI_KEY: Final = "newsapi_key"
 
 DEFAULT_OPENWEATHERMAP_API_KEY: Final = ""
 DEFAULT_GOOGLE_PLACES_API_KEY: Final = ""
+DEFAULT_GOOGLE_SEARCH_ENGINE_ID: Final = ""
+DEFAULT_TAVILY_API_KEY: Final = ""
 DEFAULT_YELP_API_KEY: Final = ""
 DEFAULT_NEWSAPI_KEY: Final = ""
