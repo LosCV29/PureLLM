@@ -211,6 +211,7 @@ GENERAL GUIDELINES:
 - For calendar events, use get_calendar_events
 - For music control (play, skip, pause, etc.), use control_music
 - For ALL device control (lights, locks, switches, fans, etc.), use control_device - ALL commands go through the LLM pipeline
+- For web searches, current events, "search for", or anything requiring up-to-date info, use web_search. NEVER answer questions about current events from memory - ALWAYS call web_search first.
 """
 
 # =============================================================================
