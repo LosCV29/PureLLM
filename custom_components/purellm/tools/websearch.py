@@ -33,10 +33,13 @@ async def web_search(
     query = arguments.get("query", "").strip()
     num_results = min(max(arguments.get("num_results", 5), 1), 10)
 
+    _LOGGER.debug("web_search called: query='%s', api_key_present=%s", query, bool(tavily_api_key))
+
     if not query:
         return {"error": "No search query provided"}
 
     if not tavily_api_key:
+        _LOGGER.error("Tavily API key not configured!")
         return {"error": "Tavily API key not configured. Get one at tavily.com and add it in API Keys settings."}
 
     _LOGGER.info("Tavily web search: '%s'", query)
@@ -65,6 +68,7 @@ async def web_search(
                 return {"error": f"Search failed: {response.status}"}
 
             data = await response.json()
+            _LOGGER.debug("Tavily response: %s", data)
 
         # Tavily returns an AI-generated answer plus sources
         answer = data.get("answer", "")
