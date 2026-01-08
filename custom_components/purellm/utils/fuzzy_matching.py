@@ -4,12 +4,11 @@ This module handles device name matching with:
 - Synonym expansion (blind/shade/curtain/cover are interchangeable)
 - Stopword removal
 - Direct entity matching (NO room fuzzy logic - causes cross-room confusion)
-- LRU caching for name→entity_id resolution (states fetched fresh each time)
+- Stateless design (no caching - fresh lookups every time)
 """
 from __future__ import annotations
 
 import logging
-from functools import lru_cache
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -45,12 +44,6 @@ DOMAIN_PRIORITY = {
     "sensor": 20,
     "binary_sensor": 20,
 }
-
-# Module-level cache for entity lookups (name→entity_id only, NOT states)
-# This caches the resolution of device names to entity IDs
-# States are always fetched fresh via hass.states.get()
-_entity_cache: dict[str, tuple[str | None, str | None]] = {}
-_cache_aliases_hash: int | None = None
 
 # Stopwords to remove from queries (articles, possessives, prepositions)
 STOPWORDS = frozenset([
@@ -155,23 +148,21 @@ def normalize_cover_query(query: str) -> list[str]:
 
 
 def _words_match(query: str, target: str) -> bool:
-    """Check if all query words appear in target (simple containment check)."""
+    """Check if all query words appear in target (with synonym expansion)."""
     query_words = set(query.lower().split()) - STOPWORDS
     target_words = set(target.lower().split()) - STOPWORDS
 
     if not query_words:
         return False
 
-    # All query words must be in target
-    return query_words <= target_words
+    # Expand target words with their synonyms for matching
+    expanded_target = set(target_words)
+    for word in target_words:
+        if word in DEVICE_SYNONYMS:
+            expanded_target.update(DEVICE_SYNONYMS[word])
 
-
-def clear_entity_cache() -> None:
-    """Clear the entity lookup cache. Call when entities/aliases change."""
-    global _entity_cache, _cache_aliases_hash
-    _entity_cache.clear()
-    _cache_aliases_hash = None
-    _LOGGER.debug("Entity lookup cache cleared")
+    # All query words must be in expanded target
+    return query_words <= expanded_target
 
 
 def find_entity_by_name(
@@ -179,28 +170,13 @@ def find_entity_by_name(
     query: str,
     device_aliases: dict[str, str]
 ) -> tuple[str | None, str | None]:
-    """Search for entity by name - with caching for name→entity_id resolution.
+    """Search for entity by name - stateless, fresh lookup every time.
 
     Returns (entity_id, friendly_name) or (None, None) if not found.
-    Note: Only caches entity_id resolution, states are always fetched fresh.
     """
-    global _entity_cache, _cache_aliases_hash
-
-    # Invalidate cache if aliases changed
-    aliases_hash = hash(tuple(sorted(device_aliases.items()))) if device_aliases else 0
-    if _cache_aliases_hash != aliases_hash:
-        _entity_cache.clear()
-        _cache_aliases_hash = aliases_hash
-
-    # Check cache first
-    cache_key = query.lower().strip()
-    if cache_key in _entity_cache:
-        return _entity_cache[cache_key]
-
     # Try original query first
     result = _find_entity_by_query(hass, query, device_aliases)
     if result[0] is not None:
-        _entity_cache[cache_key] = result
         return result
 
     # Try synonym variations
@@ -209,11 +185,8 @@ def find_entity_by_name(
             continue
         result = _find_entity_by_query(hass, query_var, device_aliases)
         if result[0] is not None:
-            _entity_cache[cache_key] = result
             return result
 
-    # Cache negative result too (avoids repeated failed lookups)
-    _entity_cache[cache_key] = (None, None)
     return (None, None)
 
 
