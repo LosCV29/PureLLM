@@ -64,8 +64,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 },
                 "forecast_type": {
                     "type": "string",
-                    "enum": ["current", "weekly", "both"],
-                    "description": "Type: 'current' for now, 'weekly' for 5-day, 'both' for all (default: both)"
+                    "enum": ["current", "weekly"],
+                    "description": "Use 'current' for today's weather (default). Use 'weekly' ONLY when user asks for 'weekly forecast', 'this week', or '5-day forecast'."
                 }
             }
         ))

@@ -36,7 +36,7 @@ async def get_weather_forecast(
     Returns:
         Weather data dict
     """
-    forecast_type = arguments.get("forecast_type", "both")
+    forecast_type = arguments.get("forecast_type", "current")
     location_query = arguments.get("location", "").strip()
 
     if not api_key:
