@@ -72,7 +72,7 @@
           "enable_device_status": "Device Status Checks",
           "enable_wikipedia": "Wikipedia & Age Lookup",
           "enable_music": "Music Control (Music Assistant)",
-          "enable_web_search": "Web Search (Google Gemini only)"
+          "enable_web_search": "Web Search (uses Google API key)"
         }
       },
       "entities": {
