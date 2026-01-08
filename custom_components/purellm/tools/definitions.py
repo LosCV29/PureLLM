@@ -228,21 +228,21 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control MUSIC playback via Music Assistant. Rooms: {rooms_list}. Use for ANY music command: play, pause, skip, transfer, etc.",
+            f"Control MUSIC playback ONLY via Music Assistant. Rooms: {rooms_list}. IMPORTANT: This is ONLY for music/audio. Do NOT use for blinds, shades, or physical devices - use control_device for those!",
             {
                 "action": {
                     "type": "string",
                     "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"],
-                    "description": "play=start music, pause=pause, resume=unpause, stop=stop, skip_next=next track/skip, skip_previous=previous track/go back, restart_track=replay from beginning, what_playing=current song info, transfer=move music to different room, shuffle=shuffle playlist/artist"
+                    "description": "The music action to perform. Use 'restart_track' to replay the current song from the beginning."
                 },
-                "query": {"type": "string", "description": "For play/shuffle: artist, song, or genre (e.g., 'Bad Bunny', 'hip hop')"},
-                "room": {"type": "string", "description": f"Target room for play/transfer. Available: {rooms_list}"},
+                "query": {"type": "string", "description": "MUSIC SEARCH QUERY - Put ARTIST FIRST, then SONG NAME for best search results."},
+                "room": {"type": "string", "description": f"Target room: {rooms_list}"},
                 "media_type": {
                     "type": "string",
                     "enum": ["artist", "album", "track", "playlist", "genre"],
-                    "description": "For 'play': use 'track' for specific songs, 'artist' for artist music, 'playlist' for playlists"
+                    "description": "CRITICAL: Use 'track' when user mentions a SPECIFIC SONG. Use 'artist' ONLY when they want general music from an artist."
                 },
-                "shuffle": {"type": "boolean", "description": "Enable shuffle mode for 'play' action"}
+                "shuffle": {"type": "boolean", "description": "Enable shuffle mode"}
             },
             ["action"]
         ))

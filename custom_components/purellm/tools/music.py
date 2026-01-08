@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -10,27 +9,6 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
-
-# Regex to strip emojis (they don't parse well over TTS)
-EMOJI_PATTERN = re.compile(
-    "["
-    "\U0001F600-\U0001F64F"  # emoticons
-    "\U0001F300-\U0001F5FF"  # symbols & pictographs
-    "\U0001F680-\U0001F6FF"  # transport & map symbols
-    "\U0001F1E0-\U0001F1FF"  # flags
-    "\U00002700-\U000027BF"  # dingbats
-    "\U0001F900-\U0001F9FF"  # supplemental symbols
-    "\U0001FA00-\U0001FA6F"  # chess symbols
-    "\U0001FA70-\U0001FAFF"  # symbols extended
-    "\U00002600-\U000026FF"  # misc symbols
-    "]+",
-    flags=re.UNICODE
-)
-
-
-def strip_emojis(text: str) -> str:
-    """Remove emojis from text for TTS compatibility."""
-    return EMOJI_PATTERN.sub("", text).strip()
 
 
 class MusicController:
@@ -55,7 +33,6 @@ class MusicController:
         self._hass = hass
         self._players = room_player_mapping
         self._last_paused_player: str | None = None
-        self._last_played_player: str | None = None  # For AirPlay (doesn't report state)
         self._last_music_command: str | None = None
         self._last_music_command_time: datetime | None = None
         self._music_debounce_seconds = 3.0
@@ -169,24 +146,6 @@ class MusicController:
                 return pid
         return None
 
-    def _find_active_player(self, player_states: dict[str, dict]) -> str | None:
-        """Find the active player with AirPlay fallback.
-
-        AirPlay receivers often report 'idle' even when playing, so we fall back
-        to the last player we sent music to if no 'playing' state is found.
-        """
-        # First try state detection (works for DLNA, Chromecast, etc.)
-        playing = self._find_player_by_state_cached("playing", player_states)
-        if playing:
-            return playing
-
-        # Fallback for AirPlay: use last player we sent music to
-        if self._last_played_player and self._last_played_player in player_states:
-            _LOGGER.debug("Using AirPlay fallback: %s", self._last_played_player)
-            return self._last_played_player
-
-        return None
-
     def _find_target_players(self, room: str) -> list[str]:
         """Find target players for a room."""
         if room in self._players:
@@ -229,8 +188,6 @@ class MusicController:
                 target={"entity_id": player},
                 blocking=True
             )
-            # Track for AirPlay fallback (AirPlay doesn't report state)
-            self._last_played_player = player
             if shuffle or media_type == "genre":
                 await self._hass.services.async_call(
                     "media_player", "shuffle_set",
@@ -238,28 +195,27 @@ class MusicController:
                     blocking=True
                 )
 
-        # Natural response - strip emojis for TTS
-        clean_query = strip_emojis(query)
+        # Natural response - include name and room
         shuffled = shuffle or media_type == "genre"
         if shuffled:
-            response = f"Now shuffling {clean_query} in the {room}."
+            speech = f"Now shuffling {query} in the {room}"
         else:
-            response = f"Now playing {clean_query} in the {room}."
+            speech = f"Now playing {query} in the {room}"
 
         return {
             "status": "ok",
-            "name": clean_query,
+            "name": query,
             "type": media_type,
             "room": room,
-            "response_text": response
+            "speech": speech
         }
 
     async def _handle_pause(self, ctx: dict) -> dict:
         """Pause music."""
         player_states = ctx["player_states"]
 
-        _LOGGER.info("Looking for active player...")
-        playing = self._find_active_player(player_states)
+        _LOGGER.info("Looking for player in 'playing' state...")
+        playing = self._find_player_by_state_cached("playing", player_states)
         if playing:
             await self._hass.services.async_call("media_player", "media_pause", {"entity_id": playing})
             self._last_paused_player = playing
@@ -292,12 +248,11 @@ class MusicController:
         """Stop music."""
         player_states = ctx["player_states"]
 
-        _LOGGER.info("Looking for active player...")
-        active = self._find_active_player(player_states)
-        if active:
-            await self._hass.services.async_call("media_player", "media_stop", {"entity_id": active})
-            self._last_played_player = None  # Clear after stop
-            return {"status": "stopped", "message": f"Stopped in {self._get_room_name(active)}"}
+        _LOGGER.info("Looking for player in 'playing' or 'paused' state...")
+        playing = self._find_player_by_state_cached("playing", player_states)
+        if playing:
+            await self._hass.services.async_call("media_player", "media_stop", {"entity_id": playing})
+            return {"status": "stopped", "message": f"Stopped in {self._get_room_name(playing)}"}
         paused = self._find_player_by_state_cached("paused", player_states)
         if paused:
             await self._hass.services.async_call("media_player", "media_stop", {"entity_id": paused})
@@ -308,8 +263,8 @@ class MusicController:
         """Skip to next track."""
         player_states = ctx["player_states"]
 
-        _LOGGER.info("Looking for active player...")
-        playing = self._find_active_player(player_states)
+        _LOGGER.info("Looking for player in 'playing' state...")
+        playing = self._find_player_by_state_cached("playing", player_states)
         if playing:
             await self._hass.services.async_call("media_player", "media_next_track", {"entity_id": playing})
             return {"status": "skipped", "message": "Skipped to next track"}
@@ -319,8 +274,8 @@ class MusicController:
         """Skip to previous track."""
         player_states = ctx["player_states"]
 
-        _LOGGER.info("Looking for active player...")
-        playing = self._find_active_player(player_states)
+        _LOGGER.info("Looking for player in 'playing' state...")
+        playing = self._find_player_by_state_cached("playing", player_states)
         if playing:
             await self._hass.services.async_call("media_player", "media_previous_track", {"entity_id": playing})
             return {"status": "skipped", "message": "Previous track"}
@@ -330,8 +285,8 @@ class MusicController:
         """Restart current track from beginning."""
         player_states = ctx["player_states"]
 
-        _LOGGER.info("Looking for active player to restart track...")
-        playing = self._find_active_player(player_states)
+        _LOGGER.info("Looking for player in 'playing' state to restart track...")
+        playing = self._find_player_by_state_cached("playing", player_states)
         if playing:
             await self._hass.services.async_call("media_player", "media_seek", {"entity_id": playing, "seek_position": 0})
             return {"status": "restarted", "message": "Bringing it back from the top"}
@@ -341,8 +296,8 @@ class MusicController:
         """Get currently playing track info using cached states."""
         player_states = ctx["player_states"]
 
-        _LOGGER.info("Looking for active player...")
-        playing = self._find_active_player(player_states)
+        _LOGGER.info("Looking for player in 'playing' state...")
+        playing = self._find_player_by_state_cached("playing", player_states)
         if playing:
             # Use cached attributes instead of re-fetching
             attrs = player_states[playing]["attributes"]
@@ -360,27 +315,22 @@ class MusicController:
         target_players = ctx["target_players"]
         player_states = ctx["player_states"]
 
-        _LOGGER.info("Transfer request: room='%s', target_players=%s", room, target_players)
-        _LOGGER.info("Player states: %s", {k: v["state"] for k, v in player_states.items()})
-        _LOGGER.info("Last played player: %s", self._last_played_player)
-
-        source = self._find_active_player(player_states)
-        if not source:
-            return {"error": f"No music playing to transfer. Player states: {[f'{k}={v['state']}' for k,v in player_states.items()]}"}
+        _LOGGER.info("Looking for player in 'playing' state...")
+        playing = self._find_player_by_state_cached("playing", player_states)
+        if not playing:
+            return {"error": "No music playing to transfer"}
         if not target_players:
-            return {"error": f"No target room '{room}' found. Available: {', '.join(self._players.keys())}"}
+            return {"error": f"No target room specified. Available: {', '.join(self._players.keys())}"}
 
         target = target_players[0]
-        _LOGGER.info("Transferring from %s to %s", source, target)
+        _LOGGER.info("Transferring from %s to %s", playing, target)
 
         await self._hass.services.async_call(
             "music_assistant", "transfer_queue",
-            {"source_player": source, "auto_play": True},
+            {"source_player": playing, "auto_play": True},
             target={"entity_id": target},
             blocking=True
         )
-        # Update tracking to new target for AirPlay
-        self._last_played_player = target
         return {"status": "transferred", "message": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _handle_shuffle(self, ctx: dict) -> dict:
@@ -489,8 +439,6 @@ class MusicController:
                 target={"entity_id": player},
                 blocking=True
             )
-            # Track for AirPlay fallback (AirPlay doesn't report state)
-            self._last_played_player = player
 
             await self._hass.services.async_call(
                 "media_player", "shuffle_set",
@@ -498,14 +446,13 @@ class MusicController:
                 blocking=True
             )
 
-            # Natural response - strip emojis for TTS
-            clean_name = strip_emojis(matched_name)
+            # Natural response - include playlist name and room
             return {
                 "status": "ok",
-                "name": clean_name,
+                "name": matched_name,
                 "type": media_type_to_use,
                 "room": room,
-                "response_text": f"Now shuffling the playlist '{clean_name}' in the {room}."
+                "speech": f"Now shuffling {matched_name} in the {room}"
             }
 
         except Exception as search_err:
