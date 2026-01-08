@@ -353,14 +353,14 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         ["action"]
     ))
 
-    # ===== WEB SEARCH =====
-    if config.enable_web_search and config.google_places_api_key and config.google_search_engine_id:
+    # ===== WEB SEARCH (Tavily) =====
+    if config.enable_web_search and config.tavily_api_key:
         tools.append(_tool(
             "web_search",
-            "Search the web for current information. Use for: 'what time does X close', 'when is X', 'latest news about X', questions about current events, hours, prices, or anything that needs real-time data. The other tools (weather, sports, stocks, news) are more specialized - use web_search for general queries.",
+            "Search the web for current information. Use for: 'what time does X close', 'when is X', 'latest news about X', questions about current events, hours, prices, or anything that needs real-time data. The other tools (weather, sports, stocks, news) are more specialized - use web_search for general queries. Returns AI-generated answer plus sources.",
             {
                 "query": {"type": "string", "description": "Search query (e.g., 'Target hours Pembroke Pines', 'SpaceX next launch')"},
-                "num_results": {"type": "integer", "description": "Number of results (default: 3, max: 10)"}
+                "num_results": {"type": "integer", "description": "Number of results (default: 5, max: 10)"}
             },
             ["query"]
         ))
@@ -393,7 +393,7 @@ class ToolConfig:
 
         self.openweathermap_api_key = entity.openweathermap_api_key
         self.google_places_api_key = entity.google_places_api_key
-        self.google_search_engine_id = entity.google_search_engine_id
+        self.tavily_api_key = entity.tavily_api_key
         self.yelp_api_key = entity.yelp_api_key
         self.newsapi_key = entity.newsapi_key
 
