@@ -36,7 +36,6 @@ from .const import (
     CONF_ENABLE_DEVICE_STATUS,
     CONF_ENABLE_MUSIC,
     CONF_ENABLE_NEWS,
-    CONF_ENABLE_WEB_SEARCH,
     CONF_ENABLE_PLACES,
     CONF_ENABLE_RESTAURANTS,
     CONF_ENABLE_SPORTS,
@@ -45,7 +44,6 @@ from .const import (
     CONF_ENABLE_WEATHER,
     CONF_ENABLE_WIKIPEDIA,
     CONF_GOOGLE_PLACES_API_KEY,
-    CONF_TAVILY_API_KEY,
     CONF_MAX_TOKENS,
     CONF_MODEL,
     CONF_NEWSAPI_KEY,
@@ -67,7 +65,6 @@ from .const import (
     DEFAULT_ENABLE_DEVICE_STATUS,
     DEFAULT_ENABLE_MUSIC,
     DEFAULT_ENABLE_NEWS,
-    DEFAULT_ENABLE_WEB_SEARCH,
     DEFAULT_ENABLE_PLACES,
     DEFAULT_ENABLE_RESTAURANTS,
     DEFAULT_ENABLE_SPORTS,
@@ -113,7 +110,6 @@ from .tools.music import MusicController
 from .tools import timer as timer_tool
 from .tools import lists as lists_tool
 from .tools import reminders as reminders_tool
-from .tools import websearch as websearch_tool
 
 if TYPE_CHECKING:
     import aiohttp
@@ -154,7 +150,7 @@ class PureLLMConversationEntity(ConversationEntity):
         # Usage tracking
         self._api_calls = {
             "weather": 0, "places": 0, "restaurants": 0, "news": 0,
-            "sports": 0, "wikipedia": 0, "llm": 0, "stocks": 0, "web_search": 0,
+            "sports": 0, "wikipedia": 0, "llm": 0, "stocks": 0,
         }
 
         # Caches
@@ -223,7 +219,6 @@ class PureLLMConversationEntity(ConversationEntity):
         # API keys
         self.openweathermap_api_key = config.get(CONF_OPENWEATHERMAP_API_KEY, "")
         self.google_places_api_key = config.get(CONF_GOOGLE_PLACES_API_KEY, "")
-        self.tavily_api_key = config.get(CONF_TAVILY_API_KEY, "")
         self.yelp_api_key = config.get(CONF_YELP_API_KEY, "")
         self.newsapi_key = config.get(CONF_NEWSAPI_KEY, "")
 
@@ -240,7 +235,6 @@ class PureLLMConversationEntity(ConversationEntity):
         self.enable_device_status = config.get(CONF_ENABLE_DEVICE_STATUS, DEFAULT_ENABLE_DEVICE_STATUS)
         self.enable_wikipedia = config.get(CONF_ENABLE_WIKIPEDIA, DEFAULT_ENABLE_WIKIPEDIA)
         self.enable_music = config.get(CONF_ENABLE_MUSIC, DEFAULT_ENABLE_MUSIC)
-        self.enable_web_search = config.get(CONF_ENABLE_WEB_SEARCH, DEFAULT_ENABLE_WEB_SEARCH)
 
         # Entity configuration
         self.room_player_mapping = parse_entity_config(config.get(CONF_ROOM_PLAYER_MAPPING, DEFAULT_ROOM_PLAYER_MAPPING))
@@ -909,12 +903,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
             elif tool_name == "get_reminders":
                 return await reminders_tool.get_reminders(arguments, self.hass, hass_tz)
-
-            elif tool_name == "web_search":
-                return await websearch_tool.web_search(
-                    arguments, self._session, self.tavily_api_key,
-                    self._track_api_call
-                )
 
             # Fall back to script execution
             elif self.hass.services.has_service("script", tool_name):

@@ -134,7 +134,6 @@ CONF_ENABLE_THERMOSTAT: Final = "enable_thermostat"
 CONF_ENABLE_DEVICE_STATUS: Final = "enable_device_status"
 CONF_ENABLE_WIKIPEDIA: Final = "enable_wikipedia"
 CONF_ENABLE_MUSIC: Final = "enable_music"
-CONF_ENABLE_WEB_SEARCH: Final = "enable_web_search"  # Gemini search grounding
 
 DEFAULT_ENABLE_WEATHER: Final = True
 DEFAULT_ENABLE_CALENDAR: Final = True
@@ -148,7 +147,6 @@ DEFAULT_ENABLE_THERMOSTAT: Final = True
 DEFAULT_ENABLE_DEVICE_STATUS: Final = True
 DEFAULT_ENABLE_WIKIPEDIA: Final = True
 DEFAULT_ENABLE_MUSIC: Final = False  # Requires Music Assistant + player config
-DEFAULT_ENABLE_WEB_SEARCH: Final = False  # Requires Google provider
 
 # =============================================================================
 # ENTITY CONFIGURATION - User-defined entities
@@ -211,7 +209,6 @@ GENERAL GUIDELINES:
 - For calendar events, use get_calendar_events
 - For music control (play, skip, pause, etc.), use control_music
 - For ALL device control (lights, locks, switches, fans, etc.), use control_device - ALL commands go through the LLM pipeline
-- For web searches, current events, "search for", or anything requiring up-to-date info, use web_search. NEVER answer questions about current events from memory - ALWAYS call web_search first.
 """
 
 # =============================================================================
@@ -229,14 +226,10 @@ DEFAULT_CUSTOM_LONGITUDE: Final = 0.0
 # =============================================================================
 CONF_OPENWEATHERMAP_API_KEY: Final = "openweathermap_api_key"
 CONF_GOOGLE_PLACES_API_KEY: Final = "google_places_api_key"
-CONF_GOOGLE_SEARCH_ENGINE_ID: Final = "google_search_engine_id"
-CONF_TAVILY_API_KEY: Final = "tavily_api_key"
 CONF_YELP_API_KEY: Final = "yelp_api_key"
 CONF_NEWSAPI_KEY: Final = "newsapi_key"
 
 DEFAULT_OPENWEATHERMAP_API_KEY: Final = ""
 DEFAULT_GOOGLE_PLACES_API_KEY: Final = ""
-DEFAULT_GOOGLE_SEARCH_ENGINE_ID: Final = ""
-DEFAULT_TAVILY_API_KEY: Final = ""
 DEFAULT_YELP_API_KEY: Final = ""
 DEFAULT_NEWSAPI_KEY: Final = ""

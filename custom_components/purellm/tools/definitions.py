@@ -353,18 +353,6 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         ["action"]
     ))
 
-    # ===== WEB SEARCH (Tavily) =====
-    if config.enable_web_search and config.tavily_api_key:
-        tools.append(_tool(
-            "web_search",
-            "Search the web for current information. Use for: 'what time does X close', 'when is X', 'latest news about X', questions about current events, hours, prices, or anything that needs real-time data. The other tools (weather, sports, stocks, news) are more specialized - use web_search for general queries. Returns AI-generated answer plus sources.",
-            {
-                "query": {"type": "string", "description": "Search query (e.g., 'Target hours Pembroke Pines', 'SpaceX next launch')"},
-                "num_results": {"type": "integer", "description": "Number of results (default: 5, max: 10)"}
-            },
-            ["query"]
-        ))
-
     return tools
 
 
@@ -389,11 +377,9 @@ class ToolConfig:
         self.enable_device_status = entity.enable_device_status
         self.enable_wikipedia = entity.enable_wikipedia
         self.enable_music = entity.enable_music
-        self.enable_web_search = entity.enable_web_search
 
         self.openweathermap_api_key = entity.openweathermap_api_key
         self.google_places_api_key = entity.google_places_api_key
-        self.tavily_api_key = entity.tavily_api_key
         self.yelp_api_key = entity.yelp_api_key
         self.newsapi_key = entity.newsapi_key
 
