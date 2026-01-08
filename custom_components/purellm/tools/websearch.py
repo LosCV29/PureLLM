@@ -12,16 +12,12 @@ _LOGGER = logging.getLogger(__name__)
 # Google Custom Search API endpoint
 GOOGLE_SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
 
-# You'll need to create a Programmable Search Engine at:
-# https://programmablesearchengine.google.com/
-# Use "Search the entire web" option
-DEFAULT_SEARCH_ENGINE_ID = "a47cf232001e64cb8"  # Public web search engine
-
 
 async def web_search(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
     api_key: str,
+    search_engine_id: str,
     track_api_call: callable,
 ) -> dict[str, Any]:
     """Search the web for current information.
@@ -30,6 +26,7 @@ async def web_search(
         arguments: Dict with 'query' (required) and optional 'num_results' (1-10)
         session: aiohttp client session
         api_key: Google API key (same as Places API key)
+        search_engine_id: Google Programmable Search Engine ID
         track_api_call: Callback to track API usage
 
     Returns:
@@ -44,13 +41,16 @@ async def web_search(
     if not api_key:
         return {"error": "Google API key not configured. Add it in API Keys settings."}
 
+    if not search_engine_id:
+        return {"error": "Google Search Engine ID not configured. Create one at programmablesearchengine.google.com and add it in API Keys settings."}
+
     _LOGGER.info("Web search: '%s'", query)
     track_api_call("web_search")
 
     try:
         params = {
             "key": api_key,
-            "cx": DEFAULT_SEARCH_ENGINE_ID,
+            "cx": search_engine_id,
             "q": query,
             "num": num_results,
         }

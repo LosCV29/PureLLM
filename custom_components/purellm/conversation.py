@@ -45,6 +45,7 @@ from .const import (
     CONF_ENABLE_WEATHER,
     CONF_ENABLE_WIKIPEDIA,
     CONF_GOOGLE_PLACES_API_KEY,
+    CONF_GOOGLE_SEARCH_ENGINE_ID,
     CONF_MAX_TOKENS,
     CONF_MODEL,
     CONF_NEWSAPI_KEY,
@@ -222,6 +223,7 @@ class PureLLMConversationEntity(ConversationEntity):
         # API keys
         self.openweathermap_api_key = config.get(CONF_OPENWEATHERMAP_API_KEY, "")
         self.google_places_api_key = config.get(CONF_GOOGLE_PLACES_API_KEY, "")
+        self.google_search_engine_id = config.get(CONF_GOOGLE_SEARCH_ENGINE_ID, "")
         self.yelp_api_key = config.get(CONF_YELP_API_KEY, "")
         self.newsapi_key = config.get(CONF_NEWSAPI_KEY, "")
 
@@ -910,7 +912,8 @@ class PureLLMConversationEntity(ConversationEntity):
 
             elif tool_name == "web_search":
                 return await websearch_tool.web_search(
-                    arguments, self._session, self.google_places_api_key, self._track_api_call
+                    arguments, self._session, self.google_places_api_key,
+                    self.google_search_engine_id, self._track_api_call
                 )
 
             # Fall back to script execution

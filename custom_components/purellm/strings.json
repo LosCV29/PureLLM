@@ -110,7 +110,8 @@
         "description": "API keys for external services (leave blank to disable that feature)",
         "data": {
           "openweathermap_api_key": "OpenWeatherMap API Key",
-          "google_places_api_key": "Google Places API Key",
+          "google_places_api_key": "Google API Key (Places + Search)",
+          "google_search_engine_id": "Google Search Engine ID (from programmablesearchengine.google.com)",
           "yelp_api_key": "Yelp API Key",
           "newsapi_key": "TheNewsAPI Key"
         }

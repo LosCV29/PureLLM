@@ -354,7 +354,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     ))
 
     # ===== WEB SEARCH =====
-    if config.enable_web_search and config.google_places_api_key:
+    if config.enable_web_search and config.google_places_api_key and config.google_search_engine_id:
         tools.append(_tool(
             "web_search",
             "Search the web for current information. Use for: 'what time does X close', 'when is X', 'latest news about X', questions about current events, hours, prices, or anything that needs real-time data. The other tools (weather, sports, stocks, news) are more specialized - use web_search for general queries.",
@@ -393,6 +393,7 @@ class ToolConfig:
 
         self.openweathermap_api_key = entity.openweathermap_api_key
         self.google_places_api_key = entity.google_places_api_key
+        self.google_search_engine_id = entity.google_search_engine_id
         self.yelp_api_key = entity.yelp_api_key
         self.newsapi_key = entity.newsapi_key
 
