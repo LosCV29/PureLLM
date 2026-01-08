@@ -163,53 +163,6 @@ CONF_THERMOSTAT_MAX_TEMP: Final = "thermostat_max_temp"
 CONF_THERMOSTAT_TEMP_STEP: Final = "thermostat_temp_step"
 CONF_THERMOSTAT_USE_CELSIUS: Final = "thermostat_use_celsius"
 
-# Default camera friendly names mapping (voice aliases -> display_name)
-# Supports multiple spellings/variations for voice commands
-# Users configure actual cameras via CONF_CAMERA_ENTITIES; ha_video_vision handles resolution
-CAMERA_FRIENDLY_NAMES: Final = {
-    # Porch / Front Door
-    "porch": "Front Porch",
-    "front_porch": "Front Porch",
-    "front porch": "Front Porch",
-    "front door": "Front Door",
-    "frontdoor": "Front Door",
-    "door": "Front Door",
-    "doorbell": "Front Door",
-    # Backyard / Garden
-    "backyard": "Backyard",
-    "back yard": "Backyard",
-    "garden": "Garden",
-    "back": "Backyard",
-    # Driveway
-    "driveway": "Driveway",
-    "drive way": "Driveway",
-    "drive": "Driveway",
-    # Garage
-    "garage": "Garage",
-    # Side yard
-    "side": "Side Yard",
-    "side yard": "Side Yard",
-    "side_yard": "Side Yard",
-    # Interior
-    "kitchen": "Kitchen",
-    "living room": "Living Room",
-    "livingroom": "Living Room",
-    "living": "Living Room",
-    "sala": "Living Room",
-    "nursery": "Nursery",
-    "baby": "Nursery",
-    "bedroom": "Bedroom",
-    "office": "Office",
-    "basement": "Basement",
-    "attic": "Attic",
-    # Outdoor extras
-    "pool": "Pool",
-    "patio": "Patio",
-    "deck": "Deck",
-    "front yard": "Front Yard",
-    "front_yard": "Front Yard",
-}
-
 DEFAULT_THERMOSTAT_ENTITY: Final = ""
 DEFAULT_CALENDAR_ENTITIES: Final = ""
 DEFAULT_ROOM_PLAYER_MAPPING: Final = ""  # room:entity_id, one per line

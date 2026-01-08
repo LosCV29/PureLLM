@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -119,12 +118,6 @@ if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
-
-# Query patterns for simple responses (no LLM needed)
-SIMPLE_QUERY_PATTERNS = [
-    (r"\b(what('?s| is) the (current )?(time|date)|what time is it|what day is it)\b", "datetime"),
-]
-
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -362,14 +355,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
         _LOGGER.debug("Processing query: '%s'", user_text)
 
-        # Check for simple queries that don't need LLM
-        for pattern, query_type in SIMPLE_QUERY_PATTERNS:
-            if re.search(pattern, user_text, re.IGNORECASE):
-                if query_type == "datetime":
-                    now = datetime.now(dt_util.get_time_zone(self.hass.config.time_zone))
-                    response = now.strftime("It's %I:%M %p on %A, %B %d, %Y")
-                    return self._create_response(response, user_input)
-
         # Build tools and system prompt
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
@@ -390,25 +375,6 @@ class PureLLMConversationEntity(ConversationEntity):
             response = "Sorry, there was an error processing your request."
 
         return self._create_response(response, user_input)
-
-    async def async_process_intercepted(self, command: str) -> str:
-        """Process an intercepted intent command."""
-        _LOGGER.info("Processing intercepted command: '%s'", command)
-        self._current_user_query = command
-
-        # Create a minimal conversation input
-        user_input = conversation.ConversationInput(
-            text=command,
-            context=None,
-            conversation_id=None,
-            language=self.hass.config.language,
-            device_id=None,
-            satellite_id=None,
-            agent_id=self.entity_id,
-        )
-
-        result = await self.async_process(user_input)
-        return result.response.speech.get("plain", {}).get("speech", "Command executed.")
 
     def _create_response(
         self,
