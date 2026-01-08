@@ -112,6 +112,7 @@ from .tools.music import MusicController
 from .tools import timer as timer_tool
 from .tools import lists as lists_tool
 from .tools import reminders as reminders_tool
+from .tools import websearch as websearch_tool
 
 if TYPE_CHECKING:
     import aiohttp
@@ -152,7 +153,7 @@ class PureLLMConversationEntity(ConversationEntity):
         # Usage tracking
         self._api_calls = {
             "weather": 0, "places": 0, "restaurants": 0, "news": 0,
-            "sports": 0, "wikipedia": 0, "llm": 0, "stocks": 0,
+            "sports": 0, "wikipedia": 0, "llm": 0, "stocks": 0, "web_search": 0,
         }
 
         # Caches
@@ -687,16 +688,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 "generationConfig": {"maxOutputTokens": max_tokens, "temperature": self.temperature},
             }
 
-            # Build tools array - include search grounding if enabled
-            gemini_tools = []
-            if self.enable_web_search:
-                # Google Search grounding - model will search when needed
-                gemini_tools.append({"google_search": {}})
-                _LOGGER.debug("Google Search grounding enabled")
+            # Add function tools (google_search grounding is incompatible with function calling)
             if function_declarations:
-                gemini_tools.append({"functionDeclarations": function_declarations})
-            if gemini_tools:
-                payload["tools"] = gemini_tools
+                payload["tools"] = [{"functionDeclarations": function_declarations}]
 
             url = f"{self.base_url}/models/{self.model}:generateContent"
             headers = {"x-goog-api-key": self.api_key}
@@ -913,6 +907,11 @@ class PureLLMConversationEntity(ConversationEntity):
 
             elif tool_name == "get_reminders":
                 return await reminders_tool.get_reminders(arguments, self.hass, hass_tz)
+
+            elif tool_name == "web_search":
+                return await websearch_tool.web_search(
+                    arguments, self._session, self.google_places_api_key, self._track_api_call
+                )
 
             # Fall back to script execution
             elif self.hass.services.has_service("script", tool_name):
