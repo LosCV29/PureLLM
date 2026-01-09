@@ -112,13 +112,28 @@ class MusicController:
         return []
 
     def _find_player_by_state(self, target_state: str, all_players: list[str]) -> str | None:
-        """Find a player in a specific state."""
+        """Find a player in a specific state.
+
+        Prioritizes MA wrapper entities (_2, _3 suffix) over raw DLNA entities
+        because raw DLNA doesn't support pause/stop/shuffle.
+        """
+        # First pass: look for MA wrapper entities (they support pause/stop)
         for pid in all_players:
-            state = self._hass.states.get(pid)
-            if state:
-                _LOGGER.info("  %s → %s", pid, state.state)
-                if state.state == target_state:
-                    return pid
+            if pid.endswith("_2") or pid.endswith("_3"):
+                state = self._hass.states.get(pid)
+                if state:
+                    _LOGGER.info("  %s → %s (MA wrapper)", pid, state.state)
+                    if state.state == target_state:
+                        return pid
+
+        # Second pass: check remaining entities (raw DLNA, satellites, etc.)
+        for pid in all_players:
+            if not pid.endswith("_2") and not pid.endswith("_3"):
+                state = self._hass.states.get(pid)
+                if state:
+                    _LOGGER.info("  %s → %s", pid, state.state)
+                    if state.state == target_state:
+                        return pid
         return None
 
     def _get_transfer_source(self, entity_id: str) -> str:
