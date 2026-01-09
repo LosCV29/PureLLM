@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -181,6 +182,9 @@ class MusicController:
 
         IMPORTANT: radio_mode is ALWAYS disabled. For shuffled playlists by
         artist or genre, use the shuffle action instead.
+
+        For tracks, supports "song by artist" format - parses and uses the
+        native Music Assistant 'artist' parameter for precise matching.
         """
         if not query:
             return {"error": "No music query specified"}
@@ -193,11 +197,38 @@ class MusicController:
             _LOGGER.warning("Invalid media_type '%s' for play, defaulting to 'artist'", media_type)
             media_type = "artist"
 
+        # Parse "track by artist" format for precise matching
+        # Uses regex that only matches final " by " to handle songs like "Stand By Me"
+        media_id = query
+        artist_name = None
+        display_name = query
+
+        if media_type == "track":
+            # Match pattern: "Song Name by Artist Name" (case insensitive)
+            match = re.search(r'^(.+?)\s+by\s+(.+)$', query, re.IGNORECASE)
+            if match:
+                media_id = match.group(1).strip()
+                artist_name = match.group(2).strip()
+                display_name = f"{media_id} by {artist_name}"
+                _LOGGER.info("Parsed track request: '%s' by '%s'", media_id, artist_name)
+
         for player in target_players:
-            _LOGGER.info("Playing '%s' (%s) on %s - radio_mode=False", query, media_type, player)
+            # Build play_media data with optional artist parameter
+            play_data = {
+                "media_id": media_id,
+                "media_type": media_type,
+                "enqueue": "replace",
+                "radio_mode": False,
+            }
+
+            # Add artist parameter if we parsed one (Music Assistant native support)
+            if artist_name:
+                play_data["artist"] = artist_name
+
+            _LOGGER.info("Playing media_id='%s', artist='%s' (%s) on %s", media_id, artist_name, media_type, player)
             await self._hass.services.async_call(
                 "music_assistant", "play_media",
-                {"media_id": query, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
+                play_data,
                 target={"entity_id": player},
                 blocking=True
             )
@@ -209,7 +240,7 @@ class MusicController:
                     blocking=True
                 )
 
-        return {"status": "playing", "message": f"Playing {query} in the {room}"}
+        return {"status": "playing", "message": f"Playing {display_name} in the {room}"}
 
     async def _pause(self, all_players: list[str]) -> dict:
         """Pause music - uses area targeting like HA native intents."""
