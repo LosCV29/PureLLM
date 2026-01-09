@@ -72,7 +72,7 @@ class MusicController:
 
         if not all_players:
             _LOGGER.error("No players configured! room_player_mapping is empty")
-            return {"error": "No music players configured. Go to PolyVoice → Entity Configuration → Room to Player Mapping."}
+            return {"error": "No music players configured. Go to PureLLM → Entity Configuration → Room to Player Mapping."}
 
         # Validate media_type
         if media_type and media_type not in self.VALID_MEDIA_TYPES:
@@ -198,27 +198,46 @@ class MusicController:
                 except Exception as shuffle_err:
                     _LOGGER.warning("Shuffle not supported by player %s: %s", player, shuffle_err)
 
-        # Return verbatim confirmation for LLM to read back
+        # Natural response - include name and room
+        shuffled = shuffle or media_type == "genre"
+        if shuffled:
+            speech = f"Now shuffling {query} in the {room}"
+        else:
+            speech = f"Now playing {query} in the {room}"
+
         return {
-            "status": "playing",
-            "now_playing": query,
-            "media_type": media_type,
+            "status": "ok",
+            "name": query,
+            "type": media_type,
             "room": room,
-            "shuffled": shuffle or media_type == "genre",
-            "message": f"Now playing '{query}' ({media_type}) in the {room}"
+            "speech": speech
         }
 
     async def _handle_pause(self, ctx: dict) -> dict:
         """Pause music."""
         player_states = ctx["player_states"]
+        all_players = ctx["all_players"]
 
+        _LOGGER.info("Player states: %s", {pid: data["state"] for pid, data in player_states.items()})
         _LOGGER.info("Looking for player in 'playing' state...")
+
         playing = self._find_player_by_state_cached("playing", player_states)
         if playing:
             await self._hass.services.async_call("media_player", "media_pause", {"entity_id": playing})
             self._last_paused_player = playing
             _LOGGER.info("Stored %s as last paused player", playing)
             return {"status": "paused", "message": f"Paused in {self._get_room_name(playing)}"}
+
+        # Fallback: try all players (MA players may not report "playing" state correctly)
+        _LOGGER.info("No 'playing' state found, trying all players...")
+        for player in all_players:
+            try:
+                await self._hass.services.async_call("media_player", "media_pause", {"entity_id": player})
+                self._last_paused_player = player
+                return {"status": "paused", "message": f"Paused in {self._get_room_name(player)}"}
+            except Exception:
+                continue
+
         return {"error": "No music is currently playing"}
 
     async def _handle_resume(self, ctx: dict) -> dict:
@@ -245,16 +264,30 @@ class MusicController:
     async def _handle_stop(self, ctx: dict) -> dict:
         """Stop music."""
         player_states = ctx["player_states"]
+        all_players = ctx["all_players"]
 
+        _LOGGER.info("Player states: %s", {pid: data["state"] for pid, data in player_states.items()})
         _LOGGER.info("Looking for player in 'playing' or 'paused' state...")
+
         playing = self._find_player_by_state_cached("playing", player_states)
         if playing:
             await self._hass.services.async_call("media_player", "media_stop", {"entity_id": playing})
             return {"status": "stopped", "message": f"Stopped in {self._get_room_name(playing)}"}
+
         paused = self._find_player_by_state_cached("paused", player_states)
         if paused:
             await self._hass.services.async_call("media_player", "media_stop", {"entity_id": paused})
             return {"status": "stopped", "message": f"Stopped in {self._get_room_name(paused)}"}
+
+        # Fallback: try all players (MA players may not report state correctly)
+        _LOGGER.info("No 'playing'/'paused' state found, trying all players...")
+        for player in all_players:
+            try:
+                await self._hass.services.async_call("media_player", "media_stop", {"entity_id": player})
+                return {"status": "stopped", "message": f"Stopped in {self._get_room_name(player)}"}
+            except Exception:
+                continue
+
         return {"message": "No music is playing"}
 
     async def _handle_skip_next(self, ctx: dict) -> dict:
@@ -447,13 +480,13 @@ class MusicController:
             except Exception as shuffle_err:
                 _LOGGER.warning("Shuffle not supported by player %s: %s", player, shuffle_err)
 
-            # Return verbatim confirmation for LLM to read back exactly
+            # Natural response - include playlist name and room
             return {
-                "status": "shuffling",
-                "now_playing": matched_name,
-                "media_type": media_type_to_use,
+                "status": "ok",
+                "name": matched_name,
+                "type": media_type_to_use,
                 "room": room,
-                "message": f"Now shuffling '{matched_name}' in the {room}"
+                "speech": f"Now shuffling {matched_name} in the {room}"
             }
 
         except Exception as search_err:
