@@ -228,19 +228,20 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control ALL music playback via Music Assistant. MUST use for: pause, stop, resume, skip, play, shuffle. For pause/stop/resume/skip - NO room needed, automatically targets active player. For play/shuffle - specify room. Available rooms: {rooms_list}. IMPORTANT: This is ONLY for music/audio, NOT for blinds or physical devices! CRITICAL RULES: 1) SHUFFLE = ONLY for 'shuffle by artist' or 'shuffle by genre' requests - searches Spotify playlists. 2) PLAY = ONLY for specific artists, albums, or songs - NEVER use radio mode.",
+            f"Control ALL music playback via Music Assistant. Available rooms: {rooms_list}. For pause/stop/resume/skip - NO room needed. For play/shuffle - specify room.",
             {
                 "action": {
                     "type": "string",
                     "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"],
-                    "description": "CRITICAL: 'shuffle' = ONLY when user says 'shuffle by artist' or 'shuffle by genre' - finds best matching Spotify playlist. 'play' = for specific artists, albums, or songs ONLY. 'restart_track' = replay current song from beginning."
+                    "description": "'play' for songs/albums/artists. 'shuffle' for shuffled playlists by artist/genre."
                 },
-                "query": {"type": "string", "description": "For SHUFFLE: the artist name or genre (e.g., 'Taylor Swift', 'rock', 'jazz'). For PLAY: artist name, album name, or song title."},
+                "query": {"type": "string", "description": "The song title, album name, artist name, or genre to play/shuffle."},
+                "artist": {"type": "string", "description": "REQUIRED when playing a specific track. The artist name (e.g., 'play Aggressive by Gucci Mane' → query='Aggressive', artist='Gucci Mane')."},
                 "room": {"type": "string", "description": f"Target room: {rooms_list}"},
                 "media_type": {
                     "type": "string",
                     "enum": ["artist", "album", "track"],
-                    "description": "FOR PLAY ACTION ONLY: 'track' = specific song, 'album' = specific album, 'artist' = music from an artist. NOT used for shuffle."
+                    "description": "'track' = specific song (requires artist param), 'album' = album, 'artist' = play artist's music."
                 }
             },
             ["action"]
