@@ -450,15 +450,29 @@ class MusicController:
                         if "radio" not in (p.get("name") or p.get("title") or "").lower()
                     ]
 
-                    # Prefer playlists that contain the query/artist name in the title
                     query_lower = query.lower()
+
+                    # Priority 1: Official Spotify curated playlists ("This Is...", "Best of...", owned by Spotify)
+                    official_playlists = [
+                        p for p in non_radio_playlists
+                        if (p.get("owner") or "").lower() == "spotify"
+                        or (p.get("name") or p.get("title") or "").lower().startswith("this is")
+                        or (p.get("name") or p.get("title") or "").lower().startswith("best of")
+                    ]
+
+                    # Priority 2: Playlists with artist/query name in title
                     matching_name_playlists = [
                         p for p in non_radio_playlists
                         if query_lower in (p.get("name") or p.get("title") or "").lower()
                     ]
 
-                    # Priority: 1) Has artist name in title, 2) Non-radio, 3) Any result
-                    if matching_name_playlists:
+                    # Choose best playlist: Official > Name match > Non-radio > Any
+                    if official_playlists:
+                        # Among official, prefer ones with query in name
+                        official_with_name = [p for p in official_playlists if query_lower in (p.get("name") or p.get("title") or "").lower()]
+                        chosen_playlist = official_with_name[0] if official_with_name else official_playlists[0]
+                        _LOGGER.info("Found official Spotify playlist")
+                    elif matching_name_playlists:
                         chosen_playlist = matching_name_playlists[0]
                         _LOGGER.info("Found playlist with '%s' in name", query)
                     elif non_radio_playlists:
