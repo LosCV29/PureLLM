@@ -213,14 +213,23 @@ class MusicController:
     async def _handle_pause(self, ctx: dict) -> dict:
         """Pause music."""
         player_states = ctx["player_states"]
+        all_players = ctx["all_players"]
 
-        _LOGGER.info("Looking for player in 'playing' state...")
+        _LOGGER.info("=== PAUSE DEBUG ===")
+        _LOGGER.info("All players in mapping: %s", all_players)
+        _LOGGER.info("Player states found: %s", {pid: data["state"] for pid, data in player_states.items()})
+
         playing = self._find_player_by_state_cached("playing", player_states)
+        _LOGGER.info("Found playing player: %s", playing)
+
         if playing:
+            _LOGGER.info("Calling media_pause on %s", playing)
             await self._hass.services.async_call("media_player", "media_pause", {"entity_id": playing})
             self._last_paused_player = playing
             _LOGGER.info("Stored %s as last paused player", playing)
             return {"status": "paused", "message": f"Paused in {self._get_room_name(playing)}"}
+
+        _LOGGER.error("No player found in 'playing' state!")
         return {"error": "No music is currently playing"}
 
     async def _handle_resume(self, ctx: dict) -> dict:
@@ -247,16 +256,29 @@ class MusicController:
     async def _handle_stop(self, ctx: dict) -> dict:
         """Stop music."""
         player_states = ctx["player_states"]
+        all_players = ctx["all_players"]
 
-        _LOGGER.info("Looking for player in 'playing' or 'paused' state...")
+        _LOGGER.info("=== STOP DEBUG ===")
+        _LOGGER.info("All players in mapping: %s", all_players)
+        _LOGGER.info("Player states found: %s", {pid: data["state"] for pid, data in player_states.items()})
+
         playing = self._find_player_by_state_cached("playing", player_states)
+        _LOGGER.info("Found playing player: %s", playing)
+
         if playing:
+            _LOGGER.info("Calling media_stop on %s", playing)
             await self._hass.services.async_call("media_player", "media_stop", {"entity_id": playing})
             return {"status": "stopped", "message": f"Stopped in {self._get_room_name(playing)}"}
+
         paused = self._find_player_by_state_cached("paused", player_states)
+        _LOGGER.info("Found paused player: %s", paused)
+
         if paused:
+            _LOGGER.info("Calling media_stop on %s", paused)
             await self._hass.services.async_call("media_player", "media_stop", {"entity_id": paused})
             return {"status": "stopped", "message": f"Stopped in {self._get_room_name(paused)}"}
+
+        _LOGGER.error("No player found in 'playing' or 'paused' state!")
         return {"message": "No music is playing"}
 
     async def _handle_skip_next(self, ctx: dict) -> dict:
@@ -314,12 +336,22 @@ class MusicController:
         room = ctx["room"]
         target_players = ctx["target_players"]
         player_states = ctx["player_states"]
+        all_players = ctx["all_players"]
 
-        _LOGGER.info("Looking for player in 'playing' state...")
+        _LOGGER.info("=== TRANSFER DEBUG ===")
+        _LOGGER.info("Target room: %s", room)
+        _LOGGER.info("All players in mapping: %s", all_players)
+        _LOGGER.info("Target players for room: %s", target_players)
+        _LOGGER.info("Player states found: %s", {pid: data["state"] for pid, data in player_states.items()})
+
         playing = self._find_player_by_state_cached("playing", player_states)
+        _LOGGER.info("Found playing player: %s", playing)
+
         if not playing:
+            _LOGGER.error("No player found in 'playing' state!")
             return {"error": "No music playing to transfer"}
         if not target_players:
+            _LOGGER.error("No target players found for room: %s", room)
             return {"error": f"No target room specified. Available: {', '.join(self._players.keys())}"}
 
         target = target_players[0]
@@ -331,6 +363,7 @@ class MusicController:
             target={"entity_id": target},
             blocking=True
         )
+        _LOGGER.info("Transfer complete!")
         return {"status": "transferred", "message": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _handle_shuffle(self, ctx: dict) -> dict:
