@@ -1,0 +1,132 @@
+# Voice PE Custom Wake Word Configuration
+#
+# This is an example ESPHome configuration for adding custom wake words
+# to your Home Assistant Voice PE speaker.
+#
+# Prerequisites:
+# 1. Voice PE device adopted in ESPHome (use "Take Control")
+# 2. A trained microWakeWord model hosted somewhere accessible
+#
+# Usage:
+# 1. Copy this file to your ESPHome directory
+# 2. Update the substitutions section with your details
+# 3. Update the wake word model URLs
+# 4. Compile and upload to your Voice PE
+
+substitutions:
+  # Device naming
+  name: "voice-pe-living-room"
+  friendly_name: "Living Room Voice PE"
+
+  # Your custom wake word model URLs (update these!)
+  # Host these on GitHub, your HA server, or any web server
+  custom_wake_word_url: "https://github.com/YOUR_USERNAME/YOUR_REPO/raw/main/hey_jarvis.json"
+
+# Pull in the base Voice PE firmware
+packages:
+  esphome.voice-pe: github://esphome/firmware/voice-pe/esp32-s3-voice-kit-v1.yaml@main
+
+# ESPHome base configuration
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+
+# WiFi configuration (use secrets.yaml for credentials)
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+# API encryption (use secrets.yaml)
+api:
+  encryption:
+    key: !secret api_encryption_key
+
+# OTA updates
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+# Custom wake word configuration
+# This overrides the default wake words from the base package
+micro_wake_word:
+  models:
+    # Your custom wake word - update the URL!
+    - model: ${custom_wake_word_url}
+      id: custom_wake_word
+      # Optional: Adjust sensitivity (lower = more sensitive, more false positives)
+      # probability_cutoff: 0.5
+      # sliding_window_average_size: 10
+
+    # Optionally keep one built-in wake word as backup
+    # Available built-in models: hey_jarvis, ok_nabu, hey_mycroft, alexa
+    - model: hey_jarvis
+      id: hey_jarvis_builtin
+
+  # Callback when wake word is detected
+  on_wake_word_detected:
+    - logger.log:
+        format: "Wake word detected: %s"
+        args: ['x.get_wake_word().c_str()']
+    # The voice assistant pipeline will be triggered automatically
+
+# Optional: LED feedback customization
+# Uncomment and modify to change LED behavior
+# light:
+#   - platform: esp32_rmt_led_strip
+#     id: led_ring
+#     rgb_order: GRB
+#     pin: GPIO21
+#     num_leds: 12
+#     rmt_channel: 0
+#     chipset: ws2812
+
+# Optional: Voice assistant pipeline configuration
+# voice_assistant:
+#   microphone: mic
+#   speaker: speaker
+#
+#   on_listening:
+#     - light.turn_on:
+#         id: led_ring
+#         effect: "listening"
+#
+#   on_tts_end:
+#     - light.turn_off:
+#         id: led_ring
+
+# Logging (set to DEBUG for troubleshooting wake word issues)
+logger:
+  level: INFO
+  # Uncomment for detailed wake word debugging:
+  # level: DEBUG
+  # logs:
+  #   micro_wake_word: DEBUG
+
+
+# =============================================================================
+# ALTERNATIVE: Multiple Custom Wake Words
+# =============================================================================
+# If you have multiple custom wake words, use this pattern instead:
+#
+# micro_wake_word:
+#   models:
+#     - model: "https://your-server.com/wake_words/hey_computer.json"
+#       id: hey_computer
+#     - model: "https://your-server.com/wake_words/hey_assistant.json"
+#       id: hey_assistant
+#
+# Note: ESP32-S3 has limited flash, so 2-3 wake words is typically the max
+
+
+# =============================================================================
+# ALTERNATIVE: Using Local HA Files
+# =============================================================================
+# If hosting wake word files on your Home Assistant server:
+#
+# 1. Place files in /config/www/wake_words/
+# 2. Use URL: http://YOUR_HA_IP:8123/local/wake_words/your_wake_word.json
+#
+# micro_wake_word:
+#   models:
+#     - model: "http://192.168.1.100:8123/local/wake_words/hey_jarvis.json"
+#       id: custom_wake_word

@@ -42,6 +42,18 @@ PureLLM is a streamlined voice assistant integration that routes **all** voice c
 4. Set up device aliases for voice control
 5. Configure music room mappings if using Music Assistant
 
+## Custom Wake Words (Voice PE)
+
+Want to use a custom wake word like "Hey Jarvis" instead of the default? See our detailed guide:
+
+**[Custom Wake Word Setup for Voice PE](docs/custom-wake-word-voice-pe.md)**
+
+The guide covers:
+- Modifying Voice PE firmware via ESPHome
+- Training your own wake word models
+- Using the openWakeWord add-on
+- Best practices for wake word selection
+
 ## Difference from PolyVoice
 
 PureLLM is a fork of [PolyVoice](https://github.com/LosCV29/polyvoice) with a key architectural difference:
