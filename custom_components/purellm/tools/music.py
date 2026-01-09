@@ -112,28 +112,13 @@ class MusicController:
         return []
 
     def _find_player_by_state(self, target_state: str, all_players: list[str]) -> str | None:
-        """Find a player in a specific state.
-
-        Prioritizes MA wrapper entities (_2, _3 suffix) over raw DLNA entities
-        because raw DLNA doesn't support pause/stop/shuffle.
-        """
-        # First pass: look for MA wrapper entities (they support pause/stop)
+        """Find a player in a specific state from configured players only."""
         for pid in all_players:
-            if pid.endswith("_2") or pid.endswith("_3"):
-                state = self._hass.states.get(pid)
-                if state:
-                    _LOGGER.info("  %s → %s (MA wrapper)", pid, state.state)
-                    if state.state == target_state:
-                        return pid
-
-        # Second pass: check remaining entities (raw DLNA, satellites, etc.)
-        for pid in all_players:
-            if not pid.endswith("_2") and not pid.endswith("_3"):
-                state = self._hass.states.get(pid)
-                if state:
-                    _LOGGER.info("  %s → %s", pid, state.state)
-                    if state.state == target_state:
-                        return pid
+            state = self._hass.states.get(pid)
+            if state:
+                _LOGGER.info("  %s → %s", pid, state.state)
+                if state.state == target_state:
+                    return pid
         return None
 
     def _get_transfer_source(self, entity_id: str) -> str:
@@ -191,9 +176,13 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            # Target the MA wrapper entity directly - raw DLNA doesn't support pause
             _LOGGER.info("Found player %s, pausing", playing)
-            await self._hass.services.async_call("media_player", "media_pause", {"entity_id": playing})
+            # Use media_play_pause (toggle) as fallback if media_pause fails
+            try:
+                await self._hass.services.async_call("media_player", "media_pause", {"entity_id": playing})
+            except Exception as e:
+                _LOGGER.warning("media_pause failed (%s), trying media_play_pause", e)
+                await self._hass.services.async_call("media_player", "media_play_pause", {"entity_id": playing})
             self._last_paused_player = playing
             _LOGGER.info("Stored %s as last paused player", playing)
             return {"status": "paused", "message": f"Paused in {self._get_room_name(playing)}"}
@@ -222,14 +211,21 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' or 'paused' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            # Target the MA wrapper entity directly - raw DLNA doesn't support stop
             _LOGGER.info("Found player %s, stopping", playing)
-            await self._hass.services.async_call("media_player", "media_stop", {"entity_id": playing})
+            try:
+                await self._hass.services.async_call("media_player", "media_stop", {"entity_id": playing})
+            except Exception as e:
+                _LOGGER.warning("media_stop failed (%s), trying turn_off", e)
+                await self._hass.services.async_call("media_player", "turn_off", {"entity_id": playing})
             return {"status": "stopped", "message": f"Stopped in {self._get_room_name(playing)}"}
         paused = self._find_player_by_state("paused", all_players)
         if paused:
             _LOGGER.info("Found paused player %s, stopping", paused)
-            await self._hass.services.async_call("media_player", "media_stop", {"entity_id": paused})
+            try:
+                await self._hass.services.async_call("media_player", "media_stop", {"entity_id": paused})
+            except Exception as e:
+                _LOGGER.warning("media_stop failed (%s), trying turn_off", e)
+                await self._hass.services.async_call("media_player", "turn_off", {"entity_id": paused})
             return {"status": "stopped", "message": f"Stopped in {self._get_room_name(paused)}"}
         return {"message": "No music is playing"}
 
