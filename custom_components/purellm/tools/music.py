@@ -121,6 +121,30 @@ class MusicController:
                     return pid
         return None
 
+    def _get_underlying_player(self, entity_id: str) -> str:
+        """Get the underlying player entity for MA wrapper players.
+
+        MA players have active_queue that might reference the actual player.
+        For pause/stop, we may need to target the underlying player.
+        """
+        state = self._hass.states.get(entity_id)
+        if state:
+            active_queue = state.attributes.get("active_queue", "")
+            # If active_queue is an entity_id (starts with media_player.), use it
+            if isinstance(active_queue, str) and active_queue.startswith("media_player."):
+                _LOGGER.info("Using underlying player: %s (from active_queue of %s)", active_queue, entity_id)
+                return active_queue
+
+        # Fallback: if entity_id ends with _2 or _3, try the base entity
+        if entity_id.endswith("_2") or entity_id.endswith("_3"):
+            base_entity = entity_id.rsplit("_", 1)[0]
+            base_state = self._hass.states.get(base_entity)
+            if base_state:
+                _LOGGER.info("Using base entity: %s (stripped suffix from %s)", base_entity, entity_id)
+                return base_entity
+
+        return entity_id
+
     def _get_room_name(self, entity_id: str) -> str:
         """Get room name from entity_id."""
         for rname, pid in self._players.items():
@@ -157,9 +181,10 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            _LOGGER.info("Found player %s, calling media_play_pause", playing)
-            # Use media_play_pause toggle instead of media_pause for better compatibility
-            await self._hass.services.async_call("media_player", "media_play_pause", {"entity_id": playing})
+            # Get underlying player for MA wrappers
+            target = self._get_underlying_player(playing)
+            _LOGGER.info("Found player %s, pausing on %s", playing, target)
+            await self._hass.services.async_call("media_player", "media_pause", {"entity_id": target})
             self._last_paused_player = playing
             _LOGGER.info("Stored %s as last paused player", playing)
             return {"status": "paused", "message": f"Paused in {self._get_room_name(playing)}"}
@@ -188,11 +213,14 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' or 'paused' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            await self._hass.services.async_call("media_player", "media_stop", {"entity_id": playing})
+            target = self._get_underlying_player(playing)
+            _LOGGER.info("Found player %s, stopping on %s", playing, target)
+            await self._hass.services.async_call("media_player", "media_stop", {"entity_id": target})
             return {"status": "stopped", "message": f"Stopped in {self._get_room_name(playing)}"}
         paused = self._find_player_by_state("paused", all_players)
         if paused:
-            await self._hass.services.async_call("media_player", "media_stop", {"entity_id": paused})
+            target = self._get_underlying_player(paused)
+            await self._hass.services.async_call("media_player", "media_stop", {"entity_id": target})
             return {"status": "stopped", "message": f"Stopped in {self._get_room_name(paused)}"}
         return {"message": "No music is playing"}
 
@@ -248,32 +276,31 @@ class MusicController:
             return {"error": f"No target room specified. Available: {', '.join(self._players.keys())}"}
 
         target = target_players[0]
-        _LOGGER.info("Transferring from %s to %s", playing, target)
 
-        # Get the active_queue from the playing entity for proper MA transfer
-        playing_state = self._hass.states.get(playing)
-        source_queue = None
-        if playing_state:
-            source_queue = playing_state.attributes.get("active_queue", playing)
-            _LOGGER.info("Source queue: %s", source_queue)
+        # Get the underlying player for transfer source
+        source = self._get_underlying_player(playing)
+        _LOGGER.info("Transferring from %s (underlying: %s) to %s", playing, source, target)
 
         try:
             await self._hass.services.async_call(
                 "music_assistant", "transfer_queue",
-                {"source_player": source_queue or playing, "auto_play": True},
+                {"source_player": source, "auto_play": True},
                 target={"entity_id": target},
                 blocking=True
             )
             _LOGGER.info("Transfer complete")
         except Exception as e:
-            _LOGGER.error("Transfer failed: %s", e)
-            # Fallback: try without source_player, let MA auto-detect
-            await self._hass.services.async_call(
-                "music_assistant", "transfer_queue",
-                {"auto_play": True},
-                target={"entity_id": target},
-                blocking=True
-            )
+            _LOGGER.error("Transfer failed with source_player: %s", e)
+            # Fallback: try with the MA wrapper entity
+            try:
+                await self._hass.services.async_call(
+                    "music_assistant", "transfer_queue",
+                    {"source_player": playing, "auto_play": True},
+                    target={"entity_id": target},
+                    blocking=True
+                )
+            except Exception as e2:
+                _LOGGER.error("Transfer fallback also failed: %s", e2)
 
         return {"status": "transferred", "message": f"Music transferred to {self._get_room_name(target)}"}
 
