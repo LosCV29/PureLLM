@@ -72,7 +72,7 @@ class MusicController:
 
         if not all_players:
             _LOGGER.error("No players configured! room_player_mapping is empty")
-            return {"error": "No music players configured. Go to PolyVoice → Entity Configuration → Room to Player Mapping."}
+            return {"error": "No music players configured. Go to PureLLM → Entity Configuration → Room to Player Mapping."}
 
         # Validate media_type
         if media_type and media_type not in self.VALID_MEDIA_TYPES:
@@ -198,14 +198,19 @@ class MusicController:
                 except Exception as shuffle_err:
                     _LOGGER.warning("Shuffle not supported by player %s: %s", player, shuffle_err)
 
-        # Return verbatim confirmation for LLM to read back
+        # Natural response - include name and room
+        shuffled = shuffle or media_type == "genre"
+        if shuffled:
+            speech = f"Now shuffling {query} in the {room}"
+        else:
+            speech = f"Now playing {query} in the {room}"
+
         return {
-            "status": "playing",
-            "now_playing": query,
-            "media_type": media_type,
+            "status": "ok",
+            "name": query,
+            "type": media_type,
             "room": room,
-            "shuffled": shuffle or media_type == "genre",
-            "message": f"Now playing '{query}' ({media_type}) in the {room}"
+            "speech": speech
         }
 
     async def _handle_pause(self, ctx: dict) -> dict:
@@ -447,13 +452,13 @@ class MusicController:
             except Exception as shuffle_err:
                 _LOGGER.warning("Shuffle not supported by player %s: %s", player, shuffle_err)
 
-            # Return verbatim confirmation for LLM to read back exactly
+            # Natural response - include playlist name and room
             return {
-                "status": "shuffling",
-                "now_playing": matched_name,
-                "media_type": media_type_to_use,
+                "status": "ok",
+                "name": matched_name,
+                "type": media_type_to_use,
                 "room": room,
-                "message": f"Now shuffling '{matched_name}' in the {room}"
+                "speech": f"Now shuffling {matched_name} in the {room}"
             }
 
         except Exception as search_err:
