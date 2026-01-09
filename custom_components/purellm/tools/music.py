@@ -450,8 +450,37 @@ class MusicController:
                         if "radio" not in (p.get("name") or p.get("title") or "").lower()
                     ]
 
-                    # Use non-radio playlist if available, otherwise fall back to original list
-                    chosen_playlist = non_radio_playlists[0] if non_radio_playlists else playlists[0]
+                    query_lower = query.lower()
+
+                    # Priority 1: Official Spotify curated playlists ("This Is...", "Best of...", owned by Spotify)
+                    official_playlists = [
+                        p for p in non_radio_playlists
+                        if (p.get("owner") or "").lower() == "spotify"
+                        or (p.get("name") or p.get("title") or "").lower().startswith("this is")
+                        or (p.get("name") or p.get("title") or "").lower().startswith("best of")
+                    ]
+
+                    # Priority 2: Playlists with artist/query name in title
+                    matching_name_playlists = [
+                        p for p in non_radio_playlists
+                        if query_lower in (p.get("name") or p.get("title") or "").lower()
+                    ]
+
+                    # Choose best playlist: Official > Name match > Non-radio > Any
+                    if official_playlists:
+                        # Among official, prefer ones with query in name
+                        official_with_name = [p for p in official_playlists if query_lower in (p.get("name") or p.get("title") or "").lower()]
+                        chosen_playlist = official_with_name[0] if official_with_name else official_playlists[0]
+                        _LOGGER.info("Found official Spotify playlist")
+                    elif matching_name_playlists:
+                        chosen_playlist = matching_name_playlists[0]
+                        _LOGGER.info("Found playlist with '%s' in name", query)
+                    elif non_radio_playlists:
+                        chosen_playlist = non_radio_playlists[0]
+                        _LOGGER.info("Using first non-radio playlist")
+                    else:
+                        chosen_playlist = playlists[0]
+                        _LOGGER.info("Falling back to first playlist result")
 
                     # Get the EXACT playlist title for verbatim announcement
                     playlist_name = chosen_playlist.get("name") or chosen_playlist.get("title")
