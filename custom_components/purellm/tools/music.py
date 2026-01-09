@@ -450,8 +450,23 @@ class MusicController:
                         if "radio" not in (p.get("name") or p.get("title") or "").lower()
                     ]
 
-                    # Use non-radio playlist if available, otherwise fall back to original list
-                    chosen_playlist = non_radio_playlists[0] if non_radio_playlists else playlists[0]
+                    # Prefer playlists that contain the query/artist name in the title
+                    query_lower = query.lower()
+                    matching_name_playlists = [
+                        p for p in non_radio_playlists
+                        if query_lower in (p.get("name") or p.get("title") or "").lower()
+                    ]
+
+                    # Priority: 1) Has artist name in title, 2) Non-radio, 3) Any result
+                    if matching_name_playlists:
+                        chosen_playlist = matching_name_playlists[0]
+                        _LOGGER.info("Found playlist with '%s' in name", query)
+                    elif non_radio_playlists:
+                        chosen_playlist = non_radio_playlists[0]
+                        _LOGGER.info("Using first non-radio playlist")
+                    else:
+                        chosen_playlist = playlists[0]
+                        _LOGGER.info("Falling back to first playlist result")
 
                     # Get the EXACT playlist title for verbatim announcement
                     playlist_name = chosen_playlist.get("name") or chosen_playlist.get("title")
