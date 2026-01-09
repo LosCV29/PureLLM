@@ -216,7 +216,20 @@ class MusicController:
     async def _handle_pause(self, ctx: dict) -> dict:
         """Pause music."""
         player_states = ctx["player_states"]
+        target_players = ctx["target_players"]
 
+        # Log all player states for debugging
+        _LOGGER.info("Player states: %s", {pid: data["state"] for pid, data in player_states.items()})
+
+        # If room specified, use that player directly
+        if target_players:
+            player = target_players[0]
+            _LOGGER.info("Pausing room player: %s", player)
+            await self._hass.services.async_call("media_player", "media_pause", {"entity_id": player})
+            self._last_paused_player = player
+            return {"status": "paused", "message": f"Paused in {self._get_room_name(player)}"}
+
+        # Otherwise search for playing player
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state_cached("playing", player_states)
         if playing:
@@ -224,6 +237,13 @@ class MusicController:
             self._last_paused_player = playing
             _LOGGER.info("Stored %s as last paused player", playing)
             return {"status": "paused", "message": f"Paused in {self._get_room_name(playing)}"}
+
+        # Last resort: pause all players
+        if player_states:
+            for pid in player_states:
+                await self._hass.services.async_call("media_player", "media_pause", {"entity_id": pid})
+            return {"status": "paused", "message": "Paused all players"}
+
         return {"error": "No music is currently playing"}
 
     async def _handle_resume(self, ctx: dict) -> dict:
@@ -250,7 +270,19 @@ class MusicController:
     async def _handle_stop(self, ctx: dict) -> dict:
         """Stop music."""
         player_states = ctx["player_states"]
+        target_players = ctx["target_players"]
 
+        # Log all player states for debugging
+        _LOGGER.info("Player states: %s", {pid: data["state"] for pid, data in player_states.items()})
+
+        # If room specified, use that player directly
+        if target_players:
+            player = target_players[0]
+            _LOGGER.info("Stopping room player: %s", player)
+            await self._hass.services.async_call("media_player", "media_stop", {"entity_id": player})
+            return {"status": "stopped", "message": f"Stopped in {self._get_room_name(player)}"}
+
+        # Otherwise search for playing/paused player
         _LOGGER.info("Looking for player in 'playing' or 'paused' state...")
         playing = self._find_player_by_state_cached("playing", player_states)
         if playing:
@@ -260,6 +292,13 @@ class MusicController:
         if paused:
             await self._hass.services.async_call("media_player", "media_stop", {"entity_id": paused})
             return {"status": "stopped", "message": f"Stopped in {self._get_room_name(paused)}"}
+
+        # Last resort: stop all players
+        if player_states:
+            for pid in player_states:
+                await self._hass.services.async_call("media_player", "media_stop", {"entity_id": pid})
+            return {"status": "stopped", "message": "Stopped all players"}
+
         return {"message": "No music is playing"}
 
     async def _handle_skip_next(self, ctx: dict) -> dict:
