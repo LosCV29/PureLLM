@@ -228,20 +228,21 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control ALL music playback via Music Assistant. MUST use for: pause, stop, resume, skip, play, shuffle. For pause/stop/resume/skip - NO room needed, automatically targets active player. For play/shuffle - specify room. Available rooms: {rooms_list}. IMPORTANT: This is ONLY for music/audio, NOT for blinds or physical devices! CRITICAL RULES: 1) SHUFFLE = ONLY for 'shuffle by artist' or 'shuffle by genre' requests - searches Spotify playlists. 2) PLAY = ONLY for specific artists, albums, or songs - NEVER use radio mode.",
+            f"Control ALL music playback via Music Assistant. MUST use for: pause, stop, resume, skip, play. For pause/stop/resume/skip - NO room needed, automatically targets active player. For play - specify room. Available rooms: {rooms_list}. IMPORTANT: This is ONLY for music/audio, NOT for blinds or physical devices!",
             {
                 "action": {
                     "type": "string",
                     "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"],
-                    "description": "CRITICAL: 'shuffle' = ONLY when user says 'shuffle by artist' or 'shuffle by genre' - finds best matching Spotify playlist. 'play' = for specific artists, albums, or songs ONLY. 'restart_track' = replay current song from beginning."
+                    "description": "The music action to perform. Use 'restart_track' to replay the current song from the beginning."
                 },
-                "query": {"type": "string", "description": "For SHUFFLE: the artist name or genre (e.g., 'Taylor Swift', 'rock', 'jazz'). For PLAY: artist name, album name, or song title."},
+                "query": {"type": "string", "description": "MUSIC SEARCH QUERY - Put ARTIST FIRST, then SONG NAME for best search results."},
                 "room": {"type": "string", "description": f"Target room: {rooms_list}"},
                 "media_type": {
                     "type": "string",
-                    "enum": ["artist", "album", "track"],
-                    "description": "FOR PLAY ACTION ONLY: 'track' = specific song, 'album' = specific album, 'artist' = music from an artist. NOT used for shuffle."
-                }
+                    "enum": ["artist", "album", "track", "playlist", "genre"],
+                    "description": "CRITICAL: Use 'track' when user mentions a SPECIFIC SONG. Use 'artist' ONLY when they want general music from an artist."
+                },
+                "shuffle": {"type": "boolean", "description": "Enable shuffle mode"}
             },
             ["action"]
         ))

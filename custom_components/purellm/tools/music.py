@@ -177,32 +177,21 @@ class MusicController:
         return None
 
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str]) -> dict:
-        """Play music - for artists, albums, and tracks ONLY.
-
-        IMPORTANT: radio_mode is ALWAYS disabled. For shuffled playlists by
-        artist or genre, use the shuffle action instead.
-        """
+        """Play music."""
         if not query:
             return {"error": "No music query specified"}
         if not target_players:
             return {"error": f"Unknown room: {room}. Available: {', '.join(self._players.keys())}"}
 
-        # Enforce valid media types for play - no playlist/genre (use shuffle for those)
-        valid_types = {"artist", "album", "track"}
-        if media_type not in valid_types:
-            _LOGGER.warning("Invalid media_type '%s' for play, defaulting to 'artist'", media_type)
-            media_type = "artist"
-
         for player in target_players:
-            _LOGGER.info("Playing '%s' (%s) on %s - radio_mode=False", query, media_type, player)
+            _LOGGER.info("Playing '%s' (%s) on %s", query, media_type, player)
             await self._hass.services.async_call(
                 "music_assistant", "play_media",
                 {"media_id": query, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
                 target={"entity_id": player},
                 blocking=True
             )
-            # Only enable shuffle if explicitly requested
-            if shuffle:
+            if shuffle or media_type == "genre":
                 await self._hass.services.async_call(
                     "media_player", "shuffle_set",
                     {"entity_id": player, "shuffle": True},
@@ -406,17 +395,13 @@ class MusicController:
         return {"status": "transferred", "message": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
-        """Search for Spotify playlist by artist or genre and play shuffled.
-
-        IMPORTANT: This ONLY searches for Spotify playlists - no fallback to artist.
-        Returns the exact playlist title for verbatim announcement.
-        """
+        """Search and play shuffled playlist."""
         if not query:
             return {"error": "No search query specified for shuffle"}
         if not target_players:
             return {"error": f"No room specified. Available: {', '.join(self._players.keys())}"}
 
-        _LOGGER.info("Searching Spotify for playlist matching: %s", query)
+        _LOGGER.info("Searching for playlist matching: %s", query)
 
         try:
             ma_entries = self._hass.config_entries.async_entries("music_assistant")
@@ -424,15 +409,15 @@ class MusicController:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
-            # Search ONLY for Spotify playlists - no fallback to artist
             search_result = await self._hass.services.async_call(
                 "music_assistant", "search",
-                {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["playlist"], "limit": 10},
+                {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["playlist"], "limit": 5},
                 blocking=True, return_response=True
             )
 
             playlist_name = None
             playlist_uri = None
+            media_type_to_use = "playlist"
 
             if search_result:
                 playlists = []
@@ -444,72 +429,38 @@ class MusicController:
                     playlists = search_result
 
                 if playlists:
-                    # Filter out playlists with "Radio" in the name - we don't want auto-generated radio playlists
-                    non_radio_playlists = [
-                        p for p in playlists
-                        if "radio" not in (p.get("name") or p.get("title") or "").lower()
-                    ]
+                    first_playlist = playlists[0]
+                    playlist_name = first_playlist.get("name") or first_playlist.get("title", "Unknown Playlist")
+                    playlist_uri = first_playlist.get("uri") or first_playlist.get("media_id")
 
-                    query_lower = query.lower()
-                    query_words = query_lower.split()
-
-                    def name_matches_query(playlist_name_str: str) -> bool:
-                        """Check if playlist name contains query or any significant word from query."""
-                        name_lower = playlist_name_str.lower()
-                        # Exact query match
-                        if query_lower in name_lower:
-                            return True
-                        # Match on individual words (handles typos like elliot vs elliott)
-                        for word in query_words:
-                            if len(word) >= 4 and word in name_lower:
-                                return True
-                        return False
-
-                    # Priority 1: Official Spotify curated playlists ("This Is...", "Best of...", owned by Spotify)
-                    official_playlists = [
-                        p for p in non_radio_playlists
-                        if (p.get("owner") or "").lower() == "spotify"
-                        or (p.get("name") or p.get("title") or "").lower().startswith("this is")
-                        or (p.get("name") or p.get("title") or "").lower().startswith("best of")
-                    ]
-
-                    # Priority 2: Playlists with artist/query name in title
-                    matching_name_playlists = [
-                        p for p in non_radio_playlists
-                        if name_matches_query(p.get("name") or p.get("title") or "")
-                    ]
-
-                    # Choose best playlist: Official > Name match > Non-radio > Any
-                    if official_playlists:
-                        # Among official, prefer ones with query in name
-                        official_with_name = [p for p in official_playlists if name_matches_query(p.get("name") or p.get("title") or "")]
-                        chosen_playlist = official_with_name[0] if official_with_name else official_playlists[0]
-                        _LOGGER.info("Found official Spotify playlist")
-                    elif matching_name_playlists:
-                        chosen_playlist = matching_name_playlists[0]
-                        _LOGGER.info("Found playlist with '%s' in name", query)
-                    elif non_radio_playlists:
-                        chosen_playlist = non_radio_playlists[0]
-                        _LOGGER.info("Using first non-radio playlist")
-                    else:
-                        chosen_playlist = playlists[0]
-                        _LOGGER.info("Falling back to first playlist result")
-
-                    # Get the EXACT playlist title for verbatim announcement
-                    playlist_name = chosen_playlist.get("name") or chosen_playlist.get("title")
-                    playlist_uri = chosen_playlist.get("uri") or chosen_playlist.get("media_id")
-                    _LOGGER.info("Found Spotify playlist: '%s'", playlist_name)
-
-            # NO artist fallback - shuffle is ONLY for playlists
+            # Fall back to artist search
             if not playlist_uri:
-                return {"error": f"Could not find a Spotify playlist matching '{query}'. Try a different artist or genre."}
+                _LOGGER.info("No playlist found, searching for artist: %s", query)
+                artist_result = await self._hass.services.async_call(
+                    "music_assistant", "search",
+                    {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["artist"], "limit": 1},
+                    blocking=True, return_response=True
+                )
+                if artist_result:
+                    artists = []
+                    if isinstance(artist_result, dict):
+                        artists = artist_result.get("artists", [])
+                    elif isinstance(artist_result, list):
+                        artists = artist_result
+                    if artists:
+                        playlist_name = artists[0].get("name", query)
+                        playlist_uri = artists[0].get("uri") or artists[0].get("media_id")
+                        media_type_to_use = "artist"
+
+            if not playlist_uri:
+                return {"error": f"Could not find playlist or artist matching '{query}'"}
 
             player = target_players[0]
-            _LOGGER.info("Playing playlist '%s' shuffled on %s", playlist_name, player)
+            _LOGGER.info("Playing %s (%s) shuffled on %s", playlist_name, media_type_to_use, player)
 
             await self._hass.services.async_call(
                 "music_assistant", "play_media",
-                {"media_id": playlist_uri, "media_type": "playlist", "enqueue": "replace", "radio_mode": False},
+                {"media_id": playlist_uri, "media_type": media_type_to_use, "enqueue": "replace", "radio_mode": False},
                 target={"entity_id": player},
                 blocking=True
             )
@@ -520,12 +471,11 @@ class MusicController:
                 blocking=True
             )
 
-            # Return the EXACT playlist title for verbatim announcement
             return {
                 "status": "shuffling",
-                "playlist_title": playlist_name,
+                "playlist_name": playlist_name,
                 "room": room,
-                "announcement": f"Now playing {playlist_name}"
+                "message": f"Shuffling {playlist_name} in the {room}"
             }
 
         except Exception as search_err:
