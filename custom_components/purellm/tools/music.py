@@ -173,37 +173,19 @@ class MusicController:
 
     async def _pause(self, all_players: list[str]) -> dict:
         """Pause music."""
-        import asyncio
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            _LOGGER.info("Found player %s, attempting pause", playing)
-
-            # Try media_pause first
-            await self._hass.services.async_call("media_player", "media_pause", {"entity_id": playing})
-            await asyncio.sleep(0.5)  # Give it time to update state
-
-            # Check if it actually paused
-            state = self._hass.states.get(playing)
-            if state and state.state == "paused":
-                self._last_paused_player = playing
-                _LOGGER.info("Successfully paused %s", playing)
-                return {"status": "paused", "message": f"Paused in {self._get_room_name(playing)}"}
-
-            # Try media_play_pause (toggle) as fallback
-            _LOGGER.warning("media_pause didn't work on %s (state: %s), trying toggle", playing, state.state if state else "unknown")
-            await self._hass.services.async_call("media_player", "media_play_pause", {"entity_id": playing})
-            await asyncio.sleep(0.5)
-
-            state = self._hass.states.get(playing)
-            if state and state.state == "paused":
-                self._last_paused_player = playing
-                _LOGGER.info("Toggle worked, paused %s", playing)
-                return {"status": "paused", "message": f"Paused in {self._get_room_name(playing)}"}
-
-            _LOGGER.error("Failed to pause %s - state is still %s", playing, state.state if state else "unknown")
-            return {"error": f"Could not pause {self._get_room_name(playing)} - player doesn't support pause"}
-
+            _LOGGER.info("Found player %s, pausing", playing)
+            await self._hass.services.async_call(
+                "media_player", "media_pause",
+                {},
+                target={"entity_id": playing},
+                blocking=True
+            )
+            self._last_paused_player = playing
+            _LOGGER.info("Stored %s as last paused player", playing)
+            return {"status": "paused", "message": f"Paused in {self._get_room_name(playing)}"}
         return {"error": "No music is currently playing"}
 
     async def _resume(self, all_players: list[str]) -> dict:
@@ -212,52 +194,52 @@ class MusicController:
 
         if self._last_paused_player and self._last_paused_player in all_players:
             _LOGGER.info("Resuming last paused player: %s", self._last_paused_player)
-            await self._hass.services.async_call("media_player", "media_play", {"entity_id": self._last_paused_player})
+            await self._hass.services.async_call(
+                "media_player", "media_play",
+                {},
+                target={"entity_id": self._last_paused_player},
+                blocking=True
+            )
             room_name = self._get_room_name(self._last_paused_player)
             self._last_paused_player = None
             return {"status": "resumed", "message": f"Resumed in {room_name}"}
 
         paused = self._find_player_by_state("paused", all_players)
         if paused:
-            await self._hass.services.async_call("media_player", "media_play", {"entity_id": paused})
+            await self._hass.services.async_call(
+                "media_player", "media_play",
+                {},
+                target={"entity_id": paused},
+                blocking=True
+            )
             return {"status": "resumed", "message": f"Resumed in {self._get_room_name(paused)}"}
 
         return {"error": "No paused music to resume"}
 
     async def _stop(self, all_players: list[str]) -> dict:
         """Stop music."""
-        import asyncio
         _LOGGER.info("Looking for player in 'playing' or 'paused' state...")
-
-        target = self._find_player_by_state("playing", all_players)
-        if not target:
-            target = self._find_player_by_state("paused", all_players)
-        if not target:
-            return {"message": "No music is playing"}
-
-        _LOGGER.info("Found player %s, attempting stop", target)
-
-        # Try media_stop first
-        await self._hass.services.async_call("media_player", "media_stop", {"entity_id": target})
-        await asyncio.sleep(0.5)
-
-        state = self._hass.states.get(target)
-        if state and state.state in ("idle", "off", "standby"):
-            _LOGGER.info("Successfully stopped %s", target)
-            return {"status": "stopped", "message": f"Stopped in {self._get_room_name(target)}"}
-
-        # Try turn_off as fallback
-        _LOGGER.warning("media_stop didn't work on %s (state: %s), trying turn_off", target, state.state if state else "unknown")
-        await self._hass.services.async_call("media_player", "turn_off", {"entity_id": target})
-        await asyncio.sleep(0.5)
-
-        state = self._hass.states.get(target)
-        if state and state.state in ("idle", "off", "standby", "paused"):
-            _LOGGER.info("turn_off worked on %s", target)
-            return {"status": "stopped", "message": f"Stopped in {self._get_room_name(target)}"}
-
-        _LOGGER.error("Failed to stop %s - state is still %s", target, state.state if state else "unknown")
-        return {"error": f"Could not stop {self._get_room_name(target)} - player doesn't support stop"}
+        playing = self._find_player_by_state("playing", all_players)
+        if playing:
+            _LOGGER.info("Found player %s, stopping", playing)
+            await self._hass.services.async_call(
+                "media_player", "media_stop",
+                {},
+                target={"entity_id": playing},
+                blocking=True
+            )
+            return {"status": "stopped", "message": f"Stopped in {self._get_room_name(playing)}"}
+        paused = self._find_player_by_state("paused", all_players)
+        if paused:
+            _LOGGER.info("Found paused player %s, stopping", paused)
+            await self._hass.services.async_call(
+                "media_player", "media_stop",
+                {},
+                target={"entity_id": paused},
+                blocking=True
+            )
+            return {"status": "stopped", "message": f"Stopped in {self._get_room_name(paused)}"}
+        return {"message": "No music is playing"}
 
     async def _skip_next(self, all_players: list[str]) -> dict:
         """Skip to next track."""
