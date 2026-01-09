@@ -5,10 +5,17 @@ import logging
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
+from homeassistant.components.media_player import MediaPlayerEntityFeature
+
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
+
+# Feature flags for media player capabilities
+PAUSE_FEATURE = MediaPlayerEntityFeature.PAUSE
+STOP_FEATURE = MediaPlayerEntityFeature.STOP
+PLAY_FEATURE = MediaPlayerEntityFeature.PLAY
 
 
 class MusicController:
@@ -172,20 +179,40 @@ class MusicController:
         return {"status": "playing", "message": f"Playing {query} in the {room}"}
 
     async def _pause(self, all_players: list[str]) -> dict:
-        """Pause music."""
-        _LOGGER.info("Looking for player in 'playing' state...")
-        playing = self._find_player_by_state("playing", all_players)
-        if playing:
-            _LOGGER.info("Found player %s, pausing", playing)
-            await self._hass.services.async_call(
-                "media_player", "media_pause",
-                {},
-                target={"entity_id": playing},
-                blocking=True
-            )
-            self._last_paused_player = playing
-            _LOGGER.info("Stored %s as last paused player", playing)
-            return {"status": "paused", "message": f"Paused in {self._get_room_name(playing)}"}
+        """Pause music - matches HA native intent behavior."""
+        _LOGGER.info("Looking for player in 'playing' state that supports pause...")
+
+        # Find player that is playing AND supports pause (like HA native intent)
+        for pid in all_players:
+            state = self._hass.states.get(pid)
+            if state and state.state == "playing":
+                # Check if player supports PAUSE feature
+                supported = state.attributes.get("supported_features", 0)
+                supports_pause = bool(supported & PAUSE_FEATURE)
+                _LOGGER.info("  %s → playing, supports_pause=%s (features=%s)", pid, supports_pause, supported)
+
+                if supports_pause:
+                    _LOGGER.info("Pausing %s", pid)
+                    await self._hass.services.async_call(
+                        "media_player", "media_pause",
+                        {},
+                        target={"entity_id": pid},
+                        blocking=True
+                    )
+                    self._last_paused_player = pid
+                    return {"status": "paused", "message": f"Paused in {self._get_room_name(pid)}"}
+                else:
+                    # Player doesn't support pause, try stop instead (like MA does internally)
+                    _LOGGER.warning("%s doesn't support pause, trying stop", pid)
+                    await self._hass.services.async_call(
+                        "media_player", "media_stop",
+                        {},
+                        target={"entity_id": pid},
+                        blocking=True
+                    )
+                    self._last_paused_player = pid
+                    return {"status": "paused", "message": f"Paused in {self._get_room_name(pid)}"}
+
         return {"error": "No music is currently playing"}
 
     async def _resume(self, all_players: list[str]) -> dict:
@@ -217,28 +244,36 @@ class MusicController:
         return {"error": "No paused music to resume"}
 
     async def _stop(self, all_players: list[str]) -> dict:
-        """Stop music."""
+        """Stop music - checks supported features."""
         _LOGGER.info("Looking for player in 'playing' or 'paused' state...")
-        playing = self._find_player_by_state("playing", all_players)
-        if playing:
-            _LOGGER.info("Found player %s, stopping", playing)
-            await self._hass.services.async_call(
-                "media_player", "media_stop",
-                {},
-                target={"entity_id": playing},
-                blocking=True
-            )
-            return {"status": "stopped", "message": f"Stopped in {self._get_room_name(playing)}"}
-        paused = self._find_player_by_state("paused", all_players)
-        if paused:
-            _LOGGER.info("Found paused player %s, stopping", paused)
-            await self._hass.services.async_call(
-                "media_player", "media_stop",
-                {},
-                target={"entity_id": paused},
-                blocking=True
-            )
-            return {"status": "stopped", "message": f"Stopped in {self._get_room_name(paused)}"}
+
+        for pid in all_players:
+            state = self._hass.states.get(pid)
+            if state and state.state in ("playing", "paused"):
+                supported = state.attributes.get("supported_features", 0)
+                supports_stop = bool(supported & STOP_FEATURE)
+                _LOGGER.info("  %s → %s, supports_stop=%s", pid, state.state, supports_stop)
+
+                if supports_stop:
+                    _LOGGER.info("Stopping %s", pid)
+                    await self._hass.services.async_call(
+                        "media_player", "media_stop",
+                        {},
+                        target={"entity_id": pid},
+                        blocking=True
+                    )
+                    return {"status": "stopped", "message": f"Stopped in {self._get_room_name(pid)}"}
+                else:
+                    # Try turn_off if stop not supported
+                    _LOGGER.warning("%s doesn't support stop, trying turn_off", pid)
+                    await self._hass.services.async_call(
+                        "media_player", "turn_off",
+                        {},
+                        target={"entity_id": pid},
+                        blocking=True
+                    )
+                    return {"status": "stopped", "message": f"Stopped in {self._get_room_name(pid)}"}
+
         return {"message": "No music is playing"}
 
     async def _skip_next(self, all_players: list[str]) -> dict:
