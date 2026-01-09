@@ -157,7 +157,9 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            await self._hass.services.async_call("media_player", "media_pause", {"entity_id": playing})
+            _LOGGER.info("Found player %s, calling media_play_pause", playing)
+            # Use media_play_pause toggle instead of media_pause for better compatibility
+            await self._hass.services.async_call("media_player", "media_play_pause", {"entity_id": playing})
             self._last_paused_player = playing
             _LOGGER.info("Stored %s as last paused player", playing)
             return {"status": "paused", "message": f"Paused in {self._get_room_name(playing)}"}
@@ -248,12 +250,31 @@ class MusicController:
         target = target_players[0]
         _LOGGER.info("Transferring from %s to %s", playing, target)
 
-        await self._hass.services.async_call(
-            "music_assistant", "transfer_queue",
-            {"source_player": playing, "auto_play": True},
-            target={"entity_id": target},
-            blocking=True
-        )
+        # Get the active_queue from the playing entity for proper MA transfer
+        playing_state = self._hass.states.get(playing)
+        source_queue = None
+        if playing_state:
+            source_queue = playing_state.attributes.get("active_queue", playing)
+            _LOGGER.info("Source queue: %s", source_queue)
+
+        try:
+            await self._hass.services.async_call(
+                "music_assistant", "transfer_queue",
+                {"source_player": source_queue or playing, "auto_play": True},
+                target={"entity_id": target},
+                blocking=True
+            )
+            _LOGGER.info("Transfer complete")
+        except Exception as e:
+            _LOGGER.error("Transfer failed: %s", e)
+            # Fallback: try without source_player, let MA auto-detect
+            await self._hass.services.async_call(
+                "music_assistant", "transfer_queue",
+                {"auto_play": True},
+                target={"entity_id": target},
+                blocking=True
+            )
+
         return {"status": "transferred", "message": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
