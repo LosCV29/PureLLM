@@ -228,7 +228,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control MUSIC playback ONLY via Music Assistant. Rooms: {rooms_list}. IMPORTANT: This is ONLY for music/audio. Do NOT use for blinds, shades, or physical devices - use control_device for those!",
+            f"Control ALL music playback via Music Assistant. MUST use for: pause, stop, resume, skip, play. For pause/stop/resume/skip - NO room needed, automatically targets active player. For play - specify room. Available rooms: {rooms_list}. IMPORTANT: This is ONLY for music/audio, NOT for blinds or physical devices!",
             {
                 "action": {
                     "type": "string",
