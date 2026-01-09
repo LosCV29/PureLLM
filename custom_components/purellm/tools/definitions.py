@@ -235,12 +235,13 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"],
                     "description": "CRITICAL: 'shuffle' = ONLY when user says 'shuffle by artist' or 'shuffle by genre' - finds best matching Spotify playlist. 'play' = for specific artists, albums, or songs ONLY. 'restart_track' = replay current song from beginning."
                 },
-                "query": {"type": "string", "description": "For SHUFFLE: the artist name or genre (e.g., 'Taylor Swift', 'rock', 'jazz'). For PLAY: artist name, album name, or song title."},
+                "query": {"type": "string", "description": "For SHUFFLE: the artist name or genre. For PLAY: the song title, album name, or artist name depending on media_type."},
+                "artist": {"type": "string", "description": "FOR PLAY ACTION with media_type='track': The artist name when playing a specific song (e.g., for 'play Aggressive by Gucci Mane', query='Aggressive', artist='Gucci Mane'). Helps find the exact track."},
                 "room": {"type": "string", "description": f"Target room: {rooms_list}"},
                 "media_type": {
                     "type": "string",
                     "enum": ["artist", "album", "track"],
-                    "description": "FOR PLAY ACTION ONLY: 'track' = specific song, 'album' = specific album, 'artist' = music from an artist. NOT used for shuffle."
+                    "description": "FOR PLAY ACTION ONLY: 'track' = specific song (use with artist param for best results), 'album' = specific album, 'artist' = music from an artist. NOT used for shuffle."
                 }
             },
             ["action"]
