@@ -444,10 +444,18 @@ class MusicController:
                     playlists = search_result
 
                 if playlists:
-                    first_playlist = playlists[0]
+                    # Filter out playlists with "Radio" in the name - we don't want auto-generated radio playlists
+                    non_radio_playlists = [
+                        p for p in playlists
+                        if "radio" not in (p.get("name") or p.get("title") or "").lower()
+                    ]
+
+                    # Use non-radio playlist if available, otherwise fall back to original list
+                    chosen_playlist = non_radio_playlists[0] if non_radio_playlists else playlists[0]
+
                     # Get the EXACT playlist title for verbatim announcement
-                    playlist_name = first_playlist.get("name") or first_playlist.get("title")
-                    playlist_uri = first_playlist.get("uri") or first_playlist.get("media_id")
+                    playlist_name = chosen_playlist.get("name") or chosen_playlist.get("title")
+                    playlist_uri = chosen_playlist.get("uri") or chosen_playlist.get("media_id")
                     _LOGGER.info("Found Spotify playlist: '%s'", playlist_name)
 
             # NO artist fallback - shuffle is ONLY for playlists
