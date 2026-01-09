@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from homeassistant.components.media_player import MediaPlayerEntityFeature
+from homeassistant.helpers import entity_registry as er, device_registry as dr
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -154,6 +155,27 @@ class MusicController:
                 return rname
         return "unknown"
 
+    def _get_area_id(self, entity_id: str) -> str | None:
+        """Get area_id for an entity (checks entity, then device)."""
+        ent_reg = er.async_get(self._hass)
+        dev_reg = dr.async_get(self._hass)
+
+        entity_entry = ent_reg.async_get(entity_id)
+        if entity_entry:
+            # First check if entity has direct area assignment
+            if entity_entry.area_id:
+                _LOGGER.info("Entity %s has area_id: %s", entity_id, entity_entry.area_id)
+                return entity_entry.area_id
+            # Otherwise check the device
+            if entity_entry.device_id:
+                device = dev_reg.async_get(entity_entry.device_id)
+                if device and device.area_id:
+                    _LOGGER.info("Entity %s device has area_id: %s", entity_id, device.area_id)
+                    return device.area_id
+
+        _LOGGER.warning("Could not find area_id for %s", entity_id)
+        return None
+
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str]) -> dict:
         """Play music."""
         if not query:
@@ -179,100 +201,116 @@ class MusicController:
         return {"status": "playing", "message": f"Playing {query} in the {room}"}
 
     async def _pause(self, all_players: list[str]) -> dict:
-        """Pause music - matches HA native intent behavior."""
-        _LOGGER.info("Looking for player in 'playing' state that supports pause...")
+        """Pause music - uses area targeting like HA native intents."""
+        _LOGGER.info("Looking for player in 'playing' state...")
 
-        # Find player that is playing AND supports pause (like HA native intent)
         for pid in all_players:
             state = self._hass.states.get(pid)
             if state and state.state == "playing":
-                # Check if player supports PAUSE feature
-                supported = state.attributes.get("supported_features", 0)
-                supports_pause = bool(supported & PAUSE_FEATURE)
-                _LOGGER.info("  %s → playing, supports_pause=%s (features=%s)", pid, supports_pause, supported)
+                _LOGGER.info("  %s → playing", pid)
 
-                if supports_pause:
-                    _LOGGER.info("Pausing %s", pid)
+                # Get area_id for area-based targeting (like HA native intents)
+                area_id = self._get_area_id(pid)
+                if area_id:
+                    _LOGGER.info("Pausing via area: %s", area_id)
+                    await self._hass.services.async_call(
+                        "media_player", "media_pause",
+                        {},
+                        target={"area_id": area_id},
+                        blocking=True
+                    )
+                else:
+                    # Fallback to entity targeting if no area
+                    _LOGGER.info("No area found, pausing via entity: %s", pid)
                     await self._hass.services.async_call(
                         "media_player", "media_pause",
                         {},
                         target={"entity_id": pid},
                         blocking=True
                     )
-                    self._last_paused_player = pid
-                    return {"status": "paused", "message": f"Paused in {self._get_room_name(pid)}"}
-                else:
-                    # Player doesn't support pause, try stop instead (like MA does internally)
-                    _LOGGER.warning("%s doesn't support pause, trying stop", pid)
-                    await self._hass.services.async_call(
-                        "media_player", "media_stop",
-                        {},
-                        target={"entity_id": pid},
-                        blocking=True
-                    )
-                    self._last_paused_player = pid
-                    return {"status": "paused", "message": f"Paused in {self._get_room_name(pid)}"}
+
+                self._last_paused_player = pid
+                return {"status": "paused", "message": f"Paused in {self._get_room_name(pid)}"}
 
         return {"error": "No music is currently playing"}
 
     async def _resume(self, all_players: list[str]) -> dict:
-        """Resume music."""
+        """Resume music - uses area targeting like HA native intents."""
         _LOGGER.info("Looking for player to resume...")
 
+        # Try last paused player first
         if self._last_paused_player and self._last_paused_player in all_players:
             _LOGGER.info("Resuming last paused player: %s", self._last_paused_player)
-            await self._hass.services.async_call(
-                "media_player", "media_play",
-                {},
-                target={"entity_id": self._last_paused_player},
-                blocking=True
-            )
+            area_id = self._get_area_id(self._last_paused_player)
+            if area_id:
+                await self._hass.services.async_call(
+                    "media_player", "media_play",
+                    {},
+                    target={"area_id": area_id},
+                    blocking=True
+                )
+            else:
+                await self._hass.services.async_call(
+                    "media_player", "media_play",
+                    {},
+                    target={"entity_id": self._last_paused_player},
+                    blocking=True
+                )
             room_name = self._get_room_name(self._last_paused_player)
             self._last_paused_player = None
             return {"status": "resumed", "message": f"Resumed in {room_name}"}
 
+        # Find any paused player
         paused = self._find_player_by_state("paused", all_players)
         if paused:
-            await self._hass.services.async_call(
-                "media_player", "media_play",
-                {},
-                target={"entity_id": paused},
-                blocking=True
-            )
+            area_id = self._get_area_id(paused)
+            if area_id:
+                await self._hass.services.async_call(
+                    "media_player", "media_play",
+                    {},
+                    target={"area_id": area_id},
+                    blocking=True
+                )
+            else:
+                await self._hass.services.async_call(
+                    "media_player", "media_play",
+                    {},
+                    target={"entity_id": paused},
+                    blocking=True
+                )
             return {"status": "resumed", "message": f"Resumed in {self._get_room_name(paused)}"}
 
         return {"error": "No paused music to resume"}
 
     async def _stop(self, all_players: list[str]) -> dict:
-        """Stop music - checks supported features."""
+        """Stop music - uses area targeting like HA native intents."""
         _LOGGER.info("Looking for player in 'playing' or 'paused' state...")
 
         for pid in all_players:
             state = self._hass.states.get(pid)
             if state and state.state in ("playing", "paused"):
-                supported = state.attributes.get("supported_features", 0)
-                supports_stop = bool(supported & STOP_FEATURE)
-                _LOGGER.info("  %s → %s, supports_stop=%s", pid, state.state, supports_stop)
+                _LOGGER.info("  %s → %s", pid, state.state)
 
-                if supports_stop:
-                    _LOGGER.info("Stopping %s", pid)
+                # Get area_id for area-based targeting
+                area_id = self._get_area_id(pid)
+                if area_id:
+                    _LOGGER.info("Stopping via area: %s", area_id)
+                    await self._hass.services.async_call(
+                        "media_player", "media_stop",
+                        {},
+                        target={"area_id": area_id},
+                        blocking=True
+                    )
+                else:
+                    _LOGGER.info("No area found, stopping via entity: %s", pid)
                     await self._hass.services.async_call(
                         "media_player", "media_stop",
                         {},
                         target={"entity_id": pid},
                         blocking=True
                     )
-                    return {"status": "stopped", "message": f"Stopped in {self._get_room_name(pid)}"}
-                else:
-                    # Try turn_off if stop not supported
-                    _LOGGER.warning("%s doesn't support stop, trying turn_off", pid)
-                    await self._hass.services.async_call(
-                        "media_player", "turn_off",
-                        {},
-                        target={"entity_id": pid},
-                        blocking=True
-                    )
-                    return {"status": "stopped", "message": f"Stopped in {self._get_room_name(pid)}"}
+
+                return {"status": "stopped", "message": f"Stopped in {self._get_room_name(pid)}"}
 
         return {"message": "No music is playing"}
 
