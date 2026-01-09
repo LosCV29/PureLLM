@@ -180,59 +180,67 @@ class MusicController:
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str]) -> dict:
         """Play music - for artists, albums, and tracks ONLY.
 
-        IMPORTANT: radio_mode is ALWAYS disabled. For shuffled playlists by
-        artist or genre, use the shuffle action instead.
-
-        For tracks, supports "song by artist" format - parses and uses the
-        native Music Assistant 'artist' parameter for precise matching.
+        For tracks with "song by artist" format:
+        1. Search Music Assistant for exact track match
+        2. If found, play by URI
+        3. If not found, fall back to playing the artist
         """
         if not query:
             return {"error": "No music query specified"}
         if not target_players:
             return {"error": f"Unknown room: {room}. Available: {', '.join(self._players.keys())}"}
 
-        # Enforce valid media types for play - no playlist/genre (use shuffle for those)
+        # Enforce valid media types for play
         valid_types = {"artist", "album", "track"}
         if media_type not in valid_types:
-            _LOGGER.warning("Invalid media_type '%s' for play, defaulting to 'artist'", media_type)
             media_type = "artist"
 
-        # Parse "track by artist" format for precise matching
-        # Uses regex that only matches final " by " to handle songs like "Stand By Me"
-        media_id = query
+        # Parse "track by artist" format
+        track_name = None
         artist_name = None
-        display_name = query
 
         if media_type == "track":
-            # Match pattern: "Song Name by Artist Name" (case insensitive)
             match = re.search(r'^(.+?)\s+by\s+(.+)$', query, re.IGNORECASE)
             if match:
-                media_id = match.group(1).strip()
+                track_name = match.group(1).strip()
                 artist_name = match.group(2).strip()
-                display_name = f"{media_id} by {artist_name}"
-                _LOGGER.info("Parsed track request: '%s' by '%s'", media_id, artist_name)
+                _LOGGER.info("Parsed: track='%s', artist='%s'", track_name, artist_name)
 
+        # If we have track + artist, search for exact match
+        play_uri = None
+        final_media_type = media_type
+        display_name = query
+
+        if track_name and artist_name:
+            play_uri = await self._search_track(track_name, artist_name)
+
+            if play_uri:
+                display_name = f"{track_name} by {artist_name}"
+                _LOGGER.info("Found exact track URI: %s", play_uri)
+            else:
+                # Fallback: just play the artist
+                _LOGGER.info("Track not found, falling back to artist: %s", artist_name)
+                play_uri = artist_name
+                final_media_type = "artist"
+                display_name = artist_name
+
+        # Play it
         for player in target_players:
-            # Build play_media data with optional artist parameter
             play_data = {
-                "media_id": media_id,
-                "media_type": media_type,
+                "media_id": play_uri or query,
+                "media_type": final_media_type,
                 "enqueue": "replace",
                 "radio_mode": False,
             }
 
-            # Add artist parameter if we parsed one (Music Assistant native support)
-            if artist_name:
-                play_data["artist"] = artist_name
-
-            _LOGGER.info("Playing media_id='%s', artist='%s' (%s) on %s", media_id, artist_name, media_type, player)
+            _LOGGER.info("Playing: %s (%s) on %s", play_data["media_id"], final_media_type, player)
             await self._hass.services.async_call(
                 "music_assistant", "play_media",
                 play_data,
                 target={"entity_id": player},
                 blocking=True
             )
-            # Only enable shuffle if explicitly requested
+
             if shuffle:
                 await self._hass.services.async_call(
                     "media_player", "shuffle_set",
@@ -241,6 +249,64 @@ class MusicController:
                 )
 
         return {"status": "playing", "message": f"Playing {display_name} in the {room}"}
+
+    async def _search_track(self, track_name: str, artist_name: str) -> str | None:
+        """Search for exact track by artist. Returns URI if found, None otherwise."""
+        try:
+            ma_entries = self._hass.config_entries.async_entries("music_assistant")
+            if not ma_entries:
+                return None
+
+            config_entry_id = ma_entries[0].entry_id
+            search_query = f"{track_name} {artist_name}"
+
+            result = await self._hass.services.async_call(
+                "music_assistant", "search",
+                {"config_entry_id": config_entry_id, "name": search_query, "media_type": ["track"], "limit": 5},
+                blocking=True, return_response=True
+            )
+
+            if not result:
+                return None
+
+            # Extract tracks from response
+            tracks = []
+            if isinstance(result, dict):
+                tracks = result.get("tracks", []) or result.get("items", [])
+            elif isinstance(result, list):
+                tracks = result
+
+            if not tracks:
+                return None
+
+            # Find exact match: track title AND artist must match
+            track_lower = track_name.lower()
+            artist_lower = artist_name.lower()
+
+            for track in tracks:
+                name = (track.get("name") or track.get("title") or "").lower()
+
+                # Get artist names
+                artists = track.get("artists", [])
+                artist_names = []
+                for a in artists:
+                    if isinstance(a, dict):
+                        artist_names.append((a.get("name") or "").lower())
+                    elif isinstance(a, str):
+                        artist_names.append(a.lower())
+
+                # Check for match
+                title_match = track_lower in name or name in track_lower
+                artist_match = any(artist_lower in a or a in artist_lower for a in artist_names)
+
+                if title_match and artist_match:
+                    return track.get("uri") or track.get("media_id")
+
+            return None
+
+        except Exception as e:
+            _LOGGER.warning("Track search failed: %s", e)
+            return None
 
     async def _pause(self, all_players: list[str]) -> dict:
         """Pause music - uses area targeting like HA native intents."""
