@@ -120,6 +120,37 @@ DEFAULT_MAX_TOKENS: Final = 2000
 DEFAULT_TOP_P: Final = 0.95
 
 # =============================================================================
+# GPU MODE TOGGLE - Local vs Cloud provider switching
+# =============================================================================
+CONF_GPU_MODE: Final = "gpu_mode"
+CONF_LOCAL_PROVIDER: Final = "local_provider"
+CONF_LOCAL_MODEL: Final = "local_model"
+CONF_LOCAL_BASE_URL: Final = "local_base_url"
+CONF_LOCAL_API_KEY: Final = "local_api_key"
+CONF_CLOUD_PROVIDER: Final = "cloud_provider"
+CONF_CLOUD_MODEL: Final = "cloud_model"
+CONF_CLOUD_BASE_URL: Final = "cloud_base_url"
+CONF_CLOUD_API_KEY: Final = "cloud_api_key"
+
+# GPU Mode values
+GPU_MODE_LOCAL: Final = "local"
+GPU_MODE_CLOUD: Final = "cloud"
+
+# Defaults - local uses LM Studio, cloud uses OpenAI
+DEFAULT_GPU_MODE: Final = GPU_MODE_LOCAL
+DEFAULT_LOCAL_PROVIDER: Final = PROVIDER_LM_STUDIO
+DEFAULT_LOCAL_MODEL: Final = "local-model"
+DEFAULT_LOCAL_BASE_URL: Final = "http://localhost:1234/v1"
+DEFAULT_LOCAL_API_KEY: Final = "lm-studio"
+DEFAULT_CLOUD_PROVIDER: Final = PROVIDER_OPENAI
+DEFAULT_CLOUD_MODEL: Final = "gpt-4o-mini"
+DEFAULT_CLOUD_BASE_URL: Final = "https://api.openai.com/v1"
+DEFAULT_CLOUD_API_KEY: Final = ""
+
+# Service name
+SERVICE_SET_GPU_MODE: Final = "set_gpu_mode"
+
+# =============================================================================
 # FEATURE TOGGLES - Enable/disable function categories
 # =============================================================================
 CONF_ENABLE_WEATHER: Final = "enable_weather"

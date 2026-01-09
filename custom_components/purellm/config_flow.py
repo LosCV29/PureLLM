@@ -43,6 +43,27 @@ from .const import (
     DEFAULT_TEMPERATURE,
     DEFAULT_MAX_TOKENS,
     DEFAULT_TOP_P,
+    # GPU Mode settings
+    CONF_GPU_MODE,
+    CONF_LOCAL_PROVIDER,
+    CONF_LOCAL_MODEL,
+    CONF_LOCAL_BASE_URL,
+    CONF_LOCAL_API_KEY,
+    CONF_CLOUD_PROVIDER,
+    CONF_CLOUD_MODEL,
+    CONF_CLOUD_BASE_URL,
+    CONF_CLOUD_API_KEY,
+    GPU_MODE_LOCAL,
+    GPU_MODE_CLOUD,
+    DEFAULT_GPU_MODE,
+    DEFAULT_LOCAL_PROVIDER,
+    DEFAULT_LOCAL_MODEL,
+    DEFAULT_LOCAL_BASE_URL,
+    DEFAULT_LOCAL_API_KEY,
+    DEFAULT_CLOUD_PROVIDER,
+    DEFAULT_CLOUD_MODEL,
+    DEFAULT_CLOUD_BASE_URL,
+    DEFAULT_CLOUD_API_KEY,
     # System settings
     CONF_SYSTEM_PROMPT,
     CONF_CUSTOM_LATITUDE,
@@ -423,6 +444,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_menu(
             step_id="init",
             menu_options={
+                "gpu_mode": "GPU Mode (Local/Cloud Toggle)",
                 "connection": "Connection Settings",
                 "model": "Model Settings",
                 "features": "Enable/Disable Features",
@@ -432,6 +454,89 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "api_keys": "API Keys",
                 "location": "Location Settings",
                 "advanced": "System Prompt",
+            },
+        )
+
+    async def async_step_gpu_mode(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle GPU mode configuration (local vs cloud providers)."""
+        if user_input is not None:
+            new_options = {**self._entry.options, **user_input}
+            return self.async_create_entry(title="", data=new_options)
+
+        current = {**self._entry.data, **self._entry.options}
+
+        # Local provider options (GPU-based)
+        local_provider_options = [
+            selector.SelectOptionDict(value=PROVIDER_LM_STUDIO, label="LM Studio (Local)"),
+            selector.SelectOptionDict(value=PROVIDER_OLLAMA, label="Ollama (Local)"),
+        ]
+
+        # Cloud provider options
+        cloud_provider_options = [
+            selector.SelectOptionDict(value=PROVIDER_OPENAI, label="OpenAI"),
+            selector.SelectOptionDict(value=PROVIDER_ANTHROPIC, label="Anthropic (Claude)"),
+            selector.SelectOptionDict(value=PROVIDER_GOOGLE, label="Google Gemini"),
+            selector.SelectOptionDict(value=PROVIDER_GROQ, label="Groq"),
+            selector.SelectOptionDict(value=PROVIDER_OPENROUTER, label="OpenRouter"),
+            selector.SelectOptionDict(value=PROVIDER_AZURE, label="Azure OpenAI"),
+        ]
+
+        return self.async_show_form(
+            step_id="gpu_mode",
+            data_schema=vol.Schema(
+                {
+                    # Local provider config
+                    vol.Required(
+                        CONF_LOCAL_PROVIDER,
+                        default=current.get(CONF_LOCAL_PROVIDER, DEFAULT_LOCAL_PROVIDER),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=local_provider_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_LOCAL_BASE_URL,
+                        default=current.get(CONF_LOCAL_BASE_URL, DEFAULT_LOCAL_BASE_URL),
+                    ): str,
+                    vol.Optional(
+                        CONF_LOCAL_MODEL,
+                        default=current.get(CONF_LOCAL_MODEL, DEFAULT_LOCAL_MODEL),
+                    ): str,
+                    vol.Optional(
+                        CONF_LOCAL_API_KEY,
+                        default=current.get(CONF_LOCAL_API_KEY, DEFAULT_LOCAL_API_KEY),
+                    ): str,
+                    # Cloud provider config
+                    vol.Required(
+                        CONF_CLOUD_PROVIDER,
+                        default=current.get(CONF_CLOUD_PROVIDER, DEFAULT_CLOUD_PROVIDER),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=cloud_provider_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_CLOUD_API_KEY,
+                        default=current.get(CONF_CLOUD_API_KEY, DEFAULT_CLOUD_API_KEY),
+                        description={"suggested_value": "Enter your cloud provider API key"},
+                    ): str,
+                    vol.Optional(
+                        CONF_CLOUD_MODEL,
+                        default=current.get(CONF_CLOUD_MODEL, DEFAULT_CLOUD_MODEL),
+                    ): str,
+                    vol.Optional(
+                        CONF_CLOUD_BASE_URL,
+                        default=current.get(CONF_CLOUD_BASE_URL, DEFAULT_CLOUD_BASE_URL),
+                    ): str,
+                }
+            ),
+            description_placeholders={
+                "local_info": "Configure your local GPU provider (LM Studio or Ollama)",
+                "cloud_info": "Configure your cloud provider for when GPU is unavailable",
             },
         )
 

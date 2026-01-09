@@ -88,6 +88,27 @@ from .const import (
     PROVIDER_BASE_URLS,
     PROVIDER_GOOGLE,
     get_version,
+    # GPU Mode constants
+    CONF_GPU_MODE,
+    CONF_LOCAL_PROVIDER,
+    CONF_LOCAL_MODEL,
+    CONF_LOCAL_BASE_URL,
+    CONF_LOCAL_API_KEY,
+    CONF_CLOUD_PROVIDER,
+    CONF_CLOUD_MODEL,
+    CONF_CLOUD_BASE_URL,
+    CONF_CLOUD_API_KEY,
+    GPU_MODE_LOCAL,
+    GPU_MODE_CLOUD,
+    DEFAULT_GPU_MODE,
+    DEFAULT_LOCAL_PROVIDER,
+    DEFAULT_LOCAL_MODEL,
+    DEFAULT_LOCAL_BASE_URL,
+    DEFAULT_LOCAL_API_KEY,
+    DEFAULT_CLOUD_PROVIDER,
+    DEFAULT_CLOUD_MODEL,
+    DEFAULT_CLOUD_BASE_URL,
+    DEFAULT_CLOUD_API_KEY,
 )
 
 # Import from new modules
@@ -181,19 +202,48 @@ class PureLLMConversationEntity(ConversationEntity):
 
     def _update_from_config(self, config: dict[str, Any]) -> None:
         """Update configuration."""
-        # Provider settings
-        self.provider = config.get(CONF_PROVIDER, DEFAULT_PROVIDER)
-        self.api_key = config.get(CONF_API_KEY, DEFAULT_API_KEY)
-        self.model = config.get(CONF_MODEL, "")
+        # GPU Mode settings (local vs cloud)
+        self.gpu_mode = config.get(CONF_GPU_MODE, DEFAULT_GPU_MODE)
+
+        # Store both local and cloud provider configs for switching
+        self.local_provider = config.get(CONF_LOCAL_PROVIDER, DEFAULT_LOCAL_PROVIDER)
+        self.local_model = config.get(CONF_LOCAL_MODEL, DEFAULT_LOCAL_MODEL)
+        self.local_base_url = config.get(CONF_LOCAL_BASE_URL, DEFAULT_LOCAL_BASE_URL)
+        self.local_api_key = config.get(CONF_LOCAL_API_KEY, DEFAULT_LOCAL_API_KEY)
+
+        self.cloud_provider = config.get(CONF_CLOUD_PROVIDER, DEFAULT_CLOUD_PROVIDER)
+        self.cloud_model = config.get(CONF_CLOUD_MODEL, DEFAULT_CLOUD_MODEL)
+        self.cloud_base_url = config.get(CONF_CLOUD_BASE_URL, DEFAULT_CLOUD_BASE_URL)
+        self.cloud_api_key = config.get(CONF_CLOUD_API_KEY, DEFAULT_CLOUD_API_KEY)
+
+        # Apply provider settings based on GPU mode
+        if self.gpu_mode == GPU_MODE_CLOUD and self.cloud_api_key:
+            # Use cloud provider when in cloud mode AND cloud is configured
+            self.provider = self.cloud_provider
+            self.api_key = self.cloud_api_key
+            self.model = self.cloud_model
+            self.base_url = self.cloud_base_url or PROVIDER_BASE_URLS.get(self.cloud_provider, "")
+            _LOGGER.info("PureLLM GPU mode: CLOUD (%s)", self.provider)
+        elif self.gpu_mode == GPU_MODE_LOCAL:
+            # Use local provider when in local mode
+            self.provider = self.local_provider
+            self.api_key = self.local_api_key
+            self.model = self.local_model
+            self.base_url = self.local_base_url or PROVIDER_BASE_URLS.get(self.local_provider, "")
+            _LOGGER.info("PureLLM GPU mode: LOCAL (%s)", self.provider)
+        else:
+            # Fallback to legacy config (for backward compatibility)
+            self.provider = config.get(CONF_PROVIDER, DEFAULT_PROVIDER)
+            self.api_key = config.get(CONF_API_KEY, DEFAULT_API_KEY)
+            self.model = config.get(CONF_MODEL, "")
+            base_url = config.get(CONF_BASE_URL)
+            if not base_url:
+                base_url = PROVIDER_BASE_URLS.get(self.provider, "http://localhost:1234/v1")
+            self.base_url = base_url
+
         self.temperature = config.get(CONF_TEMPERATURE, 0.7)
         self.max_tokens = config.get(CONF_MAX_TOKENS, 2000)
         self.top_p = config.get(CONF_TOP_P, 0.95)
-
-        # Base URL
-        base_url = config.get(CONF_BASE_URL)
-        if not base_url:
-            base_url = PROVIDER_BASE_URLS.get(self.provider, "http://localhost:1234/v1")
-        self.base_url = base_url
 
         # Mark client for deferred initialization (avoid blocking SSL on event loop)
         self.client = None

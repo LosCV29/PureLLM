@@ -1,14 +1,23 @@
-"""The PolyVoice integration."""
+"""The PureLLM integration."""
 from __future__ import annotations
 
 import logging
 from typing import Any
 
+import voluptuous as vol
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, Event, callback
+from homeassistant.core import HomeAssistant, Event, callback, ServiceCall
+from homeassistant.helpers import config_validation as cv
 
-from .const import DOMAIN
+from .const import (
+    DOMAIN,
+    CONF_GPU_MODE,
+    GPU_MODE_LOCAL,
+    GPU_MODE_CLOUD,
+    SERVICE_SET_GPU_MODE,
+)
 from .tools.timer import get_registered_timer, unregister_timer
 
 _LOGGER = logging.getLogger(__name__)
@@ -17,6 +26,13 @@ PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.UPDATE]
 
 # Key for storing the timer listener unsub function
 TIMER_LISTENER_KEY = "timer_finished_listener"
+
+# Service schema
+SERVICE_SET_GPU_MODE_SCHEMA = vol.Schema(
+    {
+        vol.Required("mode"): vol.In([GPU_MODE_LOCAL, GPU_MODE_CLOUD]),
+    }
+)
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
@@ -151,7 +167,7 @@ async def _announce_timer_finished(
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up PolyVoice from a config entry."""
+    """Set up PureLLM from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
     config = {**entry.data, **entry.options}
@@ -168,11 +184,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN][TIMER_LISTENER_KEY] = unsub
         _LOGGER.debug("Registered timer.finished event listener")
 
+    # Register GPU mode service (only once per HA instance)
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_GPU_MODE):
+        async def handle_set_gpu_mode(call: ServiceCall) -> dict[str, Any]:
+            """Handle set_gpu_mode service call."""
+            mode = call.data["mode"]
+            _LOGGER.info("Setting GPU mode to: %s", mode)
+
+            # Update all PureLLM config entries
+            results = []
+            for config_entry in hass.config_entries.async_entries(DOMAIN):
+                new_options = {**config_entry.options, CONF_GPU_MODE: mode}
+                hass.config_entries.async_update_entry(config_entry, options=new_options)
+                results.append({
+                    "entry_id": config_entry.entry_id,
+                    "title": config_entry.title,
+                    "mode": mode,
+                })
+                _LOGGER.info("Updated PureLLM entry '%s' to GPU mode: %s", config_entry.title, mode)
+
+            return {
+                "success": True,
+                "mode": mode,
+                "updated_entries": results,
+            }
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_GPU_MODE,
+            handle_set_gpu_mode,
+            schema=SERVICE_SET_GPU_MODE_SCHEMA,
+            supports_response=True,
+        )
+        _LOGGER.debug("Registered %s.%s service", DOMAIN, SERVICE_SET_GPU_MODE)
+
     entry.async_on_unload(
         entry.add_update_listener(_async_update_listener)
     )
 
-    _LOGGER.info("PolyVoice setup complete")
+    _LOGGER.info("PureLLM setup complete")
     return True
 
 

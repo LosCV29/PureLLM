@@ -26,6 +26,7 @@
     "step": {
       "init": {
         "menu_options": {
+          "gpu_mode": "GPU Mode (Local/Cloud Toggle)",
           "connection": "Connection & Provider",
           "model": "Model Settings",
           "features": "Enable/Disable Features",
@@ -35,6 +36,20 @@
           "api_keys": "External API Keys",
           "location": "Location Settings",
           "advanced": "System Prompt"
+        }
+      },
+      "gpu_mode": {
+        "title": "GPU Mode Configuration",
+        "description": "Configure local (GPU) and cloud providers. Use the toggle or purellm.set_gpu_mode service to switch between them. Perfect for freeing up your GPU for gaming!",
+        "data": {
+          "local_provider": "Local Provider (GPU)",
+          "local_base_url": "Local API URL",
+          "local_model": "Local Model",
+          "local_api_key": "Local API Key (optional)",
+          "cloud_provider": "Cloud Provider",
+          "cloud_api_key": "Cloud API Key",
+          "cloud_model": "Cloud Model",
+          "cloud_base_url": "Cloud API URL (optional)"
         }
       },
       "connection": {

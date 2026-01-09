@@ -1,0 +1,105 @@
+# GPU Mode Toggle Package for PureLLM + HA Video Vision
+# =====================================================
+# This package creates a toggle that switches both PureLLM (LLM) and
+# HA Video Vision (camera analysis) between local GPU and cloud providers.
+#
+# Use Case: Free up your GPU for gaming while still having voice assistant
+# and camera analysis functionality via cloud APIs.
+#
+# Installation:
+# 1. Copy this file to your Home Assistant config/packages/ directory
+# 2. Add to configuration.yaml if not already present:
+#    homeassistant:
+#      packages: !include_dir_named packages
+# 3. Restart Home Assistant
+#
+# Usage:
+# - Toggle ON = Local mode (uses your GPU via LM Studio/Ollama + local vLLM)
+# - Toggle OFF = Cloud mode (uses OpenAI/Anthropic + Google Gemini)
+# - You can also call the services directly or use voice commands
+
+# Input Boolean for the toggle
+input_boolean:
+  gpu_local_mode:
+    name: "GPU Local Mode"
+    icon: mdi:memory
+
+# Automation to switch both integrations when toggle changes
+automation:
+  - id: gpu_mode_toggle_automation
+    alias: "GPU Mode Toggle"
+    description: "Switch PureLLM and HA Video Vision between local GPU and cloud providers"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.gpu_local_mode
+    action:
+      - choose:
+          # Toggle turned ON -> Switch to LOCAL mode
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.gpu_local_mode
+                state: "on"
+            sequence:
+              - parallel:
+                  - service: purellm.set_gpu_mode
+                    data:
+                      mode: "local"
+                  - service: ha_video_vision.set_gpu_mode
+                    data:
+                      mode: "local"
+              - service: persistent_notification.create
+                data:
+                  title: "GPU Mode: Local"
+                  message: "Switched to local GPU mode. Your RTX 5090 is now powering PureLLM and camera analysis."
+                  notification_id: gpu_mode_notification
+          # Toggle turned OFF -> Switch to CLOUD mode
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.gpu_local_mode
+                state: "off"
+            sequence:
+              - parallel:
+                  - service: purellm.set_gpu_mode
+                    data:
+                      mode: "cloud"
+                  - service: ha_video_vision.set_gpu_mode
+                    data:
+                      mode: "cloud"
+              - service: persistent_notification.create
+                data:
+                  title: "GPU Mode: Cloud"
+                  message: "Switched to cloud mode. Your GPU is now free for gaming!"
+                  notification_id: gpu_mode_notification
+    mode: single
+
+# Optional: Script for easy voice/automation access
+script:
+  switch_to_cloud_mode:
+    alias: "Switch to Cloud Mode"
+    description: "Free up GPU for gaming by switching to cloud AI providers"
+    sequence:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.gpu_local_mode
+    icon: mdi:cloud
+    mode: single
+
+  switch_to_local_mode:
+    alias: "Switch to Local Mode"
+    description: "Use local GPU for AI processing"
+    sequence:
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.gpu_local_mode
+    icon: mdi:memory
+    mode: single
+
+  toggle_gpu_mode:
+    alias: "Toggle GPU Mode"
+    description: "Toggle between local GPU and cloud AI providers"
+    sequence:
+      - service: input_boolean.toggle
+        target:
+          entity_id: input_boolean.gpu_local_mode
+    icon: mdi:swap-horizontal
+    mode: single

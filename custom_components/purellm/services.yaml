@@ -1,1 +1,16 @@
-# No custom services defined - integration uses conversation platform
+set_gpu_mode:
+  name: Set GPU Mode
+  description: Switch between local (GPU) and cloud LLM providers. Use this to free up your GPU for gaming while still having voice assistant functionality via cloud APIs.
+  fields:
+    mode:
+      name: Mode
+      description: The GPU mode to set - "local" uses your local LLM server (LM Studio/Ollama), "cloud" uses cloud providers (OpenAI/Anthropic/etc.)
+      required: true
+      example: "cloud"
+      selector:
+        select:
+          options:
+            - label: "Local (GPU)"
+              value: "local"
+            - label: "Cloud"
+              value: "cloud"
