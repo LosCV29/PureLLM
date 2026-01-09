@@ -395,7 +395,7 @@ class MusicController:
         return {"status": "transferred", "message": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
-        """Search and play shuffled playlist."""
+        """Search and play shuffled playlist - prioritizes official Spotify playlists."""
         if not query:
             return {"error": "No search query specified for shuffle"}
         if not target_players:
@@ -411,7 +411,7 @@ class MusicController:
 
             search_result = await self._hass.services.async_call(
                 "music_assistant", "search",
-                {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["playlist"], "limit": 5},
+                {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["playlist"], "limit": 10},
                 blocking=True, return_response=True
             )
 
@@ -429,9 +429,52 @@ class MusicController:
                     playlists = search_result
 
                 if playlists:
-                    first_playlist = playlists[0]
-                    playlist_name = first_playlist.get("name") or first_playlist.get("title", "Unknown Playlist")
-                    playlist_uri = first_playlist.get("uri") or first_playlist.get("media_id")
+                    # Filter out Radio playlists
+                    non_radio_playlists = [
+                        p for p in playlists
+                        if "radio" not in (p.get("name") or p.get("title") or "").lower()
+                    ]
+
+                    query_lower = query.lower()
+                    query_words = query_lower.split()
+
+                    def name_matches_query(name_str: str) -> bool:
+                        """Check if name contains query or significant words."""
+                        name_lower = name_str.lower()
+                        if query_lower in name_lower:
+                            return True
+                        for word in query_words:
+                            if len(word) >= 4 and word in name_lower:
+                                return True
+                        return False
+
+                    # Priority 1: Official Spotify playlists
+                    official_playlists = [
+                        p for p in non_radio_playlists
+                        if (p.get("owner") or "").lower() == "spotify"
+                        or (p.get("name") or p.get("title") or "").lower().startswith("this is")
+                        or (p.get("name") or p.get("title") or "").lower().startswith("best of")
+                    ]
+
+                    # Priority 2: Playlists with query in name
+                    matching_name_playlists = [
+                        p for p in non_radio_playlists
+                        if name_matches_query(p.get("name") or p.get("title") or "")
+                    ]
+
+                    # Choose best: Official > Name match > Non-radio > Any
+                    if official_playlists:
+                        official_with_name = [p for p in official_playlists if name_matches_query(p.get("name") or p.get("title") or "")]
+                        chosen = official_with_name[0] if official_with_name else official_playlists[0]
+                    elif matching_name_playlists:
+                        chosen = matching_name_playlists[0]
+                    elif non_radio_playlists:
+                        chosen = non_radio_playlists[0]
+                    else:
+                        chosen = playlists[0]
+
+                    playlist_name = chosen.get("name") or chosen.get("title", "Unknown Playlist")
+                    playlist_uri = chosen.get("uri") or chosen.get("media_id")
 
             # Fall back to artist search
             if not playlist_uri:
@@ -475,7 +518,7 @@ class MusicController:
                 "status": "shuffling",
                 "playlist_name": playlist_name,
                 "room": room,
-                "message": f"Shuffling {playlist_name} in the {room}"
+                "message": f"Now playing {playlist_name}"
             }
 
         except Exception as search_err:
