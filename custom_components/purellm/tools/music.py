@@ -189,11 +189,14 @@ class MusicController:
                 blocking=True
             )
             if shuffle or media_type == "genre":
-                await self._hass.services.async_call(
-                    "media_player", "shuffle_set",
-                    {"entity_id": player, "shuffle": True},
-                    blocking=True
-                )
+                try:
+                    await self._hass.services.async_call(
+                        "media_player", "shuffle_set",
+                        {"entity_id": player, "shuffle": True},
+                        blocking=True
+                    )
+                except Exception as shuffle_err:
+                    _LOGGER.warning("Shuffle not supported by player %s: %s", player, shuffle_err)
 
         # Return verbatim confirmation for LLM to read back
         return {
@@ -435,11 +438,14 @@ class MusicController:
                 blocking=True
             )
 
-            await self._hass.services.async_call(
-                "media_player", "shuffle_set",
-                {"entity_id": player, "shuffle": True},
-                blocking=True
-            )
+            try:
+                await self._hass.services.async_call(
+                    "media_player", "shuffle_set",
+                    {"entity_id": player, "shuffle": True},
+                    blocking=True
+                )
+            except Exception as shuffle_err:
+                _LOGGER.warning("Shuffle not supported by player %s: %s", player, shuffle_err)
 
             # Return verbatim confirmation for LLM to read back exactly
             return {
