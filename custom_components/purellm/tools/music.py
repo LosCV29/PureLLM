@@ -427,7 +427,7 @@ class MusicController:
             # Search ONLY for Spotify playlists - no fallback to artist
             search_result = await self._hass.services.async_call(
                 "music_assistant", "search",
-                {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["playlist"], "limit": 5},
+                {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["playlist"], "limit": 10},
                 blocking=True, return_response=True
             )
 
@@ -451,6 +451,19 @@ class MusicController:
                     ]
 
                     query_lower = query.lower()
+                    query_words = query_lower.split()
+
+                    def name_matches_query(playlist_name_str: str) -> bool:
+                        """Check if playlist name contains query or any significant word from query."""
+                        name_lower = playlist_name_str.lower()
+                        # Exact query match
+                        if query_lower in name_lower:
+                            return True
+                        # Match on individual words (handles typos like elliot vs elliott)
+                        for word in query_words:
+                            if len(word) >= 4 and word in name_lower:
+                                return True
+                        return False
 
                     # Priority 1: Official Spotify curated playlists ("This Is...", "Best of...", owned by Spotify)
                     official_playlists = [
@@ -463,13 +476,13 @@ class MusicController:
                     # Priority 2: Playlists with artist/query name in title
                     matching_name_playlists = [
                         p for p in non_radio_playlists
-                        if query_lower in (p.get("name") or p.get("title") or "").lower()
+                        if name_matches_query(p.get("name") or p.get("title") or "")
                     ]
 
                     # Choose best playlist: Official > Name match > Non-radio > Any
                     if official_playlists:
                         # Among official, prefer ones with query in name
-                        official_with_name = [p for p in official_playlists if query_lower in (p.get("name") or p.get("title") or "").lower()]
+                        official_with_name = [p for p in official_playlists if name_matches_query(p.get("name") or p.get("title") or "")]
                         chosen_playlist = official_with_name[0] if official_with_name else official_playlists[0]
                         _LOGGER.info("Found official Spotify playlist")
                     elif matching_name_playlists:
