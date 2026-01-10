@@ -1,0 +1,7 @@
+{
+  "wake_word": "hey_jeffery",
+  "version": 1,
+  "model": "https://github.com/LosCV29/Wake-words/raw/main/hey_jeffery_float16.tflite",
+  "author": "LosCV29",
+  "micro": true
+}
