@@ -55,6 +55,7 @@ class MusicController:
         room = arguments.get("room", "").lower() if arguments.get("room") else ""
         shuffle = arguments.get("shuffle", False)
         artist = arguments.get("artist", "")
+        album = arguments.get("album", "")
 
         _LOGGER.debug("Music control: action=%s, room=%s, query=%s", action, room, query)
 
@@ -84,7 +85,7 @@ class MusicController:
             target_players = self._find_target_players(room)
 
             if action == "play":
-                return await self._play(query, media_type, room, shuffle, target_players, artist)
+                return await self._play(query, media_type, room, shuffle, target_players, artist, album)
             elif action == "pause":
                 return await self._pause(all_players)
             elif action == "resume":
@@ -177,12 +178,13 @@ class MusicController:
         _LOGGER.warning("Could not find area_id for %s", entity_id)
         return None
 
-    async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "") -> dict:
+    async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "") -> dict:
         """Play music via Music Assistant.
 
         The LLM parses the request and provides:
         - query: song title, album name, or artist name
-        - artist: artist name (when playing a specific track)
+        - artist: artist name (for tracks or albums by a specific artist)
+        - album: album name (when playing a specific track from an album)
         - media_type: track, album, or artist
 
         We pass these directly to Music Assistant's play_media service.
@@ -197,8 +199,15 @@ class MusicController:
         if media_type not in valid_types:
             media_type = "artist"
 
-        # Build display name
-        display_name = f"{query} by {artist}" if artist else query
+        # Build display name for response
+        if artist and album:
+            display_name = f"{query} from {album} by {artist}"
+        elif artist:
+            display_name = f"{query} by {artist}"
+        elif album:
+            display_name = f"{query} from {album}"
+        else:
+            display_name = query
 
         for player in target_players:
             # Build play_media data
@@ -209,11 +218,15 @@ class MusicController:
                 "radio_mode": False,
             }
 
-            # Add artist if provided (for track searches)
+            # Add artist if provided (for track/album searches)
             if artist:
                 play_data["artist"] = artist
 
-            _LOGGER.info("Playing: media_id='%s', artist='%s', type='%s' on %s", query, artist, media_type, player)
+            # Add album if provided (for track searches from specific album)
+            if album:
+                play_data["album"] = album
+
+            _LOGGER.info("Playing: media_id='%s', artist='%s', album='%s', type='%s' on %s", query, artist, album, media_type, player)
             await self._hass.services.async_call(
                 "music_assistant", "play_media",
                 play_data,
