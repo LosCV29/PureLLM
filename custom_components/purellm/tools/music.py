@@ -29,19 +29,30 @@ def _normalize_unicode(text: str | None) -> str:
     if not text:
         return ""
 
-    # Check for Unicode escape patterns (e.g., \u00e1)
-    # This regex matches \uXXXX patterns
+    _LOGGER.debug("Normalizing text (raw repr): %r", text)
+
+    # Method 1: Try regex replacement for \uXXXX patterns
     unicode_pattern = re.compile(r'\\u([0-9a-fA-F]{4})')
 
     def replace_unicode(match):
         return chr(int(match.group(1), 16))
 
-    # Replace all \uXXXX patterns with actual characters
     if unicode_pattern.search(text):
         try:
             text = unicode_pattern.sub(replace_unicode, text)
-        except (ValueError, UnicodeError):
-            pass
+            _LOGGER.debug("Unicode normalized via regex: %s", text)
+            return text
+        except (ValueError, UnicodeError) as e:
+            _LOGGER.debug("Regex normalization failed: %s", e)
+
+    # Method 2: Try encode/decode for unicode_escape
+    try:
+        decoded = text.encode('latin-1').decode('unicode_escape')
+        if decoded != text:
+            _LOGGER.debug("Unicode normalized via encode/decode: %s", decoded)
+            return decoded
+    except (UnicodeDecodeError, UnicodeEncodeError) as e:
+        _LOGGER.debug("Encode/decode normalization failed: %s", e)
 
     return text
 
