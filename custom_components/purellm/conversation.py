@@ -513,7 +513,7 @@ class PureLLMConversationEntity(ConversationEntity):
                         if isinstance(result, dict) and "response_text" in result:
                             content = result["response_text"]
                         else:
-                            content = json.dumps(result)
+                            content = json.dumps(result, ensure_ascii=False)
 
                         messages.append({
                             "role": "tool",
@@ -626,11 +626,11 @@ class PureLLMConversationEntity(ConversationEntity):
                     tool_results = []
                     for tc, result in zip(unique_tool_calls, results):
                         if isinstance(result, Exception):
-                            content = json.dumps({"error": str(result)})
+                            content = json.dumps({"error": str(result)}, ensure_ascii=False)
                         elif isinstance(result, dict) and "response_text" in result:
                             content = result["response_text"]
                         else:
-                            content = json.dumps(result)
+                            content = json.dumps(result, ensure_ascii=False)
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": tc["id"],
