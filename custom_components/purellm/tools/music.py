@@ -183,6 +183,10 @@ class MusicController:
 
         Searches Music Assistant first to find the exact track/album/artist,
         then plays the found result and returns the actual name.
+
+        Smart album features:
+        - "latest/last/newest album by X" → finds most recent album
+        - "first/oldest/debut album by X" → finds earliest album
         """
         if not query:
             return {"error": "No music query specified"}
@@ -201,6 +205,25 @@ class MusicController:
             media_type = "track"
             _LOGGER.info("Overriding media_type to 'track' since both query and artist specified")
 
+        # Detect smart album modifiers
+        album_modifier = None
+        query_lower = query.lower()
+        latest_keywords = ["latest", "last", "newest", "new", "most recent", "recent", "nuevo", "última", "ultimo", "más reciente"]
+        first_keywords = ["first", "oldest", "debut", "earliest", "primero", "primera"]
+
+        if media_type == "album":
+            for kw in latest_keywords:
+                if kw in query_lower:
+                    album_modifier = "latest"
+                    _LOGGER.info("Detected album modifier: 'latest' (keyword: %s)", kw)
+                    break
+            if not album_modifier:
+                for kw in first_keywords:
+                    if kw in query_lower:
+                        album_modifier = "first"
+                        _LOGGER.info("Detected album modifier: 'first' (keyword: %s)", kw)
+                        break
+
         try:
             # Get Music Assistant config entry
             ma_entries = self._hass.config_entries.async_entries("music_assistant")
@@ -208,12 +231,118 @@ class MusicController:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
-            # Include artist in search query for better results
+            # Handle smart album search (latest/first album by artist)
+            if album_modifier and artist:
+                _LOGGER.info("Smart album search: finding %s album by '%s'", album_modifier, artist)
+
+                # Search for albums by artist only
+                search_result = await self._hass.services.async_call(
+                    "music_assistant", "search",
+                    {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["album"], "limit": 20},
+                    blocking=True, return_response=True
+                )
+
+                albums = []
+                if search_result:
+                    if isinstance(search_result, dict):
+                        albums = search_result.get("albums", [])
+                    elif isinstance(search_result, list):
+                        albums = search_result
+
+                if albums:
+                    artist_lower = artist.lower()
+
+                    # Filter to only albums by this artist
+                    def get_album_artist(alb):
+                        if alb.get("artists"):
+                            if isinstance(alb["artists"], list) and alb["artists"]:
+                                return (alb["artists"][0].get("name") or "").lower()
+                            elif isinstance(alb["artists"], str):
+                                return alb["artists"].lower()
+                        elif alb.get("artist"):
+                            if isinstance(alb["artist"], str):
+                                return alb["artist"].lower()
+                            else:
+                                return (alb["artist"].get("name") or "").lower()
+                        return ""
+
+                    matching_albums = [a for a in albums if artist_lower in get_album_artist(a) or get_album_artist(a) in artist_lower]
+
+                    if matching_albums:
+                        # Sort by year (try multiple fields)
+                        def get_year(alb):
+                            year = alb.get("year") or alb.get("release_date") or alb.get("date") or ""
+                            if isinstance(year, str) and len(year) >= 4:
+                                try:
+                                    return int(year[:4])
+                                except ValueError:
+                                    return 0
+                            elif isinstance(year, int):
+                                return year
+                            return 0
+
+                        albums_with_year = [(get_year(a), a) for a in matching_albums]
+                        albums_with_year = [(y, a) for y, a in albums_with_year if y > 0]  # Filter out unknown years
+
+                        if albums_with_year:
+                            if album_modifier == "latest":
+                                albums_with_year.sort(key=lambda x: x[0], reverse=True)
+                            else:  # first
+                                albums_with_year.sort(key=lambda x: x[0])
+
+                            best_album = albums_with_year[0][1]
+                            found_name = best_album.get("name") or best_album.get("title")
+                            found_uri = best_album.get("uri") or best_album.get("media_id")
+                            found_artist = artist  # Use the requested artist name
+                            found_type = "album"
+
+                            year = albums_with_year[0][0]
+                            _LOGGER.info("Found %s album: '%s' (%d) by '%s'", album_modifier, found_name, year, found_artist)
+
+                            # Play it
+                            for player in target_players:
+                                await self._hass.services.async_call(
+                                    "music_assistant", "play_media",
+                                    {"media_id": found_uri, "media_type": "album", "enqueue": "replace", "radio_mode": False},
+                                    target={"entity_id": player},
+                                    blocking=True
+                                )
+                                if shuffle:
+                                    await self._hass.services.async_call(
+                                        "media_player", "shuffle_set",
+                                        {"entity_id": player, "shuffle": True},
+                                        blocking=True
+                                    )
+
+                            return {"status": "playing", "message": f"Playing {found_name} by {found_artist} in the {room}"}
+                        else:
+                            # No albums with year info, just pick first/last in list
+                            best_album = matching_albums[-1] if album_modifier == "latest" else matching_albums[0]
+                            found_name = best_album.get("name") or best_album.get("title")
+                            found_uri = best_album.get("uri") or best_album.get("media_id")
+
+                            for player in target_players:
+                                await self._hass.services.async_call(
+                                    "music_assistant", "play_media",
+                                    {"media_id": found_uri, "media_type": "album", "enqueue": "replace", "radio_mode": False},
+                                    target={"entity_id": player},
+                                    blocking=True
+                                )
+                                if shuffle:
+                                    await self._hass.services.async_call(
+                                        "media_player", "shuffle_set",
+                                        {"entity_id": player, "shuffle": True},
+                                        blocking=True
+                                    )
+
+                            return {"status": "playing", "message": f"Playing {found_name} by {artist} in the {room}"}
+
+                return {"error": f"Could not find albums by {artist}"}
+
+            # Standard search (non-modifier path)
             search_query = f"{query} {artist}" if artist else query
 
             # NO cascading - search ONLY the requested type
-            # User must explicitly say "album" to get albums (e.g., "play album Thriller by Michael Jackson")
-            # Otherwise "play Thriller by Michael Jackson" searches tracks only
             search_types_to_try = [media_type]
             _LOGGER.info("Searching for media_type='%s' only (no cascade)", media_type)
 
