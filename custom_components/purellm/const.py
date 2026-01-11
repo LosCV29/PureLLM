@@ -208,6 +208,9 @@ GENERAL GUIDELINES:
 - For news, use get_news
 - For calendar events, use get_calendar_events
 - For music control (play, skip, pause, etc.), use control_music
+  MUSIC PARSING: When user says "play [song] by [artist]" you MUST set: query=[song], artist=[artist], media_type='track'
+  When user says "play [album] by [artist]" for an album, set: query=[album], artist=[artist], media_type='album'
+  ALWAYS extract the artist name separately - do NOT put "song by artist" in the query field alone.
 - For ALL device control (lights, locks, switches, fans, etc.), use control_device - ALL commands go through the LLM pipeline
 """
 
