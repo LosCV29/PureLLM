@@ -1,7 +1,9 @@
 """Music control tool handler."""
 from __future__ import annotations
 
+import codecs
 import logging
+import re
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -22,16 +24,25 @@ PLAY_FEATURE = MediaPlayerEntityFeature.PLAY
 def _normalize_unicode(text: str | None) -> str:
     """Normalize Unicode strings to ensure proper character display.
 
-    Handles escaped Unicode sequences and ensures proper UTF-8 encoding.
+    Handles escaped Unicode sequences like \\u00e1 → á
     """
     if not text:
         return ""
-    # If the string contains escaped unicode (e.g., \\u00e1), decode it
-    if "\\u" in text:
+
+    # Check for Unicode escape patterns (e.g., \u00e1)
+    # This regex matches \uXXXX patterns
+    unicode_pattern = re.compile(r'\\u([0-9a-fA-F]{4})')
+
+    def replace_unicode(match):
+        return chr(int(match.group(1), 16))
+
+    # Replace all \uXXXX patterns with actual characters
+    if unicode_pattern.search(text):
         try:
-            text = text.encode('utf-8').decode('unicode_escape')
-        except (UnicodeDecodeError, UnicodeEncodeError):
+            text = unicode_pattern.sub(replace_unicode, text)
+        except (ValueError, UnicodeError):
             pass
+
     return text
 
 
