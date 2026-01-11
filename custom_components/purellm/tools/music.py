@@ -194,6 +194,12 @@ class MusicController:
         if media_type not in valid_types:
             media_type = "artist"
 
+        # Smart override: if artist is specified with a query, user likely wants a track
+        # "Big Pimpin by Jay-Z" = track, not artist
+        if artist and query and media_type == "artist":
+            media_type = "track"
+            _LOGGER.info("Overriding media_type to 'track' since both query and artist specified")
+
         try:
             # Get Music Assistant config entry
             ma_entries = self._hass.config_entries.async_entries("music_assistant")
@@ -201,84 +207,95 @@ class MusicController:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
-            # Search for the requested media
             # Include artist in search query for better results
-            search_media_type = [media_type] if media_type != "track" else ["track"]
             search_query = f"{query} {artist}" if artist else query
-            _LOGGER.info("Searching MA for %s: search_query='%s' (query='%s', artist='%s')", media_type, search_query, query, artist)
 
-            search_result = await self._hass.services.async_call(
-                "music_assistant", "search",
-                {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": search_media_type, "limit": 10},
-                blocking=True, return_response=True
-            )
+            # Search for tracks first when artist is specified, then fall back
+            search_types_to_try = []
+            if artist:
+                # When artist specified, prioritize: track -> album -> artist
+                search_types_to_try = ["track", "album", "artist"]
+            else:
+                # Otherwise just use the requested type
+                search_types_to_try = [media_type]
 
             found_name = None
             found_artist = None
             found_uri = None
+            found_type = None
 
-            if search_result:
-                # Get the appropriate results list based on media_type
+            for try_type in search_types_to_try:
+                _LOGGER.info("Searching MA for %s: search_query='%s' (query='%s', artist='%s')", try_type, search_query, query, artist)
+
+                search_result = await self._hass.services.async_call(
+                    "music_assistant", "search",
+                    {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": [try_type], "limit": 10},
+                    blocking=True, return_response=True
+                )
+
+                if not search_result:
+                    continue
+
+                # Get the appropriate results list
                 results = []
                 if isinstance(search_result, dict):
-                    if media_type == "track":
+                    if try_type == "track":
                         results = search_result.get("tracks", [])
-                    elif media_type == "album":
+                    elif try_type == "album":
                         results = search_result.get("albums", [])
-                    elif media_type == "artist":
+                    elif try_type == "artist":
                         results = search_result.get("artists", [])
-                    # Fallback to generic keys
                     if not results:
                         results = search_result.get("items", [])
                 elif isinstance(search_result, list):
                     results = search_result
 
-                if results:
-                    query_lower = query.lower()
-                    artist_lower = artist.lower() if artist else ""
+                if not results:
+                    continue
 
-                    # Score results to find best match
-                    def score_result(item):
-                        score = 0
-                        item_name = (item.get("name") or item.get("title") or "").lower()
-                        item_artist = ""
+                query_lower = query.lower()
+                artist_lower = artist.lower() if artist else ""
 
-                        # Get artist from various possible fields
-                        if item.get("artists"):
-                            if isinstance(item["artists"], list):
-                                item_artist = (item["artists"][0].get("name") or "").lower() if item["artists"] else ""
-                            elif isinstance(item["artists"], str):
-                                item_artist = item["artists"].lower()
-                        elif item.get("artist"):
-                            item_artist = (item["artist"] if isinstance(item["artist"], str) else item["artist"].get("name", "")).lower()
+                # Score results to find best match
+                def score_result(item):
+                    score = 0
+                    item_name = (item.get("name") or item.get("title") or "").lower()
+                    item_artist = ""
 
-                        # Exact query match in name
-                        if query_lower == item_name:
+                    # Get artist from various possible fields
+                    if item.get("artists"):
+                        if isinstance(item["artists"], list):
+                            item_artist = (item["artists"][0].get("name") or "").lower() if item["artists"] else ""
+                        elif isinstance(item["artists"], str):
+                            item_artist = item["artists"].lower()
+                    elif item.get("artist"):
+                        item_artist = (item["artist"] if isinstance(item["artist"], str) else item["artist"].get("name", "")).lower()
+
+                    # Exact query match in name
+                    if query_lower == item_name:
+                        score += 100
+                    elif query_lower in item_name:
+                        score += 50
+
+                    # Artist match (if artist was specified)
+                    if artist_lower:
+                        if artist_lower == item_artist:
                             score += 100
-                        elif query_lower in item_name:
+                        elif artist_lower in item_artist or item_artist in artist_lower:
                             score += 50
 
-                        # Artist match (if artist was specified)
-                        if artist_lower:
-                            if artist_lower == item_artist:
-                                score += 100
-                            elif artist_lower in item_artist or item_artist in artist_lower:
-                                score += 50
+                    return score
 
-                        return score
+                # Sort by score descending
+                scored_results = [(score_result(r), r) for r in results]
+                scored_results.sort(key=lambda x: x[0], reverse=True)
 
-                    # Sort by score descending
-                    scored_results = [(score_result(r), r) for r in results]
-                    scored_results.sort(key=lambda x: x[0], reverse=True)
-
-                    if scored_results and scored_results[0][0] > 0:
-                        best_match = scored_results[0][1]
-                    else:
-                        # No good match, use first result
-                        best_match = results[0]
-
+                # Only accept if we have a good match (score > 0 means query or artist matched)
+                if scored_results and scored_results[0][0] > 0:
+                    best_match = scored_results[0][1]
                     found_name = best_match.get("name") or best_match.get("title")
                     found_uri = best_match.get("uri") or best_match.get("media_id")
+                    found_type = try_type
 
                     # Extract artist name from result
                     if best_match.get("artists"):
@@ -292,23 +309,24 @@ class MusicController:
                         else:
                             found_artist = best_match["artist"].get("name")
 
-                    _LOGGER.info("Found %s: '%s' by '%s' (uri: %s)", media_type, found_name, found_artist, found_uri)
+                    _LOGGER.info("Found %s: '%s' by '%s' (uri: %s, score: %d)", try_type, found_name, found_artist, found_uri, scored_results[0][0])
+                    break  # Found a good match, stop searching
 
             if not found_uri:
-                return {"error": f"Could not find {media_type} matching '{query}'" + (f" by {artist}" if artist else "")}
+                return {"error": f"Could not find track matching '{query}'" + (f" by {artist}" if artist else "")}
 
             # Build display name from actual found result
-            if found_artist and media_type in ("track", "album"):
+            if found_artist and found_type in ("track", "album"):
                 display_name = f"{found_name} by {found_artist}"
             else:
                 display_name = found_name
 
             # Play the found media
             for player in target_players:
-                _LOGGER.info("Playing: uri='%s', type='%s' on %s", found_uri, media_type, player)
+                _LOGGER.info("Playing: uri='%s', type='%s' on %s", found_uri, found_type, player)
                 await self._hass.services.async_call(
                     "music_assistant", "play_media",
-                    {"media_id": found_uri, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
+                    {"media_id": found_uri, "media_type": found_type, "enqueue": "replace", "radio_mode": False},
                     target={"entity_id": player},
                     blocking=True
                 )
