@@ -60,7 +60,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             {
                 "location": {
                     "type": "string",
-                    "description": "City with state/country (e.g., 'Paris, France', 'Tokyo, Japan'). ONLY include if user specifies a location."
+                    "description": "For US cities: ALWAYS include state (e.g., 'Springfield, IL', 'Portland, OR', 'Austin, TX'). For international: include country (e.g., 'Paris, France', 'Tokyo, Japan'). ONLY include if user specifies a location."
                 },
                 "forecast_type": {
                     "type": "string",
