@@ -51,6 +51,31 @@ STOPWORDS = frozenset([
     "please", "can", "you", "could", "would"
 ])
 
+# Number word to digit mapping for voice command normalization
+NUMBER_WORDS = {
+    "zero": "0",
+    "one": "1",
+    "two": "2",
+    "three": "3",
+    "four": "4",
+    "five": "5",
+    "six": "6",
+    "seven": "7",
+    "eight": "8",
+    "nine": "9",
+    "ten": "10",
+    "eleven": "11",
+    "twelve": "12",
+    "thirteen": "13",
+    "fourteen": "14",
+    "fifteen": "15",
+    "sixteen": "16",
+    "seventeen": "17",
+    "eighteen": "18",
+    "nineteen": "19",
+    "twenty": "20",
+}
+
 # Synonym groups for fuzzy entity matching
 # When searching for entities, these synonyms are treated as equivalent
 DEVICE_SYNONYMS = {
@@ -115,6 +140,17 @@ def _strip_stopwords(query: str) -> str:
     return " ".join(filtered) if filtered else query.lower()
 
 
+def normalize_numbers(query: str) -> str:
+    """Convert number words to digits in query.
+
+    "master shade one" -> "master shade 1"
+    "bedroom light two" -> "bedroom light 2"
+    """
+    words = query.lower().split()
+    normalized = [NUMBER_WORDS.get(word, word) for word in words]
+    return " ".join(normalized)
+
+
 def normalize_cover_query(query: str) -> list[str]:
     """Generate query variations with device synonyms.
 
@@ -148,21 +184,26 @@ def normalize_cover_query(query: str) -> list[str]:
 
 
 def _words_match(query: str, target: str) -> bool:
-    """Check if all query words appear in target (with synonym expansion)."""
+    """Check if all query words appear in target (with synonym and number expansion)."""
     query_words = set(query.lower().split()) - STOPWORDS
     target_words = set(target.lower().split()) - STOPWORDS
 
     if not query_words:
         return False
 
+    # Normalize numbers in both query and target for matching
+    # e.g., "one" -> "1" so "shade one" matches "shade 1"
+    query_words_normalized = {NUMBER_WORDS.get(w, w) for w in query_words}
+    target_words_normalized = {NUMBER_WORDS.get(w, w) for w in target_words}
+
     # Expand target words with their synonyms for matching
-    expanded_target = set(target_words)
+    expanded_target = set(target_words) | target_words_normalized
     for word in target_words:
         if word in DEVICE_SYNONYMS:
             expanded_target.update(DEVICE_SYNONYMS[word])
 
-    # All query words must be in expanded target
-    return query_words <= expanded_target
+    # All query words (or their number-normalized forms) must be in expanded target
+    return query_words_normalized <= expanded_target
 
 
 def find_entity_by_name(
@@ -174,18 +215,28 @@ def find_entity_by_name(
 
     Returns (entity_id, friendly_name) or (None, None) if not found.
     """
-    # Try original query first
-    result = _find_entity_by_query(hass, query, device_aliases)
-    if result[0] is not None:
-        return result
+    # Build list of query variations to try
+    queries_to_try = [query]
 
-    # Try synonym variations
-    for query_var in normalize_cover_query(query):
-        if query_var.lower() == query.lower():
-            continue
-        result = _find_entity_by_query(hass, query_var, device_aliases)
+    # Add number-normalized version (e.g., "shade one" -> "shade 1")
+    number_normalized = normalize_numbers(query)
+    if number_normalized.lower() != query.lower():
+        queries_to_try.append(number_normalized)
+
+    # Try each query variation
+    for q in queries_to_try:
+        # Try direct query first
+        result = _find_entity_by_query(hass, q, device_aliases)
         if result[0] is not None:
             return result
+
+        # Try synonym variations
+        for query_var in normalize_cover_query(q):
+            if query_var.lower() == q.lower():
+                continue
+            result = _find_entity_by_query(hass, query_var, device_aliases)
+            if result[0] is not None:
+                return result
 
     return (None, None)
 
