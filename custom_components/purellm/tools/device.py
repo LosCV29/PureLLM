@@ -346,7 +346,14 @@ async def control_device(
         return {"error": "No action specified."}
 
     # Normalize actions
-    action_aliases = {"favorite": "preset", "return_home": "dock", "activate": "turn_on"}
+    # "run", "execute", "open", "close" support scripts like "open the garage"
+    action_aliases = {
+        "favorite": "preset",
+        "return_home": "dock",
+        "activate": "turn_on",
+        "run": "turn_on",
+        "execute": "turn_on",
+    }
     action = action_aliases.get(action, action)
 
     # Service map
@@ -370,7 +377,7 @@ async def control_device(
         },
         "vacuum": {"turn_on": "start", "start": "start", "turn_off": "return_to_base", "stop": "stop", "dock": "return_to_base", "locate": "locate"},
         "scene": {"turn_on": "turn_on"},
-        "script": {"turn_on": "turn_on", "turn_off": "turn_off"},
+        "script": {"turn_on": "turn_on", "turn_off": "turn_off", "open": "turn_on", "close": "turn_on", "run": "turn_on", "execute": "turn_on"},
         "input_boolean": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"},
         "automation": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"},
         "button": {"turn_on": "press", "press": "press"},
