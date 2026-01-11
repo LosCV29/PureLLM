@@ -202,12 +202,14 @@ class MusicController:
             ma_config_entry_id = ma_entries[0].entry_id
 
             # Search for the requested media
+            # Include artist in search query for better results
             search_media_type = [media_type] if media_type != "track" else ["track"]
-            _LOGGER.info("Searching MA for %s: query='%s', artist='%s'", media_type, query, artist)
+            search_query = f"{query} {artist}" if artist else query
+            _LOGGER.info("Searching MA for %s: search_query='%s' (query='%s', artist='%s')", media_type, search_query, query, artist)
 
             search_result = await self._hass.services.async_call(
                 "music_assistant", "search",
-                {"config_entry_id": ma_config_entry_id, "name": query, "media_type": search_media_type, "limit": 10},
+                {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": search_media_type, "limit": 10},
                 blocking=True, return_response=True
             )
 
