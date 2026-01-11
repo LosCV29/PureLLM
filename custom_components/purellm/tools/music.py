@@ -94,6 +94,7 @@ class MusicController:
         shuffle = arguments.get("shuffle", False)
         artist = arguments.get("artist", "")
         album = arguments.get("album", "")
+        song_on_album = arguments.get("song_on_album", "")
 
         _LOGGER.debug("Music control: action=%s, room=%s, query=%s", action, room, query)
 
@@ -123,7 +124,7 @@ class MusicController:
             target_players = self._find_target_players(room)
 
             if action == "play":
-                return await self._play(query, media_type, room, shuffle, target_players, artist, album)
+                return await self._play(query, media_type, room, shuffle, target_players, artist, album, song_on_album)
             elif action == "pause":
                 return await self._pause(all_players)
             elif action == "resume":
@@ -216,7 +217,7 @@ class MusicController:
         _LOGGER.warning("Could not find area_id for %s", entity_id)
         return None
 
-    async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "") -> dict:
+    async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "", song_on_album: str = "") -> dict:
         """Play music via Music Assistant with search-first for accuracy.
 
         Searches Music Assistant first to find the exact track/album/artist,
@@ -225,8 +226,9 @@ class MusicController:
         Smart album features:
         - "latest/last/newest album by X" → finds most recent album
         - "first/oldest/debut album by X" → finds earliest album
+        - song_on_album: finds album containing a specific song
         """
-        if not query:
+        if not query and not song_on_album:
             return {"error": "No music query specified"}
         if not target_players:
             return {"error": f"Unknown room: {room}. Available: {', '.join(self._players.keys())}"}
@@ -268,6 +270,137 @@ class MusicController:
             if not ma_entries:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
+
+            # Handle song_on_album: find album by searching for a song on it
+            if song_on_album and media_type == "album":
+                _LOGGER.info("Finding album by song: '%s' by '%s'", song_on_album, artist)
+
+                # Search for the track
+                track_search_query = f"{song_on_album} {artist}" if artist else song_on_album
+                search_result = await self._hass.services.async_call(
+                    "music_assistant", "search",
+                    {"config_entry_id": ma_config_entry_id, "name": track_search_query, "media_type": ["track"], "limit": 10},
+                    blocking=True, return_response=True
+                )
+
+                if search_result:
+                    tracks = []
+                    if isinstance(search_result, dict):
+                        tracks = search_result.get("tracks", [])
+                    elif isinstance(search_result, list):
+                        tracks = search_result
+
+                    if tracks:
+                        # Score tracks to find best match
+                        song_lower = song_on_album.lower()
+                        artist_lower = artist.lower() if artist else ""
+
+                        def score_track(track):
+                            score = 0
+                            track_name = (track.get("name") or track.get("title") or "").lower()
+
+                            # Get track artist
+                            track_artist = ""
+                            if track.get("artists"):
+                                if isinstance(track["artists"], list) and track["artists"]:
+                                    track_artist = (track["artists"][0].get("name") or "").lower()
+                            elif track.get("artist"):
+                                track_artist = (track["artist"] if isinstance(track["artist"], str) else track["artist"].get("name", "")).lower()
+
+                            # Song name match
+                            if song_lower == track_name:
+                                score += 100
+                            elif song_lower in track_name:
+                                score += 50
+
+                            # Artist match
+                            if artist_lower:
+                                if artist_lower == track_artist:
+                                    score += 100
+                                elif artist_lower in track_artist or track_artist in artist_lower:
+                                    score += 50
+
+                            return score
+
+                        scored_tracks = [(score_track(t), t) for t in tracks]
+                        scored_tracks.sort(key=lambda x: x[0], reverse=True)
+
+                        if scored_tracks and scored_tracks[0][0] > 0:
+                            best_track = scored_tracks[0][1]
+
+                            # Extract album info from track
+                            album_name = None
+                            album_uri = None
+
+                            if best_track.get("album"):
+                                album_info = best_track["album"]
+                                if isinstance(album_info, dict):
+                                    album_name = _normalize_unicode(album_info.get("name") or album_info.get("title"))
+                                    album_uri = album_info.get("uri") or album_info.get("media_id")
+                                elif isinstance(album_info, str):
+                                    album_name = album_info
+
+                            # Get artist for display
+                            found_artist = artist
+                            if not found_artist and best_track.get("artists"):
+                                if isinstance(best_track["artists"], list) and best_track["artists"]:
+                                    found_artist = _normalize_unicode(best_track["artists"][0].get("name"))
+
+                            if album_name:
+                                _LOGGER.info("Found album '%s' containing song '%s'", album_name, song_on_album)
+
+                                # If we have a URI, play directly
+                                if album_uri:
+                                    for player in target_players:
+                                        await self._hass.services.async_call(
+                                            "music_assistant", "play_media",
+                                            {"media_id": album_uri, "media_type": "album", "enqueue": "replace", "radio_mode": False},
+                                            target={"entity_id": player},
+                                            blocking=True
+                                        )
+                                        if shuffle:
+                                            await self._hass.services.async_call(
+                                                "media_player", "shuffle_set",
+                                                {"entity_id": player, "shuffle": True},
+                                                blocking=True
+                                            )
+                                    return {"status": "playing", "message": f"Playing {album_name} by {found_artist} in the {room}"}
+
+                                # Otherwise search for the album by name
+                                album_search = await self._hass.services.async_call(
+                                    "music_assistant", "search",
+                                    {"config_entry_id": ma_config_entry_id, "name": f"{album_name} {found_artist}", "media_type": ["album"], "limit": 5},
+                                    blocking=True, return_response=True
+                                )
+
+                                if album_search:
+                                    albums = []
+                                    if isinstance(album_search, dict):
+                                        albums = album_search.get("albums", [])
+                                    elif isinstance(album_search, list):
+                                        albums = album_search
+
+                                    if albums:
+                                        found_album = albums[0]
+                                        found_album_name = _normalize_unicode(found_album.get("name") or found_album.get("title"))
+                                        found_album_uri = found_album.get("uri") or found_album.get("media_id")
+
+                                        for player in target_players:
+                                            await self._hass.services.async_call(
+                                                "music_assistant", "play_media",
+                                                {"media_id": found_album_uri, "media_type": "album", "enqueue": "replace", "radio_mode": False},
+                                                target={"entity_id": player},
+                                                blocking=True
+                                            )
+                                            if shuffle:
+                                                await self._hass.services.async_call(
+                                                    "media_player", "shuffle_set",
+                                                    {"entity_id": player, "shuffle": True},
+                                                    blocking=True
+                                                )
+                                        return {"status": "playing", "message": f"Playing {found_album_name} by {found_artist} in the {room}"}
+
+                return {"error": f"Could not find album containing '{song_on_album}'" + (f" by {artist}" if artist else "")}
 
             # Handle smart album search (latest/first album by artist)
             if album_modifier and artist:

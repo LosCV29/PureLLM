@@ -236,13 +236,14 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "description": "'play' for songs/albums/artists. 'shuffle' for shuffled playlists by artist/genre."
                 },
                 "query": {"type": "string", "description": "Song title, album name, or smart modifier. For albums: can include 'latest', 'last', 'newest', 'first', 'debut'. Example: 'bad bunny's latest album' → query='latest', artist='Bad Bunny', media_type='album'."},
-                "artist": {"type": "string", "description": "Artist name. REQUIRED for tracks and albums. Examples: 'play Beat It by Michael Jackson' → query='Beat It', artist='Michael Jackson', media_type='track'. 'play album Thriller by Michael Jackson' → query='Thriller', artist='Michael Jackson', media_type='album'. 'play bad bunny's last album' → query='last', artist='Bad Bunny', media_type='album'."},
-                "album": {"type": "string", "description": "Album name. Use when playing a specific track FROM an album. Example: 'play Beat It from Thriller' → query='Beat It', album='Thriller', media_type='track'."},
+                "artist": {"type": "string", "description": "Artist name. REQUIRED for tracks and albums."},
+                "album": {"type": "string", "description": "Album name. Use when playing a specific track FROM an album."},
+                "song_on_album": {"type": "string", "description": "Use when user wants an album that contains a specific song. Example: 'play the jay-z album with big pimpin' → song_on_album='Big Pimpin', artist='Jay-Z', media_type='album'. The system will find which album contains that song and play it."},
                 "room": {"type": "string", "description": f"Target room: {rooms_list}"},
                 "media_type": {
                     "type": "string",
                     "enum": ["artist", "album", "track"],
-                    "description": "'track' = specific song (use artist and/or album params), 'album' = album (use artist param), 'artist' = play all music by artist."
+                    "description": "'track' = specific song, 'album' = album, 'artist' = play all music by artist."
                 }
             },
             ["action"]
