@@ -235,13 +235,14 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"],
                     "description": "'play' for songs/albums/artists. 'shuffle' for shuffled playlists by artist/genre."
                 },
-                "query": {"type": "string", "description": "The song title, album name, artist name, or genre to play/shuffle."},
-                "artist": {"type": "string", "description": "REQUIRED when playing a specific track. The artist name (e.g., 'play Aggressive by Gucci Mane' → query='Aggressive', artist='Gucci Mane')."},
+                "query": {"type": "string", "description": "The song title, album name, or artist name to play/shuffle."},
+                "artist": {"type": "string", "description": "Artist name. REQUIRED for tracks and albums by a specific artist. Examples: 'play Beat It by Michael Jackson' → query='Beat It', artist='Michael Jackson', media_type='track'. 'play Thriller by Michael Jackson' → query='Thriller', artist='Michael Jackson', media_type='album'."},
+                "album": {"type": "string", "description": "Album name. Use when playing a specific track FROM an album. Example: 'play Beat It from Thriller' → query='Beat It', album='Thriller', media_type='track'."},
                 "room": {"type": "string", "description": f"Target room: {rooms_list}"},
                 "media_type": {
                     "type": "string",
                     "enum": ["artist", "album", "track"],
-                    "description": "'track' = specific song (requires artist param), 'album' = album, 'artist' = play artist's music."
+                    "description": "'track' = specific song (use artist and/or album params), 'album' = album (use artist param), 'artist' = play all music by artist."
                 }
             },
             ["action"]
