@@ -194,8 +194,9 @@ class MusicController:
         if media_type not in valid_types:
             media_type = "artist"
 
-        # Smart override: if artist is specified with a query, user likely wants a track
-        # "Big Pimpin by Jay-Z" = track, not artist
+        # Smart override: if artist is specified with a query but media_type is "artist",
+        # user likely wants a track: "Big Pimpin by Jay-Z" = track, not artist
+        # BUT if user explicitly said "album", respect that choice
         if artist and query and media_type == "artist":
             media_type = "track"
             _LOGGER.info("Overriding media_type to 'track' since both query and artist specified")
@@ -210,14 +211,11 @@ class MusicController:
             # Include artist in search query for better results
             search_query = f"{query} {artist}" if artist else query
 
-            # Search for tracks first when artist is specified, then fall back
-            search_types_to_try = []
-            if artist:
-                # When artist specified, prioritize: track -> album -> artist
-                search_types_to_try = ["track", "album", "artist"]
-            else:
-                # Otherwise just use the requested type
-                search_types_to_try = [media_type]
+            # NO cascading - search ONLY the requested type
+            # User must explicitly say "album" to get albums (e.g., "play album Thriller by Michael Jackson")
+            # Otherwise "play Thriller by Michael Jackson" searches tracks only
+            search_types_to_try = [media_type]
+            _LOGGER.info("Searching for media_type='%s' only (no cascade)", media_type)
 
             found_name = None
             found_artist = None
