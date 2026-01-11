@@ -19,6 +19,22 @@ STOP_FEATURE = MediaPlayerEntityFeature.STOP
 PLAY_FEATURE = MediaPlayerEntityFeature.PLAY
 
 
+def _normalize_unicode(text: str | None) -> str:
+    """Normalize Unicode strings to ensure proper character display.
+
+    Handles escaped Unicode sequences and ensures proper UTF-8 encoding.
+    """
+    if not text:
+        return ""
+    # If the string contains escaped unicode (e.g., \\u00e1), decode it
+    if "\\u" in text:
+        try:
+            text = text.encode('utf-8').decode('unicode_escape')
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            pass
+    return text
+
+
 class MusicController:
     """Controller for music playback operations.
 
@@ -302,7 +318,7 @@ class MusicController:
 
                         if albums_with_year:
                             best_album = albums_with_year[0][1]
-                            found_name = best_album.get("name") or best_album.get("title")
+                            found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
                             found_uri = best_album.get("uri") or best_album.get("media_id")
                             found_artist = artist
                             found_type = "album"
@@ -410,21 +426,21 @@ class MusicController:
                 # Only accept if we have a good match (score > 0 means query or artist matched)
                 if scored_results and scored_results[0][0] > 0:
                     best_match = scored_results[0][1]
-                    found_name = best_match.get("name") or best_match.get("title")
+                    found_name = _normalize_unicode(best_match.get("name") or best_match.get("title"))
                     found_uri = best_match.get("uri") or best_match.get("media_id")
                     found_type = try_type
 
                     # Extract artist name from result
                     if best_match.get("artists"):
                         if isinstance(best_match["artists"], list) and best_match["artists"]:
-                            found_artist = best_match["artists"][0].get("name")
+                            found_artist = _normalize_unicode(best_match["artists"][0].get("name"))
                         elif isinstance(best_match["artists"], str):
                             found_artist = best_match["artists"]
                     elif best_match.get("artist"):
                         if isinstance(best_match["artist"], str):
                             found_artist = best_match["artist"]
                         else:
-                            found_artist = best_match["artist"].get("name")
+                            found_artist = _normalize_unicode(best_match["artist"].get("name"))
 
                     _LOGGER.info("Found %s: '%s' by '%s' (uri: %s, score: %d)", try_type, found_name, found_artist, found_uri, scored_results[0][0])
                     break  # Found a good match, stop searching
