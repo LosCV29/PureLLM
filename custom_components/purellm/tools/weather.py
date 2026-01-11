@@ -14,6 +14,56 @@ _LOGGER = logging.getLogger(__name__)
 # API timeout in seconds
 API_TIMEOUT = 15
 
+# US state name to abbreviation mapping
+US_STATES = {
+    "alabama": "AL", "alaska": "AK", "arizona": "AZ", "arkansas": "AR",
+    "california": "CA", "colorado": "CO", "connecticut": "CT", "delaware": "DE",
+    "florida": "FL", "georgia": "GA", "hawaii": "HI", "idaho": "ID",
+    "illinois": "IL", "indiana": "IN", "iowa": "IA", "kansas": "KS",
+    "kentucky": "KY", "louisiana": "LA", "maine": "ME", "maryland": "MD",
+    "massachusetts": "MA", "michigan": "MI", "minnesota": "MN", "mississippi": "MS",
+    "missouri": "MO", "montana": "MT", "nebraska": "NE", "nevada": "NV",
+    "new hampshire": "NH", "new jersey": "NJ", "new mexico": "NM", "new york": "NY",
+    "north carolina": "NC", "north dakota": "ND", "ohio": "OH", "oklahoma": "OK",
+    "oregon": "OR", "pennsylvania": "PA", "rhode island": "RI", "south carolina": "SC",
+    "south dakota": "SD", "tennessee": "TN", "texas": "TX", "utah": "UT",
+    "vermont": "VT", "virginia": "VA", "washington": "WA", "west virginia": "WV",
+    "wisconsin": "WI", "wyoming": "WY", "district of columbia": "DC",
+}
+
+# Set of valid state abbreviations for detection
+US_STATE_ABBREVS = set(US_STATES.values())
+
+
+def _normalize_location(query: str) -> str:
+    """Normalize location query for OpenWeatherMap geocoding API.
+
+    Converts full state names to abbreviations and adds ',US' suffix
+    for US locations to improve geocoding accuracy.
+    """
+    if not query:
+        return query
+
+    parts = [p.strip() for p in query.split(",")]
+
+    if len(parts) >= 2:
+        # Check if second part is a US state (full name or abbrev)
+        state_part = parts[1].lower()
+
+        # Convert full state name to abbreviation
+        if state_part in US_STATES:
+            parts[1] = US_STATES[state_part]
+            # Add US suffix if not already present
+            if len(parts) == 2:
+                parts.append("US")
+        # If it's already a state abbreviation, add US suffix
+        elif parts[1].upper() in US_STATE_ABBREVS:
+            parts[1] = parts[1].upper()
+            if len(parts) == 2:
+                parts.append("US")
+
+    return ",".join(parts)
+
 
 async def get_weather_forecast(
     arguments: dict[str, Any],
@@ -46,6 +96,8 @@ async def get_weather_forecast(
 
     # If user specified a location, geocode it
     if location_query:
+        # Normalize: convert full state names to abbreviations, add US suffix
+        location_query = _normalize_location(location_query)
         try:
             geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={location_query}&limit=1&appid={api_key}"
             async with session.get(geo_url) as geo_response:
