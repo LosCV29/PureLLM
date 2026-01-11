@@ -269,9 +269,16 @@ class MusicController:
                     matching_albums = [a for a in albums if artist_lower in get_album_artist(a) or get_album_artist(a) in artist_lower]
 
                     if matching_albums:
-                        # Sort by year (try multiple fields)
+                        # Sort by year (try multiple fields that MA might return)
                         def get_year(alb):
-                            year = alb.get("year") or alb.get("release_date") or alb.get("date") or ""
+                            # Try various fields Music Assistant might use
+                            year = alb.get("year") or alb.get("release_date") or alb.get("date") or alb.get("release_year") or ""
+
+                            # Also check in metadata dict if present
+                            if not year and alb.get("metadata"):
+                                meta = alb["metadata"]
+                                year = meta.get("year") or meta.get("release_date") or ""
+
                             if isinstance(year, str) and len(year) >= 4:
                                 try:
                                     return int(year[:4])
@@ -281,23 +288,27 @@ class MusicController:
                                 return year
                             return 0
 
+                        # Log available albums for debugging
+                        for alb in matching_albums[:5]:
+                            alb_name = alb.get("name") or alb.get("title")
+                            alb_year = get_year(alb)
+                            _LOGGER.info("  Album candidate: '%s' (year: %s, raw: %s)",
+                                        alb_name, alb_year,
+                                        alb.get("year") or alb.get("release_date") or "unknown")
+
                         albums_with_year = [(get_year(a), a) for a in matching_albums]
-                        albums_with_year = [(y, a) for y, a in albums_with_year if y > 0]  # Filter out unknown years
+                        # Include albums even with year=0, but sort them to the end
+                        albums_with_year.sort(key=lambda x: (x[0] == 0, -x[0] if album_modifier == "latest" else x[0]))
 
                         if albums_with_year:
-                            if album_modifier == "latest":
-                                albums_with_year.sort(key=lambda x: x[0], reverse=True)
-                            else:  # first
-                                albums_with_year.sort(key=lambda x: x[0])
-
                             best_album = albums_with_year[0][1]
                             found_name = best_album.get("name") or best_album.get("title")
                             found_uri = best_album.get("uri") or best_album.get("media_id")
-                            found_artist = artist  # Use the requested artist name
+                            found_artist = artist
                             found_type = "album"
 
                             year = albums_with_year[0][0]
-                            _LOGGER.info("Found %s album: '%s' (%d) by '%s'", album_modifier, found_name, year, found_artist)
+                            _LOGGER.info("Selected %s album: '%s' (year: %d) by '%s'", album_modifier, found_name, year, found_artist)
 
                             # Play it
                             for player in target_players:
@@ -315,27 +326,6 @@ class MusicController:
                                     )
 
                             return {"status": "playing", "message": f"Playing {found_name} by {found_artist} in the {room}"}
-                        else:
-                            # No albums with year info, just pick first/last in list
-                            best_album = matching_albums[-1] if album_modifier == "latest" else matching_albums[0]
-                            found_name = best_album.get("name") or best_album.get("title")
-                            found_uri = best_album.get("uri") or best_album.get("media_id")
-
-                            for player in target_players:
-                                await self._hass.services.async_call(
-                                    "music_assistant", "play_media",
-                                    {"media_id": found_uri, "media_type": "album", "enqueue": "replace", "radio_mode": False},
-                                    target={"entity_id": player},
-                                    blocking=True
-                                )
-                                if shuffle:
-                                    await self._hass.services.async_call(
-                                        "media_player", "shuffle_set",
-                                        {"entity_id": player, "shuffle": True},
-                                        blocking=True
-                                    )
-
-                            return {"status": "playing", "message": f"Playing {found_name} by {artist} in the {room}"}
 
                 return {"error": f"Could not find albums by {artist}"}
 
