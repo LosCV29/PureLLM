@@ -56,11 +56,11 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_weather and config.openweathermap_api_key:
         tools.append(_tool(
             "get_weather_forecast",
-            "Get current weather AND forecast for any city worldwide. Use for: 'what's the weather', 'will it rain', 'temperature', 'forecast'. Pass location ONLY if user specifies a place. Omit 'location' param entirely to use home location.",
+            "Get current weather AND forecast. CRITICAL: If user mentions ANY city/place (e.g., 'weather in Chicago', 'Philadelphia forecast'), you MUST pass that place as the 'location' parameter - NEVER ignore it! Only omit location for 'what's the weather' with no place mentioned.",
             {
                 "location": {
                     "type": "string",
-                    "description": "For US cities: ALWAYS include state (e.g., 'Springfield, IL', 'Portland, OR', 'Austin, TX'). For international: include country (e.g., 'Paris, France', 'Tokyo, Japan'). ONLY include if user specifies a location."
+                    "description": "REQUIRED if user mentions a place. For US cities: include state (e.g., 'Springfield, IL', 'Austin, TX'). For international: include country (e.g., 'Paris, France'). Only omit if user asks about weather with NO location specified."
                 },
                 "forecast_type": {
                     "type": "string",
