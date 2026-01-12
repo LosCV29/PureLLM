@@ -152,7 +152,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "get_league_schedule",
-            "Get all games for a LEAGUE on a given day. Use for: 'any NFL games today?', 'what NBA games are tomorrow?', 'Premier League schedule'. Supports: NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League, College Football/Basketball.",
+            "Get all games for a LEAGUE on a given day. Returns game count + games array. For yes/no questions ('any NFL games today?'), just report the count. For 'what games', 'list games', read the games array and list them. Supports: NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League, College Football/Basketball.",
             {
                 "league": {
                     "type": "string",
@@ -162,10 +162,6 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "type": "string",
                     "enum": ["today", "tomorrow"],
                     "description": "Which day to check (default: today)"
-                },
-                "count_only": {
-                    "type": "boolean",
-                    "description": "Set to true ONLY for yes/no questions like 'any games today?', 'is there NFL today?'. For 'what games', 'show me games', 'list games' = use false or omit."
                 }
             },
             ["league"]
