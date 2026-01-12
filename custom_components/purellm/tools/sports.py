@@ -517,7 +517,6 @@ async def get_league_schedule(
     """
     league_input = arguments.get("league", "").lower().strip()
     date_input = arguments.get("date", "today").lower().strip()
-    count_only = arguments.get("count_only", False)  # Default: show full list
 
     if not league_input:
         return {"error": "No league specified. Try: NFL, NBA, MLB, NHL, Premier League, etc."}
@@ -579,24 +578,7 @@ async def get_league_schedule(
                 "response_text": f"No {league_display} games {date_label}."
             }
 
-        # If user just asked "any games?" - return count only
-        if count_only:
-            if game_count == 1:
-                return {
-                    "league": league_display,
-                    "date": date_label,
-                    "game_count": 1,
-                    "response_text": f"Yes, there's 1 {league_display} game {date_label}."
-                }
-            else:
-                return {
-                    "league": league_display,
-                    "date": date_label,
-                    "game_count": game_count,
-                    "response_text": f"Yes, there are {game_count} {league_display} games {date_label}."
-                }
-
-        # User wants details - build game list
+        # Build game list
         games = []
         for event in events:
             comp = event.get("competitions", [{}])[0]
@@ -644,9 +626,13 @@ async def get_league_schedule(
 
             games.append(game_info)
 
-        # Build response text
-        game_lines = [g["summary"] for g in games]
-        response_text = f"{league_display} games {date_label} ({game_count}):\n" + "\n".join(game_lines)
+        # Build response - simple count for yes/no questions, games array for details
+        if game_count == 1:
+            # Single game: include the matchup in response_text
+            response_text = f"There's 1 {league_display} game {date_label}: {games[0]['summary']}"
+        else:
+            # Multiple games: just the count, let LLM read games array if user wants details
+            response_text = f"There are {game_count} {league_display} games {date_label}."
 
         return {
             "league": league_display,
