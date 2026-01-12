@@ -42,7 +42,8 @@ async def check_device_status(
     original_query = user_query.lower()
 
     patterns = [
-        r"(?:what(?:'s| is) the |status of (?:the )?|check (?:the )?|is (?:the )?)([a-z ]+?)(?:\s+(?:status|open|closed|locked|unlocked|on|off|state)|\?|$)",
+        r"(?:what(?:'s| is) the )?status of (?:the )?([a-z ]+?)(?:\?|$)",  # "what's the status of the back door"
+        r"(?:what(?:'s| is) the |check (?:the )?|is (?:the )?)([a-z ]+?)(?:\s+(?:status|open|closed|locked|unlocked|on|off|state)|\?|$)",
         r"(?:is |are )(?:the )?([a-z ]+?)(?:\s+(?:open|closed|locked|unlocked|on|off)|\?)",
     ]
 
