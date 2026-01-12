@@ -802,11 +802,22 @@ class PureLLMConversationEntity(ConversationEntity):
             top_place = places[0]
             place_name = top_place.get("name", "Unknown")
             address = top_place.get("short_address") or top_place.get("address", "")
+            full_address = top_place.get("address", "")
             distance = top_place.get("distance_miles")
-            directions_url = top_place.get("directions_url", "")
+            directions_url = top_place.get("directions_url", "")  # Google Maps URL
+            website = top_place.get("website", "")
+            phone = top_place.get("phone", "")
+            coordinates = top_place.get("coordinates", {})
+
+            # Build Apple Maps URL if coordinates available
+            apple_maps_url = ""
+            if coordinates and coordinates.get("lat") and coordinates.get("lng"):
+                lat, lng = coordinates["lat"], coordinates["lng"]
+                # Apple Maps URL with destination
+                apple_maps_url = f"https://maps.apple.com/?daddr={lat},{lng}&dirflg=d"
 
             # Build notification message
-            title = f"Directions: {place_name}"
+            title = f"📍 {place_name}"
             message_parts = []
 
             if address:
@@ -816,18 +827,59 @@ class PureLLMConversationEntity(ConversationEntity):
 
             message = "\n".join(message_parts) if message_parts else place_name
 
-            # Build notification data
+            # Build action buttons for the notification
+            actions = []
+
+            # Google Maps directions button
+            if directions_url:
+                actions.append({
+                    "action": "URI",
+                    "title": "🗺️ Google Maps",
+                    "uri": directions_url,
+                })
+
+            # Apple Maps directions button
+            if apple_maps_url:
+                actions.append({
+                    "action": "URI",
+                    "title": "🍎 Apple Maps",
+                    "uri": apple_maps_url,
+                })
+
+            # Website button (if available)
+            if website:
+                actions.append({
+                    "action": "URI",
+                    "title": "🌐 Website",
+                    "uri": website,
+                })
+
+            # Call button (if phone available)
+            if phone:
+                # Clean phone number for tel: URI
+                phone_clean = "".join(c for c in phone if c.isdigit() or c == "+")
+                actions.append({
+                    "action": "URI",
+                    "title": "📞 Call",
+                    "uri": f"tel:{phone_clean}",
+                })
+
+            # Build notification data with actions
             notification_data = {
                 "title": title,
                 "message": message,
+                "data": {
+                    # Tapping notification opens Google Maps
+                    "url": directions_url if directions_url else apple_maps_url,
+                    "clickAction": directions_url if directions_url else apple_maps_url,
+                    # Action buttons
+                    "actions": actions,
+                    # iOS specific - make it a time-sensitive notification
+                    "push": {
+                        "interruption-level": "time-sensitive",
+                    },
+                },
             }
-
-            # Add clickable action for directions if URL available
-            if directions_url:
-                notification_data["data"] = {
-                    "url": directions_url,
-                    "clickAction": directions_url,
-                }
 
             _LOGGER.info("Notification data: %s", notification_data)
             _LOGGER.info("Sending to entities: %s", self.notification_entities)
