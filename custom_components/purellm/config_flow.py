@@ -111,8 +111,10 @@ from .const import (
     # Notifications
     CONF_NOTIFICATION_ENTITIES,
     CONF_NOTIFY_ON_PLACES,
+    CONF_NOTIFY_ON_RESTAURANTS,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
+    DEFAULT_NOTIFY_ON_RESTAURANTS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -949,6 +951,8 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     processed_input[CONF_NOTIFICATION_ENTITIES] = entity_list
             if CONF_NOTIFY_ON_PLACES in user_input:
                 processed_input[CONF_NOTIFY_ON_PLACES] = user_input[CONF_NOTIFY_ON_PLACES]
+            if CONF_NOTIFY_ON_RESTAURANTS in user_input:
+                processed_input[CONF_NOTIFY_ON_RESTAURANTS] = user_input[CONF_NOTIFY_ON_RESTAURANTS]
 
             new_options = {**self._entry.options, **processed_input}
             return self.async_create_entry(title="", data=new_options)
@@ -996,6 +1000,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_NOTIFY_ON_PLACES,
                         default=current.get(CONF_NOTIFY_ON_PLACES, DEFAULT_NOTIFY_ON_PLACES),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_NOTIFY_ON_RESTAURANTS,
+                        default=current.get(CONF_NOTIFY_ON_RESTAURANTS, DEFAULT_NOTIFY_ON_RESTAURANTS),
                     ): cv.boolean,
                 }
             ),

@@ -61,9 +61,11 @@ from .const import (
     CONF_YELP_API_KEY,
     CONF_NOTIFICATION_ENTITIES,
     CONF_NOTIFY_ON_PLACES,
+    CONF_NOTIFY_ON_RESTAURANTS,
     DEFAULT_API_KEY,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
+    DEFAULT_NOTIFY_ON_RESTAURANTS,
     DEFAULT_ENABLE_CALENDAR,
     DEFAULT_ENABLE_CAMERAS,
     DEFAULT_ENABLE_DEVICE_STATUS,
@@ -268,6 +270,7 @@ class PureLLMConversationEntity(ConversationEntity):
         else:
             self.notification_entities = []
         self.notify_on_places = config.get(CONF_NOTIFY_ON_PLACES, DEFAULT_NOTIFY_ON_PLACES)
+        self.notify_on_restaurants = config.get(CONF_NOTIFY_ON_RESTAURANTS, DEFAULT_NOTIFY_ON_RESTAURANTS)
 
         # Clear caches on config update
         self._tools = None
@@ -903,6 +906,131 @@ class PureLLMConversationEntity(ConversationEntity):
         except Exception as err:
             _LOGGER.error("Error sending places notification: %s", err, exc_info=True)
 
+    async def _send_restaurant_notification(self, restaurant_result: dict[str, Any]) -> None:
+        """Send notification with restaurant info to configured devices."""
+        try:
+            restaurants = restaurant_result.get("restaurants", [])
+            query = restaurant_result.get("query", "restaurant")
+
+            _LOGGER.info("Sending restaurant notification for query: %s, count: %d", query, len(restaurants))
+
+            if not restaurants:
+                return
+
+            # Get the top result
+            top_restaurant = restaurants[0]
+            name = top_restaurant.get("name", "Unknown")
+            address = top_restaurant.get("address", "")
+            rating = top_restaurant.get("rating")
+            review_count = top_restaurant.get("review_count", 0)
+            price = top_restaurant.get("price", "")
+            cuisine = top_restaurant.get("cuisine", "")
+            distance = top_restaurant.get("distance", "")
+            yelp_url = top_restaurant.get("yelp_url", "")
+            phone = top_restaurant.get("phone", "")
+            coordinates = top_restaurant.get("coordinates", {})
+
+            # Build Google Maps URL from coordinates
+            google_maps_url = ""
+            apple_maps_url = ""
+            if coordinates and coordinates.get("lat") and coordinates.get("lng"):
+                lat, lng = coordinates["lat"], coordinates["lng"]
+                google_maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lng}"
+                apple_maps_url = f"https://maps.apple.com/?daddr={lat},{lng}&dirflg=d"
+
+            # Build notification message
+            title = f"🍽️ {name}"
+            message_parts = []
+
+            if cuisine:
+                message_parts.append(cuisine)
+            if rating:
+                rating_str = f"★ {rating}"
+                if review_count:
+                    rating_str += f" ({review_count:,} reviews)"
+                message_parts.append(rating_str)
+            if price:
+                message_parts.append(price)
+            if distance:
+                message_parts.append(distance)
+            if address:
+                message_parts.append(address)
+
+            message = "\n".join(message_parts) if message_parts else name
+
+            # Build action buttons
+            actions = []
+
+            # Yelp page button
+            if yelp_url:
+                actions.append({
+                    "action": "URI",
+                    "title": "⭐ Yelp Page",
+                    "uri": yelp_url,
+                })
+
+            # Google Maps directions button
+            if google_maps_url:
+                actions.append({
+                    "action": "URI",
+                    "title": "🗺️ Google Maps",
+                    "uri": google_maps_url,
+                })
+
+            # Apple Maps directions button
+            if apple_maps_url:
+                actions.append({
+                    "action": "URI",
+                    "title": "🍎 Apple Maps",
+                    "uri": apple_maps_url,
+                })
+
+            # Call button (if phone available)
+            if phone:
+                phone_clean = "".join(c for c in phone if c.isdigit() or c == "+")
+                actions.append({
+                    "action": "URI",
+                    "title": "📞 Call",
+                    "uri": f"tel:{phone_clean}",
+                })
+
+            # Build notification data with actions
+            notification_data = {
+                "title": title,
+                "message": message,
+                "data": {
+                    # Tapping notification opens Yelp page
+                    "url": yelp_url if yelp_url else google_maps_url,
+                    "clickAction": yelp_url if yelp_url else google_maps_url,
+                    # Action buttons
+                    "actions": actions,
+                    # iOS specific - make it a time-sensitive notification
+                    "push": {
+                        "interruption-level": "time-sensitive",
+                    },
+                },
+            }
+
+            _LOGGER.info("Restaurant notification data: %s", notification_data)
+
+            # Send to all configured notification entities
+            for entity_id in self.notification_entities:
+                service_name = entity_id.replace("notify.", "") if entity_id.startswith("notify.") else entity_id
+                _LOGGER.info("Calling notify.%s for restaurant", service_name)
+                try:
+                    await self.hass.services.async_call(
+                        "notify",
+                        service_name,
+                        notification_data,
+                        blocking=False,
+                    )
+                    _LOGGER.info("Successfully sent restaurant notification to %s", service_name)
+                except Exception as notify_err:
+                    _LOGGER.error("Failed to send restaurant notification to %s: %s", entity_id, notify_err)
+
+        except Exception as err:
+            _LOGGER.error("Error sending restaurant notification: %s", err, exc_info=True)
+
     # =========================================================================
     # Tool Execution
     # =========================================================================
@@ -970,10 +1098,14 @@ class PureLLMConversationEntity(ConversationEntity):
                 return result
 
             elif tool_name == "get_restaurant_recommendations":
-                return await places_tool.get_restaurant_recommendations(
+                result = await places_tool.get_restaurant_recommendations(
                     arguments, self._session, self.yelp_api_key,
                     latitude, longitude, self._track_api_call
                 )
+                # Send notification if enabled and we have results
+                if self.notify_on_restaurants and self.notification_entities and result.get("restaurants"):
+                    await self._send_restaurant_notification(result)
+                return result
 
             elif tool_name == "calculate_age":
                 return await wikipedia_tool.calculate_age(

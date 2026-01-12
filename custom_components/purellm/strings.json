@@ -110,7 +110,8 @@
         "description": "Select devices to receive notifications when location services are used",
         "data": {
           "notification_entities": "Notification Recipients",
-          "notify_on_places": "Send notification when Places/Directions are used"
+          "notify_on_places": "Send notification when Places/Directions are used",
+          "notify_on_restaurants": "Send notification when Restaurant recommendations are used"
         }
       },
       "api_keys": {
