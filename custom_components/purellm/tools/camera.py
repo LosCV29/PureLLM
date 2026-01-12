@@ -70,12 +70,24 @@ async def check_camera(
             }
 
         analysis = result.get("description", "Unable to analyze camera feed")
+        snapshot_url = result.get("snapshot_url", "")
+        identified_people = result.get("identified_people", [])
 
-        return {
+        response = {
             "location": friendly_name,
             "status": "checked",
             "description": analysis
         }
+
+        # Include snapshot URL if available
+        if snapshot_url:
+            response["snapshot_url"] = snapshot_url
+
+        # Include identified people if any
+        if identified_people:
+            response["identified_people"] = identified_people
+
+        return response
 
     except Exception as err:
         _LOGGER.error("Error checking camera %s: %s", location, err, exc_info=True)
@@ -122,12 +134,19 @@ async def quick_camera_check(
             return {"location": friendly_name, "error": "Camera unavailable"}
 
         analysis = result.get("description", "")
+        snapshot_url = result.get("snapshot_url", "")
         brief = analysis.split('.')[0] + '.' if analysis else "No activity."
 
-        return {
+        response = {
             "location": friendly_name,
             "brief": brief
         }
+
+        # Include snapshot URL if available
+        if snapshot_url:
+            response["snapshot_url"] = snapshot_url
+
+        return response
 
     except Exception as err:
         _LOGGER.error("Error quick-checking camera %s: %s", location, err)

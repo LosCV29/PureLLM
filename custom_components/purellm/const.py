@@ -245,7 +245,9 @@ DEFAULT_NEWSAPI_KEY: Final = ""
 CONF_NOTIFICATION_ENTITIES: Final = "notification_entities"
 CONF_NOTIFY_ON_PLACES: Final = "notify_on_places"
 CONF_NOTIFY_ON_RESTAURANTS: Final = "notify_on_restaurants"
+CONF_NOTIFY_ON_CAMERA: Final = "notify_on_camera"
 
 DEFAULT_NOTIFICATION_ENTITIES: Final = ""  # Newline-separated list of notify service names
 DEFAULT_NOTIFY_ON_PLACES: Final = True
 DEFAULT_NOTIFY_ON_RESTAURANTS: Final = True
+DEFAULT_NOTIFY_ON_CAMERA: Final = True
