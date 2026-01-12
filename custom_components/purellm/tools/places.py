@@ -362,7 +362,7 @@ async def get_restaurant_recommendations(
     """Get restaurant recommendations from Yelp API.
 
     Args:
-        arguments: Tool arguments (query, max_results)
+        arguments: Tool arguments (query, sort_by, price, max_results)
         session: aiohttp session
         api_key: Yelp API key
         latitude: Search center latitude
@@ -373,7 +373,9 @@ async def get_restaurant_recommendations(
         Restaurant data dict
     """
     query = arguments.get("query", "")
-    max_results = min(arguments.get("max_results", 5), 10)
+    sort_by = arguments.get("sort_by", "rating")  # rating, review_count, distance, best_match
+    price = arguments.get("price", "")  # 1,2,3,4 or combinations like "1,2"
+    max_results = min(arguments.get("max_results", 3), 10)
 
     if not query:
         return {"error": "No restaurant/food type specified"}
@@ -381,16 +383,28 @@ async def get_restaurant_recommendations(
     if not api_key:
         return {"error": "Yelp API key not configured. Add it in Settings → PolyVoice → API Keys."}
 
+    # Validate sort_by
+    valid_sorts = ["rating", "review_count", "distance", "best_match"]
+    if sort_by not in valid_sorts:
+        sort_by = "rating"
+
     try:
         encoded_query = urllib.parse.quote(query)
-        url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&latitude={latitude}&longitude={longitude}&limit={max_results}&sort_by=rating"
+        url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&latitude={latitude}&longitude={longitude}&limit={max_results}&sort_by={sort_by}"
+
+        # Add price filter if specified
+        if price:
+            # Clean and validate price (should be like "1", "2", "1,2", "3,4", etc.)
+            price_clean = ",".join([p.strip() for p in price.split(",") if p.strip() in ["1", "2", "3", "4"]])
+            if price_clean:
+                url += f"&price={price_clean}"
 
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Accept": "application/json"
         }
 
-        _LOGGER.info("Searching Yelp for: %s", query)
+        _LOGGER.info("Searching Yelp for: %s (sort=%s, price=%s)", query, sort_by, price or "any")
 
         track_api_call("restaurants")
 
