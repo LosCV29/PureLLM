@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -33,6 +33,43 @@ TOPIC_CATEGORIES = frozenset([
     "fashion", "gaming", "crypto", "cryptocurrency", "auto",
     "automotive", "cars", "real estate", "weather", "local"
 ])
+
+# Breaking news threshold (articles newer than this are "breaking")
+BREAKING_NEWS_HOURS = 3
+
+
+def _get_relative_time(published_dt: datetime, now: datetime) -> str:
+    """Convert datetime to relative time string.
+
+    Args:
+        published_dt: Article publish datetime (UTC)
+        now: Current datetime (UTC)
+
+    Returns:
+        Relative time string like "2 hours ago", "Just now", "Yesterday"
+    """
+    diff = now - published_dt
+
+    # Future articles (clock skew)
+    if diff.total_seconds() < 0:
+        return "Just now"
+
+    minutes = int(diff.total_seconds() / 60)
+    hours = int(diff.total_seconds() / 3600)
+    days = diff.days
+
+    if minutes < 1:
+        return "Just now"
+    elif minutes < 60:
+        return f"{minutes}m ago"
+    elif hours < 24:
+        return f"{hours}h ago"
+    elif days == 1:
+        return "Yesterday"
+    elif days < 7:
+        return f"{days} days ago"
+    else:
+        return published_dt.strftime("%b %d")
 
 
 async def get_news(
@@ -65,25 +102,29 @@ async def get_news(
         base_url = "https://api.thenewsapi.com/v1/news"
         fetch_limit = 25
 
+        # Get articles from the last 24 hours for freshness
+        now_utc = datetime.now(timezone.utc)
+        published_after = (now_utc - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%S")
+
         if topic:
             encoded_topic = urllib.parse.quote(topic)
-            url = f"{base_url}/all?api_token={api_key}&search={encoded_topic}&language=en&limit={fetch_limit}"
+            url = f"{base_url}/all?api_token={api_key}&search={encoded_topic}&language=en&limit={fetch_limit}&published_after={published_after}&sort=published_at"
             display_topic = topic
         elif category:
             mapped_category = CATEGORY_MAP.get(category.lower(), category.lower())
 
             if mapped_category in VALID_CATEGORIES:
-                url = f"{base_url}/top?api_token={api_key}&locale=us&language=en&categories={mapped_category}&limit={fetch_limit}"
+                url = f"{base_url}/top?api_token={api_key}&locale=us&language=en&categories={mapped_category}&limit={fetch_limit}&published_after={published_after}&sort=published_at"
                 display_topic = f"{category.title()} News"
             elif mapped_category in TOPIC_CATEGORIES or mapped_category not in VALID_CATEGORIES:
                 encoded_topic = urllib.parse.quote(mapped_category)
-                url = f"{base_url}/all?api_token={api_key}&search={encoded_topic}&language=en&limit={fetch_limit}"
+                url = f"{base_url}/all?api_token={api_key}&search={encoded_topic}&language=en&limit={fetch_limit}&published_after={published_after}&sort=published_at"
                 display_topic = f"{category.title()} News"
             else:
-                url = f"{base_url}/top?api_token={api_key}&locale=us&language=en&limit={fetch_limit}"
+                url = f"{base_url}/top?api_token={api_key}&locale=us&language=en&limit={fetch_limit}&published_after={published_after}&sort=published_at"
                 display_topic = "Top Headlines"
         else:
-            url = f"{base_url}/top?api_token={api_key}&locale=us&language=en&limit={fetch_limit}"
+            url = f"{base_url}/top?api_token={api_key}&locale=us&language=en&limit={fetch_limit}&published_after={published_after}&sort=published_at"
             display_topic = "Top Headlines"
 
         _LOGGER.info("Fetching news from TheNewsAPI: %s", display_topic)
@@ -109,8 +150,16 @@ async def get_news(
                     seen_titles = set()
                     blocked_sources = {"yahoo.com", "finance.yahoo.com"}
                     blocked_count = 0
+                    breaking_count = 0
 
-                    for article in articles:
+                    # Sort articles by published_at descending (freshest first)
+                    sorted_articles = sorted(
+                        articles,
+                        key=lambda x: x.get("published_at", ""),
+                        reverse=True
+                    )
+
+                    for article in sorted_articles:
                         if len(headlines) >= max_results:
                             break
 
@@ -133,21 +182,44 @@ async def get_news(
                         if summary and len(summary) > 200:
                             summary = summary[:200] + "..."
 
-                        date_text = ""
+                        # Parse published time and calculate relative time
+                        relative_time = ""
+                        hours_ago = None
+                        is_breaking = False
+
                         if published_at:
                             try:
                                 dt = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
-                                dt_local = dt.astimezone(hass_timezone)
-                                date_text = dt_local.strftime("%B %d at %I:%M %p")
-                            except (ValueError, KeyError, TypeError, AttributeError):
-                                date_text = published_at
+                                relative_time = _get_relative_time(dt, now_utc)
 
-                        headlines.append({
+                                # Calculate hours ago for breaking news detection
+                                time_diff = now_utc - dt
+                                hours_ago = time_diff.total_seconds() / 3600
+
+                                # Mark as breaking if less than threshold
+                                if hours_ago < BREAKING_NEWS_HOURS:
+                                    is_breaking = True
+                                    breaking_count += 1
+
+                            except (ValueError, KeyError, TypeError, AttributeError):
+                                relative_time = published_at
+
+                        headline_data = {
                             "headline": title,
                             "summary": summary,
                             "source": source_name,
-                            "published": date_text
-                        })
+                            "published": relative_time,
+                        }
+
+                        # Add breaking flag if applicable
+                        if is_breaking:
+                            headline_data["is_breaking"] = True
+
+                        # Add hours_ago for LLM context
+                        if hours_ago is not None:
+                            headline_data["hours_ago"] = round(hours_ago, 1)
+
+                        headlines.append(headline_data)
 
                     result = {
                         "topic": display_topic,
@@ -155,8 +227,18 @@ async def get_news(
                         "articles": headlines
                     }
 
-                    _LOGGER.info("TheNewsAPI: %d returned, %d blocked, %d passed", len(articles), blocked_count, len(headlines))
+                    # Add breaking news count if any
+                    if breaking_count > 0:
+                        result["breaking_news_count"] = breaking_count
+
+                    _LOGGER.info("TheNewsAPI: %d returned, %d blocked, %d passed, %d breaking",
+                               len(articles), blocked_count, len(headlines), breaking_count)
                     return result
+
+                elif response.status == 200 and not data.get("data"):
+                    # Empty results - try without published_after filter as fallback
+                    _LOGGER.info("No recent news, falling back to unfiltered query")
+                    # Could implement fallback here if needed
 
                 elif response.status == 401:
                     return {"error": "Invalid TheNewsAPI key. Check your API token."}
