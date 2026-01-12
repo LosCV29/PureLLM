@@ -504,6 +504,7 @@ async def book_restaurant(
         Reservation data dict with URLs
     """
     restaurant_name = arguments.get("restaurant_name", "")
+    location = arguments.get("location", "")  # Optional city/area override
     party_size = arguments.get("party_size", 2)
     date = arguments.get("date", "")  # YYYY-MM-DD format
     time = arguments.get("time", "")  # HH:MM format (24hr) or natural like "7pm"
@@ -517,7 +518,15 @@ async def book_restaurant(
     try:
         # Search Yelp for this specific restaurant
         encoded_query = urllib.parse.quote(restaurant_name)
-        url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&latitude={latitude}&longitude={longitude}&limit=1&categories=restaurants,food"
+
+        # Use location text if provided, otherwise fall back to lat/long
+        if location:
+            encoded_location = urllib.parse.quote(location)
+            url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&location={encoded_location}&limit=3&categories=restaurants,food"
+            _LOGGER.info("Searching Yelp in location '%s' for: %s", location, restaurant_name)
+        else:
+            url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&latitude={latitude}&longitude={longitude}&limit=3&categories=restaurants,food"
+            _LOGGER.info("Searching Yelp near coordinates for: %s", restaurant_name)
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -539,7 +548,32 @@ async def book_restaurant(
                 if not businesses:
                     return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
 
-                biz = businesses[0]
+                # Find best match by name similarity
+                search_name = restaurant_name.lower().strip()
+                best_match = None
+                best_score = 0
+
+                for b in businesses:
+                    biz_name_lower = b.get("name", "").lower()
+                    # Score based on how much of the search term appears in the business name
+                    if search_name in biz_name_lower:
+                        score = 100  # Exact substring match
+                    elif biz_name_lower in search_name:
+                        score = 90  # Business name is part of search
+                    else:
+                        # Count matching words
+                        search_words = set(search_name.split())
+                        biz_words = set(biz_name_lower.split())
+                        matching = len(search_words & biz_words)
+                        score = matching * 20
+
+                    if score > best_score:
+                        best_score = score
+                        best_match = b
+
+                # Fall back to first result if no good match found
+                biz = best_match if best_match else businesses[0]
+                _LOGGER.info("Best match for '%s': %s (score: %d)", restaurant_name, biz.get("name"), best_score)
                 biz_name = biz.get("name", restaurant_name)
                 biz_alias = biz.get("alias", "")
                 transactions = biz.get("transactions", [])
