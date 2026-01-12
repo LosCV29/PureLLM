@@ -411,7 +411,18 @@ async def get_restaurant_recommendations(
                             "review_count": biz.get("review_count"),
                             "price": biz.get("price", "N/A"),
                             "address": ", ".join(biz.get("location", {}).get("display_address", [])),
+                            "yelp_url": biz.get("url", ""),
+                            "phone": biz.get("display_phone", ""),
+                            "image_url": biz.get("image_url", ""),
                         }
+
+                        # Get coordinates for maps links
+                        coordinates = biz.get("coordinates", {})
+                        if coordinates:
+                            result["coordinates"] = {
+                                "lat": coordinates.get("latitude"),
+                                "lng": coordinates.get("longitude"),
+                            }
 
                         categories = [cat.get("title") for cat in biz.get("categories", [])]
                         if categories:
