@@ -151,21 +151,34 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         ))
 
         tools.append(_tool(
-            "get_league_schedule",
-            "Get games for a league. Supports: NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League.",
+            "check_league_games",
+            "Check IF there are games (count only). Use for: 'any NFL games?', 'is there NBA tonight?', 'how many games?'. Returns YES/NO with count.",
             {
                 "league": {
                     "type": "string",
-                    "description": "The league name: NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League, College Football, etc."
+                    "description": "NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League"
                 },
                 "date": {
                     "type": "string",
                     "enum": ["today", "tomorrow"],
-                    "description": "Which day to check (default: today)"
+                    "description": "Which day (default: today)"
+                }
+            },
+            ["league"]
+        ))
+
+        tools.append(_tool(
+            "list_league_games",
+            "List all games with matchups/times. Use for: 'what NFL games today?', 'show me NBA games', 'list the games'.",
+            {
+                "league": {
+                    "type": "string",
+                    "description": "NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League"
                 },
-                "list_games": {
-                    "type": "boolean",
-                    "description": "true = list the games ('what games', 'show me', 'list'). false/omit = count only ('any games?', 'how many', 'is there')."
+                "date": {
+                    "type": "string",
+                    "enum": ["today", "tomorrow"],
+                    "description": "Which day (default: today)"
                 }
             },
             ["league"]

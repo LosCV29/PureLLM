@@ -1236,8 +1236,13 @@ class PureLLMConversationEntity(ConversationEntity):
                     arguments, self._session, hass_tz, self._track_api_call
                 )
 
-            elif tool_name == "get_league_schedule":
-                return await sports_tool.get_league_schedule(
+            elif tool_name == "check_league_games":
+                return await sports_tool.check_league_games(
+                    arguments, self._session, hass_tz, self._track_api_call
+                )
+
+            elif tool_name == "list_league_games":
+                return await sports_tool.list_league_games(
                     arguments, self._session, hass_tz, self._track_api_call
                 )
 

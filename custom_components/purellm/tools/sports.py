@@ -498,29 +498,13 @@ LEAGUE_CODES = {
 }
 
 
-async def get_league_schedule(
-    arguments: dict[str, Any],
-    session: "aiohttp.ClientSession",
-    hass_timezone,
-    track_api_call: callable,
-) -> dict[str, Any]:
-    """Get all games for a league on a given day.
-
-    Args:
-        arguments: Tool arguments (league, date, detail)
-        session: aiohttp session
-        hass_timezone: Home Assistant timezone
-        track_api_call: Callback to track API usage
-
-    Returns:
-        League schedule data dict
-    """
+def _parse_league_and_date(arguments: dict[str, Any], hass_timezone) -> tuple:
+    """Parse league and date from arguments. Returns (league_display, sport, league_code, date_label, date_str, error)."""
     league_input = arguments.get("league", "").lower().strip()
     date_input = arguments.get("date", "today").lower().strip()
-    list_games = arguments.get("list_games", False)  # False = count only, True = show games
 
     if not league_input:
-        return {"error": "No league specified. Try: NFL, NBA, MLB, NHL, Premier League, etc."}
+        return None, None, None, None, None, "No league specified. Try: NFL, NBA, MLB, NHL, Premier League, etc."
 
     # Map league name to ESPN codes
     league_key = None
@@ -531,7 +515,7 @@ async def get_league_schedule(
 
     if not league_key:
         available = ", ".join(sorted(set(k.upper() for k in LEAGUE_CODES.keys())))
-        return {"error": f"Unknown league '{league_input}'. Available: {available}"}
+        return None, None, None, None, None, f"Unknown league '{league_input}'. Available: {available}"
 
     sport, league_code = LEAGUE_CODES[league_key]
     league_display = league_key.upper()
@@ -548,24 +532,82 @@ async def get_league_schedule(
         target_date = tomorrow_date
         date_label = "tomorrow"
     else:
-        # Default to today
         target_date = today_date
         date_label = "today"
 
     date_str = target_date.strftime("%Y%m%d")
+    return league_display, sport, league_code, date_label, date_str, None
+
+
+async def check_league_games(
+    arguments: dict[str, Any],
+    session: "aiohttp.ClientSession",
+    hass_timezone,
+    track_api_call: callable,
+) -> dict[str, Any]:
+    """Check if there are games for a league (count only, no game list).
+
+    Use for: "any NFL games today?", "is there NBA tonight?", "how many MLB games?"
+    """
+    league_display, sport, league_code, date_label, date_str, error = _parse_league_and_date(arguments, hass_timezone)
+    if error:
+        return {"error": error}
 
     try:
         track_api_call("sports")
         headers = {"User-Agent": "HomeAssistant-PolyVoice/1.0"}
-
-        # ESPN scoreboard with date parameter
         url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league_code}/scoreboard?dates={date_str}"
 
         async with asyncio.timeout(API_TIMEOUT):
             async with session.get(url, headers=headers) as resp:
                 if resp.status != 200:
                     return {"error": f"ESPN API error: {resp.status}"}
+                data = await resp.json()
 
+        game_count = len(data.get("events", []))
+
+        if game_count == 0:
+            response_text = f"No {league_display} games {date_label}."
+        elif game_count == 1:
+            response_text = f"Yes, there's 1 {league_display} game {date_label}."
+        else:
+            response_text = f"Yes, there are {game_count} {league_display} games {date_label}."
+
+        return {
+            "league": league_display,
+            "date": date_label,
+            "game_count": game_count,
+            "response_text": response_text
+        }
+
+    except Exception as err:
+        _LOGGER.error("Check league games error: %s", err, exc_info=True)
+        return {"error": f"Failed to check {league_display} games: {str(err)}"}
+
+
+async def list_league_games(
+    arguments: dict[str, Any],
+    session: "aiohttp.ClientSession",
+    hass_timezone,
+    track_api_call: callable,
+) -> dict[str, Any]:
+    """List all games for a league with matchups and times.
+
+    Use for: "what NFL games are today?", "show me NBA games", "list MLB schedule"
+    """
+    league_display, sport, league_code, date_label, date_str, error = _parse_league_and_date(arguments, hass_timezone)
+    if error:
+        return {"error": error}
+
+    try:
+        track_api_call("sports")
+        headers = {"User-Agent": "HomeAssistant-PolyVoice/1.0"}
+        url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league_code}/scoreboard?dates={date_str}"
+
+        async with asyncio.timeout(API_TIMEOUT):
+            async with session.get(url, headers=headers) as resp:
+                if resp.status != 200:
+                    return {"error": f"ESPN API error: {resp.status}"}
                 data = await resp.json()
 
         events = data.get("events", [])
@@ -580,7 +622,7 @@ async def get_league_schedule(
             }
 
         # Build game list
-        games = []
+        game_summaries = []
         for event in events:
             comp = event.get("competitions", [{}])[0]
             competitors = comp.get("competitors", [])
@@ -593,26 +635,16 @@ async def get_league_schedule(
             home_name = home_team.get("team", {}).get("shortDisplayName", "Home")
             away_name = away_team.get("team", {}).get("shortDisplayName", "Away")
 
-            game_info = {
-                "away": away_name,
-                "home": home_name,
-            }
-
             if state == "in":
-                # Live game
                 home_score = home_team.get("score", "0")
                 away_score = away_team.get("score", "0")
                 status_detail = status_info.get("detail", "Live")
-                game_info["status"] = f"LIVE {away_score}-{home_score} ({status_detail})"
-                game_info["summary"] = f"{away_name} {away_score} @ {home_name} {home_score} - {status_detail}"
+                summary = f"{away_name} {away_score} @ {home_name} {home_score} - {status_detail}"
             elif state == "post":
-                # Completed
                 home_score = home_team.get("score", "0")
                 away_score = away_team.get("score", "0")
-                game_info["status"] = "Final"
-                game_info["summary"] = f"{away_name} {away_score} @ {home_name} {home_score} (Final)"
+                summary = f"{away_name} {away_score} @ {home_name} {home_score} (Final)"
             else:
-                # Upcoming
                 game_date_str = event.get("date", "")
                 time_str = "TBD"
                 if game_date_str:
@@ -622,35 +654,23 @@ async def get_league_schedule(
                         time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
                     except:
                         pass
-                game_info["status"] = time_str
-                game_info["summary"] = f"{away_name} @ {home_name} - {time_str}"
+                summary = f"{away_name} @ {home_name} - {time_str}"
 
-            games.append(game_info)
+            game_summaries.append(summary)
 
-        # Build response based on list_games parameter
-        if list_games:
-            # User wants to see the games
-            game_summaries = [g["summary"] for g in games]
-            if game_count == 1:
-                response_text = f"There's 1 {league_display} game {date_label}: {game_summaries[0]}"
-            else:
-                games_list = ", ".join(game_summaries)
-                response_text = f"There are {game_count} {league_display} games {date_label}: {games_list}"
+        games_list = ", ".join(game_summaries)
+        if game_count == 1:
+            response_text = f"There's 1 {league_display} game {date_label}: {games_list}"
         else:
-            # User just wants count (yes/no, how many)
-            if game_count == 1:
-                response_text = f"Yes, there's 1 {league_display} game {date_label}."
-            else:
-                response_text = f"Yes, there are {game_count} {league_display} games {date_label}."
+            response_text = f"There are {game_count} {league_display} games {date_label}: {games_list}"
 
         return {
             "league": league_display,
             "date": date_label,
             "game_count": game_count,
-            "games": games,
             "response_text": response_text
         }
 
     except Exception as err:
-        _LOGGER.error("League schedule API error: %s", err, exc_info=True)
-        return {"error": f"Failed to get {league_display} schedule: {str(err)}"}
+        _LOGGER.error("List league games error: %s", err, exc_info=True)
+        return {"error": f"Failed to list {league_display} games: {str(err)}"}
