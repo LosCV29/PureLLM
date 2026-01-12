@@ -1031,6 +1031,103 @@ class PureLLMConversationEntity(ConversationEntity):
         except Exception as err:
             _LOGGER.error("Error sending restaurant notification: %s", err, exc_info=True)
 
+    async def _send_reservation_notification(self, reservation_result: dict[str, Any]) -> None:
+        """Send notification with reservation link to configured devices."""
+        try:
+            restaurant_name = reservation_result.get("restaurant_name", "Restaurant")
+            reservation_url = reservation_result.get("reservation_url", "")
+            reservation_source = reservation_result.get("reservation_source", "")
+            supports_reservation = reservation_result.get("supports_reservation", False)
+            party_size = reservation_result.get("party_size", 2)
+            date = reservation_result.get("date", "")
+            time = reservation_result.get("time", "")
+            phone = reservation_result.get("phone", "")
+            address = reservation_result.get("address", "")
+
+            _LOGGER.info("Sending reservation notification for: %s", restaurant_name)
+
+            # Build title
+            if supports_reservation:
+                title = f"🍽️ Reserve at {restaurant_name}"
+            else:
+                title = f"📞 Book {restaurant_name}"
+
+            # Build message
+            message_parts = []
+            if date and time:
+                message_parts.append(f"📅 {date} at {time}")
+            elif date:
+                message_parts.append(f"📅 {date}")
+            elif time:
+                message_parts.append(f"🕐 {time}")
+
+            if party_size:
+                message_parts.append(f"👥 Party of {party_size}")
+
+            if address:
+                message_parts.append(f"📍 {address}")
+
+            if not supports_reservation and phone:
+                message_parts.append(f"📞 {phone}")
+
+            message = "\n".join(message_parts) if message_parts else f"Book a table at {restaurant_name}"
+
+            # Build action buttons
+            actions = []
+
+            # Main reservation button
+            if reservation_url:
+                button_title = "📅 Reserve Now" if supports_reservation else "🔍 Search Reservations"
+                actions.append({
+                    "action": "URI",
+                    "title": button_title,
+                    "uri": reservation_url,
+                })
+
+            # Add call button if we have a phone number
+            if phone:
+                # Clean phone number for tel: URI
+                clean_phone = "".join(c for c in phone if c.isdigit() or c == "+")
+                actions.append({
+                    "action": "URI",
+                    "title": "📞 Call",
+                    "uri": f"tel:{clean_phone}",
+                })
+
+            # Build notification data
+            notification_data = {
+                "title": title,
+                "message": message,
+                "data": {
+                    "url": reservation_url,
+                    "clickAction": reservation_url,
+                    "actions": actions,
+                    "push": {
+                        "interruption-level": "time-sensitive",
+                    },
+                },
+            }
+
+            _LOGGER.info("Reservation notification data: %s", notification_data)
+
+            # Send to all configured notification entities
+            for entity_id in self.notification_entities:
+                service_name = entity_id.replace("notify.", "") if entity_id.startswith("notify.") else entity_id
+                _LOGGER.info("Calling notify.%s for reservation", service_name)
+                try:
+                    await self.hass.services.async_call(
+                        "notify",
+                        service_name,
+                        notification_data,
+                        blocking=False,
+                    )
+                    _LOGGER.info("Successfully sent reservation notification to %s", service_name)
+                except Exception as notify_err:
+                    _LOGGER.error("Failed to send reservation notification to %s: %s", entity_id, notify_err)
+
+        except Exception as err:
+            _LOGGER.error("Error sending reservation notification: %s", err, exc_info=True)
+
     # =========================================================================
     # Tool Execution
     # =========================================================================
@@ -1105,6 +1202,16 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Send notification if enabled and we have results
                 if self.notify_on_restaurants and self.notification_entities and result.get("restaurants"):
                     await self._send_restaurant_notification(result)
+                return result
+
+            elif tool_name == "book_restaurant":
+                result = await places_tool.book_restaurant(
+                    arguments, self._session, self.yelp_api_key,
+                    latitude, longitude, self._track_api_call
+                )
+                # Send notification with reservation link if available
+                if self.notification_entities and result.get("reservation_url"):
+                    await self._send_reservation_notification(result)
                 return result
 
             elif tool_name == "calculate_age":

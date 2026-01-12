@@ -449,6 +449,19 @@ async def get_restaurant_recommendations(
                         if not biz.get("is_closed", True):
                             result["status"] = "Open now"
 
+                        # Capture reservation availability from transactions
+                        transactions = biz.get("transactions", [])
+                        result["supports_reservation"] = "restaurant_reservation" in transactions
+                        result["supports_delivery"] = "delivery" in transactions
+                        result["supports_pickup"] = "pickup" in transactions
+
+                        # Build Yelp reservation URL if supported
+                        if result["supports_reservation"]:
+                            # Yelp reservation URL pattern
+                            biz_alias = biz.get("alias", "")
+                            if biz_alias:
+                                result["yelp_reservation_url"] = f"https://www.yelp.com/reservations/{biz_alias}"
+
                         results.append(result)
 
                     _LOGGER.info("Yelp found %d restaurants", len(results))
@@ -464,3 +477,187 @@ async def get_restaurant_recommendations(
     except Exception as err:
         _LOGGER.error("Error searching Yelp: %s", err, exc_info=True)
         return {"error": f"Failed to search restaurants: {str(err)}"}
+
+
+async def book_restaurant(
+    arguments: dict[str, Any],
+    session: "aiohttp.ClientSession",
+    api_key: str,
+    latitude: float,
+    longitude: float,
+    track_api_call: callable,
+) -> dict[str, Any]:
+    """Get reservation link for a restaurant.
+
+    Searches Yelp for the restaurant and returns reservation URL if available,
+    otherwise falls back to Google search.
+
+    Args:
+        arguments: Tool arguments (restaurant_name, party_size, date, time)
+        session: aiohttp session
+        api_key: Yelp API key
+        latitude: Search center latitude
+        longitude: Search center longitude
+        track_api_call: Callback to track API usage
+
+    Returns:
+        Reservation data dict with URLs
+    """
+    restaurant_name = arguments.get("restaurant_name", "")
+    party_size = arguments.get("party_size", 2)
+    date = arguments.get("date", "")  # YYYY-MM-DD format
+    time = arguments.get("time", "")  # HH:MM format (24hr) or natural like "7pm"
+
+    if not restaurant_name:
+        return {"error": "No restaurant name provided"}
+
+    if not api_key:
+        return {"error": "Yelp API key not configured. Add it in Settings → PolyVoice → API Keys."}
+
+    try:
+        # Search Yelp for this specific restaurant
+        encoded_query = urllib.parse.quote(restaurant_name)
+        url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&latitude={latitude}&longitude={longitude}&limit=1&categories=restaurants,food"
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json"
+        }
+
+        _LOGGER.info("Searching Yelp for reservation: %s", restaurant_name)
+        track_api_call("book_restaurant")
+
+        async with asyncio.timeout(API_TIMEOUT):
+            async with session.get(url, headers=headers) as response:
+                if response.status != 200:
+                    _LOGGER.error("Yelp API error: %s", response.status)
+                    return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
+
+                data = await response.json()
+                businesses = data.get("businesses", [])
+
+                if not businesses:
+                    return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
+
+                biz = businesses[0]
+                biz_name = biz.get("name", restaurant_name)
+                biz_alias = biz.get("alias", "")
+                transactions = biz.get("transactions", [])
+                yelp_url = biz.get("url", "")
+                phone = biz.get("display_phone", "")
+                address = ", ".join(biz.get("location", {}).get("display_address", []))
+
+                result = {
+                    "restaurant_name": biz_name,
+                    "address": address,
+                    "phone": phone,
+                    "party_size": party_size,
+                    "date": date,
+                    "time": time,
+                    "yelp_url": yelp_url,
+                }
+
+                # Check if Yelp reservations are supported
+                if "restaurant_reservation" in transactions and biz_alias:
+                    # Build Yelp reservation URL with parameters
+                    yelp_resy_url = f"https://www.yelp.com/reservations/{biz_alias}"
+
+                    # Add query params if we have date/time/covers
+                    params = []
+                    if party_size:
+                        params.append(f"covers={party_size}")
+                    if date:
+                        params.append(f"date={date}")
+                    if time:
+                        # Normalize time to HH:MM format
+                        params.append(f"time={_normalize_time(time)}")
+
+                    if params:
+                        yelp_resy_url += "?" + "&".join(params)
+
+                    result["reservation_url"] = yelp_resy_url
+                    result["reservation_source"] = "Yelp"
+                    result["supports_reservation"] = True
+                    result["message"] = f"Reservation available at {biz_name} via Yelp!"
+
+                    _LOGGER.info("Found Yelp reservation for %s: %s", biz_name, yelp_resy_url)
+                else:
+                    # No Yelp reservation - fall back to Google
+                    result["supports_reservation"] = False
+                    fallback = _build_fallback_response(biz_name, party_size, date, time, latitude, longitude)
+                    result["reservation_url"] = fallback["reservation_url"]
+                    result["reservation_source"] = "Google Search"
+                    result["message"] = f"{biz_name} doesn't support online reservations through Yelp. Try searching Google or call them directly at {phone}." if phone else f"{biz_name} doesn't support online reservations through Yelp. Use the Google link to search for booking options."
+
+                    _LOGGER.info("No Yelp reservation for %s, using Google fallback", biz_name)
+
+                return result
+
+    except Exception as err:
+        _LOGGER.error("Error booking restaurant: %s", err, exc_info=True)
+        return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
+
+
+def _normalize_time(time_str: str) -> str:
+    """Normalize time string to HH:MM format.
+
+    Handles inputs like "7pm", "7:30 PM", "19:00", etc.
+    """
+    if not time_str:
+        return ""
+
+    time_str = time_str.strip().lower().replace(" ", "")
+
+    # Already in HH:MM format
+    if ":" in time_str and len(time_str) <= 5 and time_str.replace(":", "").isdigit():
+        return time_str
+
+    # Handle 12-hour format with am/pm
+    is_pm = "pm" in time_str
+    is_am = "am" in time_str
+    time_str = time_str.replace("pm", "").replace("am", "")
+
+    try:
+        if ":" in time_str:
+            parts = time_str.split(":")
+            hour = int(parts[0])
+            minute = int(parts[1]) if len(parts) > 1 else 0
+        else:
+            hour = int(time_str)
+            minute = 0
+
+        # Convert to 24-hour format
+        if is_pm and hour < 12:
+            hour += 12
+        elif is_am and hour == 12:
+            hour = 0
+
+        return f"{hour:02d}:{minute:02d}"
+    except ValueError:
+        return time_str  # Return as-is if we can't parse
+
+
+def _build_fallback_response(
+    restaurant_name: str,
+    party_size: int,
+    date: str,
+    time: str,
+    latitude: float,
+    longitude: float,
+) -> dict[str, Any]:
+    """Build a fallback response with Google search URL."""
+    # Build Google search query
+    search_query = f"{restaurant_name} reservations"
+    encoded_query = urllib.parse.quote(search_query)
+    google_url = f"https://www.google.com/search?q={encoded_query}"
+
+    return {
+        "restaurant_name": restaurant_name,
+        "party_size": party_size,
+        "date": date,
+        "time": time,
+        "reservation_url": google_url,
+        "reservation_source": "Google Search",
+        "supports_reservation": False,
+        "message": f"No direct reservation link found for {restaurant_name}. Use the Google link to search for booking options, or call the restaurant directly."
+    }

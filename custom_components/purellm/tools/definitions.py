@@ -204,6 +204,18 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             ["query"]
         ))
 
+        tools.append(_tool(
+            "book_restaurant",
+            "Get a reservation link for a specific restaurant. Use AFTER get_restaurant_recommendations when user wants to book. Returns Yelp reservation URL if available, or Google search fallback.",
+            {
+                "restaurant_name": {"type": "string", "description": "The exact restaurant name to book (e.g., 'Uchi', 'Olive Garden')"},
+                "party_size": {"type": "integer", "description": "Number of guests (default: 2)"},
+                "date": {"type": "string", "description": "Reservation date in YYYY-MM-DD format (e.g., '2024-01-20')"},
+                "time": {"type": "string", "description": "Reservation time - can be natural ('7pm', '7:30 PM') or 24hr ('19:00')"}
+            },
+            ["restaurant_name"]
+        ))
+
     # ===== CAMERAS =====
     if config.enable_cameras:
         tools.append(_tool(
