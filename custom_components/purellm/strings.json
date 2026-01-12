@@ -107,9 +107,9 @@
       },
       "notifications": {
         "title": "Notification Settings",
-        "description": "Configure which devices receive notifications when certain features are used",
+        "description": "Enter notify service names (one per line). Find yours in Developer Tools → Services → search 'notify'. Example: mobile_app_johns_iphone",
         "data": {
-          "notification_entities": "Notification Recipients",
+          "notification_entities": "Notify Service Names (one per line)",
           "notify_on_places": "Send notification when Places/Directions are used"
         }
       },

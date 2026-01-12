@@ -263,7 +263,8 @@ class PureLLMConversationEntity(ConversationEntity):
         # Notification settings
         notify_entities_str = config.get(CONF_NOTIFICATION_ENTITIES, DEFAULT_NOTIFICATION_ENTITIES)
         if isinstance(notify_entities_str, str) and notify_entities_str:
-            self.notification_entities = [e.strip() for e in notify_entities_str.split(",") if e.strip()]
+            # Parse newline-separated service names
+            self.notification_entities = [e.strip() for e in notify_entities_str.split("\n") if e.strip()]
         else:
             self.notification_entities = []
         self.notify_on_places = config.get(CONF_NOTIFY_ON_PLACES, DEFAULT_NOTIFY_ON_PLACES)
