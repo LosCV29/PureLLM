@@ -32,6 +32,7 @@
           "entities": "PureLLM Default Entities",
           "device_aliases": "Device Aliases",
           "music_rooms": "Music Room Mapping",
+          "notifications": "Notification Settings",
           "api_keys": "External API Keys",
           "location": "Location Settings",
           "advanced": "System Prompt"
@@ -102,6 +103,14 @@
           "room_player": "Media Player",
           "room_name": "Room Name (e.g., living room, kitchen)",
           "action": "Action"
+        }
+      },
+      "notifications": {
+        "title": "Notification Settings",
+        "description": "Configure which devices receive notifications when certain features are used",
+        "data": {
+          "notification_entities": "Notification Recipients",
+          "notify_on_places": "Send notification when Places/Directions are used"
         }
       },
       "api_keys": {

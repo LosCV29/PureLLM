@@ -238,3 +238,12 @@ DEFAULT_OPENWEATHERMAP_API_KEY: Final = ""
 DEFAULT_GOOGLE_PLACES_API_KEY: Final = ""
 DEFAULT_YELP_API_KEY: Final = ""
 DEFAULT_NEWSAPI_KEY: Final = ""
+
+# =============================================================================
+# NOTIFICATIONS
+# =============================================================================
+CONF_NOTIFICATION_ENTITIES: Final = "notification_entities"
+CONF_NOTIFY_ON_PLACES: Final = "notify_on_places"
+
+DEFAULT_NOTIFICATION_ENTITIES: Final = ""  # Comma-separated list of notify entity IDs
+DEFAULT_NOTIFY_ON_PLACES: Final = True
