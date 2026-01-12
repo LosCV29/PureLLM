@@ -187,7 +187,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_restaurants and config.yelp_api_key:
         tools.append(_tool(
             "get_restaurant_recommendations",
-            "Get restaurant recommendations from Yelp. SORTING: 'best'/'top rated' = rating, 'popular'/'most reviewed' = review_count, 'fancy'/'expensive'/'upscale' = use price filter $$$$, 'cheap'/'budget' = price $. Default sort is rating.",
+            "Get restaurant RECOMMENDATIONS from Yelp. Use when user wants SUGGESTIONS like 'find me sushi', 'best Italian nearby', 'top rated Mexican'. SORTING: 'best'/'top rated' = rating, 'popular'/'most reviewed' = review_count, 'fancy'/'expensive' = price $$$$, 'cheap'/'budget' = price $. DO NOT use this for booking - use book_restaurant instead.",
             {
                 "query": {"type": "string", "description": "What type of food or restaurant to search for"},
                 "sort_by": {
@@ -206,7 +206,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "book_restaurant",
-            "Get a reservation link for a specific restaurant. Use AFTER get_restaurant_recommendations when user wants to book. Returns Yelp reservation URL if available, or Google search fallback.",
+            "Get a reservation link for a SPECIFIC restaurant the user already knows. Use for: 'book Uchi', 'make a reservation at Olive Garden', 'reserve a table at Fleming's'. This tool searches Yelp directly - do NOT call get_restaurant_recommendations first.",
             {
                 "restaurant_name": {"type": "string", "description": "The exact restaurant name to book (e.g., 'Uchi', 'Olive Garden')"},
                 "party_size": {"type": "integer", "description": "Number of guests (default: 2)"},
