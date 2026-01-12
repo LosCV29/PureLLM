@@ -240,9 +240,10 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "book_restaurant",
-            "Get a reservation link for a SPECIFIC restaurant the user already knows. Use for: 'book Uchi', 'make a reservation at Olive Garden', 'reserve a table at Fleming's'. This tool searches Yelp directly - do NOT call get_restaurant_recommendations first.",
+            "Get a reservation link for a SPECIFIC restaurant the user already knows. Use for: 'book Uchi', 'make a reservation at Olive Garden', 'reserve a table at Fleming's in Miami'. This tool searches Yelp directly - do NOT call get_restaurant_recommendations first.",
             {
                 "restaurant_name": {"type": "string", "description": "The exact restaurant name to book (e.g., 'Uchi', 'Olive Garden')"},
+                "location": {"type": "string", "description": "City/area to search in if user specifies one (e.g., 'Miami', 'Downtown Austin'). Omit to use user's current location."},
                 "party_size": {"type": "integer", "description": "Number of guests (default: 2)"},
                 "date": {"type": "string", "description": "Reservation date in YYYY-MM-DD format (e.g., '2024-01-20')"},
                 "time": {"type": "string", "description": "Reservation time - can be natural ('7pm', '7:30 PM') or 24hr ('19:00')"}
