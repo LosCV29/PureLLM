@@ -793,6 +793,8 @@ class PureLLMConversationEntity(ConversationEntity):
             places = places_result.get("places", [])
             query = places_result.get("query", "location")
 
+            _LOGGER.info("Sending places notification for query: %s, places count: %d", query, len(places))
+
             if not places:
                 return
 
@@ -827,10 +829,14 @@ class PureLLMConversationEntity(ConversationEntity):
                     "clickAction": directions_url,
                 }
 
+            _LOGGER.info("Notification data: %s", notification_data)
+            _LOGGER.info("Sending to entities: %s", self.notification_entities)
+
             # Send to all configured notification entities
             for entity_id in self.notification_entities:
                 # Extract service name from entity_id (e.g., notify.mobile_app_phone -> mobile_app_phone)
                 service_name = entity_id.replace("notify.", "") if entity_id.startswith("notify.") else entity_id
+                _LOGGER.info("Calling notify.%s", service_name)
                 try:
                     await self.hass.services.async_call(
                         "notify",
@@ -838,12 +844,12 @@ class PureLLMConversationEntity(ConversationEntity):
                         notification_data,
                         blocking=False,
                     )
-                    _LOGGER.debug("Sent places notification to %s", entity_id)
+                    _LOGGER.info("Successfully sent places notification to %s", service_name)
                 except Exception as notify_err:
-                    _LOGGER.warning("Failed to send notification to %s: %s", entity_id, notify_err)
+                    _LOGGER.error("Failed to send notification to %s: %s", entity_id, notify_err)
 
         except Exception as err:
-            _LOGGER.error("Error sending places notification: %s", err)
+            _LOGGER.error("Error sending places notification: %s", err, exc_info=True)
 
     # =========================================================================
     # Tool Execution
@@ -903,6 +909,10 @@ class PureLLMConversationEntity(ConversationEntity):
                     latitude, longitude, self._track_api_call
                 )
                 # Send notification if enabled and we have results
+                _LOGGER.debug(
+                    "Places notification check: notify_on_places=%s, entities=%s, has_places=%s",
+                    self.notify_on_places, self.notification_entities, bool(result.get("places"))
+                )
                 if self.notify_on_places and self.notification_entities and result.get("places"):
                     await self._send_places_notification(result)
                 return result

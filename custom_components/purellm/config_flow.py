@@ -941,8 +941,12 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             processed_input = {}
             if CONF_NOTIFICATION_ENTITIES in user_input:
-                # Store as-is (newline-separated string)
-                processed_input[CONF_NOTIFICATION_ENTITIES] = user_input[CONF_NOTIFICATION_ENTITIES]
+                # Convert list to newline-separated string for storage
+                entity_list = user_input[CONF_NOTIFICATION_ENTITIES]
+                if isinstance(entity_list, list):
+                    processed_input[CONF_NOTIFICATION_ENTITIES] = "\n".join(entity_list)
+                else:
+                    processed_input[CONF_NOTIFICATION_ENTITIES] = entity_list
             if CONF_NOTIFY_ON_PLACES in user_input:
                 processed_input[CONF_NOTIFY_ON_PLACES] = user_input[CONF_NOTIFY_ON_PLACES]
 
@@ -950,7 +954,30 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=new_options)
 
         current = {**self._entry.data, **self._entry.options}
+
+        # Parse current notification entities back to list
         current_entities = current.get(CONF_NOTIFICATION_ENTITIES, DEFAULT_NOTIFICATION_ENTITIES)
+        if isinstance(current_entities, str) and current_entities:
+            current_entities = [e.strip() for e in current_entities.split("\n") if e.strip()]
+        elif not current_entities:
+            current_entities = []
+
+        # Get available notify services from Home Assistant
+        notify_services = []
+        services = self.hass.services.async_services()
+        if "notify" in services:
+            for service_name in services["notify"]:
+                # Skip generic services
+                if service_name not in ["notify", "persistent_notification"]:
+                    notify_services.append(
+                        selector.SelectOptionDict(
+                            value=service_name,
+                            label=f"notify.{service_name}"
+                        )
+                    )
+
+        # Sort alphabetically
+        notify_services.sort(key=lambda x: x["label"])
 
         return self.async_show_form(
             step_id="notifications",
@@ -959,10 +986,11 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_NOTIFICATION_ENTITIES,
                         default=current_entities,
-                    ): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.TEXT,
-                            multiline=True,
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=notify_services,
+                            multiple=True,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
                     vol.Optional(
