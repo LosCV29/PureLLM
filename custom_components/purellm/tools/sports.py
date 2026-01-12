@@ -517,6 +517,7 @@ async def get_league_schedule(
     """
     league_input = arguments.get("league", "").lower().strip()
     date_input = arguments.get("date", "today").lower().strip()
+    list_games = arguments.get("list_games", False)  # False = count only, True = show games
 
     if not league_input:
         return {"error": "No league specified. Try: NFL, NBA, MLB, NHL, Premier League, etc."}
@@ -626,14 +627,21 @@ async def get_league_schedule(
 
             games.append(game_info)
 
-        # Build response with all games - LLM decides how much to share based on question
-        game_summaries = [g["summary"] for g in games]
-
-        if game_count == 1:
-            response_text = f"There's 1 {league_display} game {date_label}: {game_summaries[0]}"
+        # Build response based on list_games parameter
+        if list_games:
+            # User wants to see the games
+            game_summaries = [g["summary"] for g in games]
+            if game_count == 1:
+                response_text = f"There's 1 {league_display} game {date_label}: {game_summaries[0]}"
+            else:
+                games_list = ", ".join(game_summaries)
+                response_text = f"There are {game_count} {league_display} games {date_label}: {games_list}"
         else:
-            games_list = ", ".join(game_summaries)
-            response_text = f"There are {game_count} {league_display} games {date_label}: {games_list}"
+            # User just wants count (yes/no, how many)
+            if game_count == 1:
+                response_text = f"Yes, there's 1 {league_display} game {date_label}."
+            else:
+                response_text = f"Yes, there are {game_count} {league_display} games {date_label}."
 
         return {
             "league": league_display,
