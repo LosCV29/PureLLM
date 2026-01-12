@@ -151,6 +151,54 @@ async def get_weather_forecast(
                     if "rain" in data:
                         result["current"]["rain_1h"] = data["rain"].get("1h", 0)
 
+                    # Add sunrise/sunset times
+                    if "sys" in data:
+                        now = datetime.now()
+
+                        # Extract and format sunrise
+                        if "sunrise" in data["sys"]:
+                            sunrise_ts = data["sys"]["sunrise"]
+                            sunrise_dt = datetime.fromtimestamp(sunrise_ts)
+                            result["current"]["sunrise"] = sunrise_dt.strftime("%-I:%M %p")
+
+                            # Calculate time until sunrise (if it hasn't happened yet today)
+                            if sunrise_dt > now:
+                                time_until = sunrise_dt - now
+                                hours, remainder = divmod(int(time_until.total_seconds()), 3600)
+                                minutes = remainder // 60
+                                if hours > 0:
+                                    result["current"]["time_until_sunrise"] = f"{hours}h {minutes}m"
+                                else:
+                                    result["current"]["time_until_sunrise"] = f"{minutes}m"
+                            else:
+                                # Sunrise already passed today
+                                result["current"]["sunrise_passed"] = True
+
+                        # Extract and format sunset
+                        if "sunset" in data["sys"]:
+                            sunset_ts = data["sys"]["sunset"]
+                            sunset_dt = datetime.fromtimestamp(sunset_ts)
+                            result["current"]["sunset"] = sunset_dt.strftime("%-I:%M %p")
+
+                            # Calculate time until sunset (if it hasn't happened yet today)
+                            if sunset_dt > now:
+                                time_until = sunset_dt - now
+                                hours, remainder = divmod(int(time_until.total_seconds()), 3600)
+                                minutes = remainder // 60
+                                if hours > 0:
+                                    result["current"]["time_until_sunset"] = f"{hours}h {minutes}m"
+                                else:
+                                    result["current"]["time_until_sunset"] = f"{minutes}m"
+                            else:
+                                # Sunset already passed today
+                                result["current"]["sunset_passed"] = True
+
+                        # Calculate daylight hours
+                        if "sunrise" in data["sys"] and "sunset" in data["sys"]:
+                            daylight_seconds = data["sys"]["sunset"] - data["sys"]["sunrise"]
+                            daylight_hours = daylight_seconds / 3600
+                            result["current"]["daylight_hours"] = round(daylight_hours, 1)
+
                     _LOGGER.info("Current weather: %s", result["current"])
                 else:
                     _LOGGER.error("Weather API error: %s", current_response.status)
