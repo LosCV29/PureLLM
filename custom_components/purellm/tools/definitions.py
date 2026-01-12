@@ -150,6 +150,27 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             }
         ))
 
+        tools.append(_tool(
+            "get_league_schedule",
+            "Get all games for a LEAGUE on a given day. Use for: 'any NFL games today?', 'what NBA games are tomorrow?', 'Premier League schedule'. Supports: NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League, College Football/Basketball.",
+            {
+                "league": {
+                    "type": "string",
+                    "description": "The league name: NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League, College Football, etc."
+                },
+                "date": {
+                    "type": "string",
+                    "enum": ["today", "tomorrow"],
+                    "description": "Which day to check (default: today)"
+                },
+                "detail": {
+                    "type": "boolean",
+                    "description": "false = just count ('Yes, 3 games'), true = list all games. Use false for 'any games?' and true for 'what games?'"
+                }
+            },
+            ["league"]
+        ))
+
     # ===== STOCKS =====
     if config.enable_stocks:
         tools.append(_tool(
