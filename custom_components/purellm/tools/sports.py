@@ -517,7 +517,7 @@ async def get_league_schedule(
     """
     league_input = arguments.get("league", "").lower().strip()
     date_input = arguments.get("date", "today").lower().strip()
-    want_details = arguments.get("detail", False)
+    count_only = arguments.get("count_only", False)  # Default: show full list
 
     if not league_input:
         return {"error": "No league specified. Try: NFL, NBA, MLB, NHL, Premier League, etc."}
@@ -580,7 +580,7 @@ async def get_league_schedule(
             }
 
         # If user just asked "any games?" - return count only
-        if not want_details:
+        if count_only:
             if game_count == 1:
                 return {
                     "league": league_display,
