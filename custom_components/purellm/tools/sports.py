@@ -626,13 +626,14 @@ async def get_league_schedule(
 
             games.append(game_info)
 
-        # Build response - simple count for yes/no questions, games array for details
+        # Build response with all games - LLM decides how much to share based on question
+        game_summaries = [g["summary"] for g in games]
+
         if game_count == 1:
-            # Single game: include the matchup in response_text
-            response_text = f"There's 1 {league_display} game {date_label}: {games[0]['summary']}"
+            response_text = f"There's 1 {league_display} game {date_label}: {game_summaries[0]}"
         else:
-            # Multiple games: just the count, let LLM read games array if user wants details
-            response_text = f"There are {game_count} {league_display} games {date_label}."
+            games_list = ", ".join(game_summaries)
+            response_text = f"There are {game_count} {league_display} games {date_label}: {games_list}"
 
         return {
             "league": league_display,
