@@ -59,7 +59,11 @@ from .const import (
     CONF_THERMOSTAT_USE_CELSIUS,
     CONF_TOP_P,
     CONF_YELP_API_KEY,
+    CONF_NOTIFICATION_ENTITIES,
+    CONF_NOTIFY_ON_PLACES,
     DEFAULT_API_KEY,
+    DEFAULT_NOTIFICATION_ENTITIES,
+    DEFAULT_NOTIFY_ON_PLACES,
     DEFAULT_ENABLE_CALENDAR,
     DEFAULT_ENABLE_CAMERAS,
     DEFAULT_ENABLE_DEVICE_STATUS,
@@ -255,6 +259,14 @@ class PureLLMConversationEntity(ConversationEntity):
         self.thermostat_min_temp = config.get(CONF_THERMOSTAT_MIN_TEMP) or default_min
         self.thermostat_max_temp = config.get(CONF_THERMOSTAT_MAX_TEMP) or default_max
         self.thermostat_temp_step = config.get(CONF_THERMOSTAT_TEMP_STEP) or default_step
+
+        # Notification settings
+        notify_entities_str = config.get(CONF_NOTIFICATION_ENTITIES, DEFAULT_NOTIFICATION_ENTITIES)
+        if isinstance(notify_entities_str, str) and notify_entities_str:
+            self.notification_entities = [e.strip() for e in notify_entities_str.split(",") if e.strip()]
+        else:
+            self.notification_entities = []
+        self.notify_on_places = config.get(CONF_NOTIFY_ON_PLACES, DEFAULT_NOTIFY_ON_PLACES)
 
         # Clear caches on config update
         self._tools = None
@@ -771,6 +783,68 @@ class PureLLMConversationEntity(ConversationEntity):
         return full_response if full_response else "I apologize, but I couldn't complete that request."
 
     # =========================================================================
+    # Notification Helpers
+    # =========================================================================
+
+    async def _send_places_notification(self, places_result: dict[str, Any]) -> None:
+        """Send notification with places/directions info to configured devices."""
+        try:
+            places = places_result.get("places", [])
+            query = places_result.get("query", "location")
+
+            if not places:
+                return
+
+            # Get the top result
+            top_place = places[0]
+            place_name = top_place.get("name", "Unknown")
+            address = top_place.get("short_address") or top_place.get("address", "")
+            distance = top_place.get("distance_miles")
+            directions_url = top_place.get("directions_url", "")
+
+            # Build notification message
+            title = f"Directions: {place_name}"
+            message_parts = []
+
+            if address:
+                message_parts.append(address)
+            if distance:
+                message_parts.append(f"{distance:.1f} miles away")
+
+            message = "\n".join(message_parts) if message_parts else place_name
+
+            # Build notification data
+            notification_data = {
+                "title": title,
+                "message": message,
+            }
+
+            # Add clickable action for directions if URL available
+            if directions_url:
+                notification_data["data"] = {
+                    "url": directions_url,
+                    "clickAction": directions_url,
+                }
+
+            # Send to all configured notification entities
+            for entity_id in self.notification_entities:
+                # Extract service name from entity_id (e.g., notify.mobile_app_phone -> mobile_app_phone)
+                service_name = entity_id.replace("notify.", "") if entity_id.startswith("notify.") else entity_id
+                try:
+                    await self.hass.services.async_call(
+                        "notify",
+                        service_name,
+                        notification_data,
+                        blocking=False,
+                    )
+                    _LOGGER.debug("Sent places notification to %s", entity_id)
+                except Exception as notify_err:
+                    _LOGGER.warning("Failed to send notification to %s: %s", entity_id, notify_err)
+
+        except Exception as err:
+            _LOGGER.error("Error sending places notification: %s", err)
+
+    # =========================================================================
     # Tool Execution
     # =========================================================================
 
@@ -823,10 +897,14 @@ class PureLLMConversationEntity(ConversationEntity):
                 )
 
             elif tool_name == "find_nearby_places":
-                return await places_tool.find_nearby_places(
+                result = await places_tool.find_nearby_places(
                     arguments, self._session, self.google_places_api_key,
                     latitude, longitude, self._track_api_call
                 )
+                # Send notification if enabled and we have results
+                if self.notify_on_places and self.notification_entities and result.get("places"):
+                    await self._send_places_notification(result)
+                return result
 
             elif tool_name == "get_restaurant_recommendations":
                 return await places_tool.get_restaurant_recommendations(

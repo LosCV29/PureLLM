@@ -108,6 +108,11 @@ from .const import (
     DEFAULT_THERMOSTAT_MIN_TEMP_CELSIUS,
     DEFAULT_THERMOSTAT_MAX_TEMP_CELSIUS,
     DEFAULT_THERMOSTAT_TEMP_STEP_CELSIUS,
+    # Notifications
+    CONF_NOTIFICATION_ENTITIES,
+    CONF_NOTIFY_ON_PLACES,
+    DEFAULT_NOTIFICATION_ENTITIES,
+    DEFAULT_NOTIFY_ON_PLACES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -429,6 +434,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "entities": "PureLLM Default Entities",
                 "device_aliases": "Device Aliases",
                 "music_rooms": "Music Room Mapping",
+                "notifications": "Notification Settings",
                 "api_keys": "API Keys",
                 "location": "Location Settings",
                 "advanced": "System Prompt",
@@ -926,6 +932,58 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                 }
             ),
+        )
+
+    async def async_step_notifications(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle notification settings configuration."""
+        if user_input is not None:
+            # Convert entity list to comma-separated string
+            processed_input = {}
+            if CONF_NOTIFICATION_ENTITIES in user_input:
+                entity_list = user_input[CONF_NOTIFICATION_ENTITIES]
+                if isinstance(entity_list, list):
+                    processed_input[CONF_NOTIFICATION_ENTITIES] = ",".join(entity_list)
+                else:
+                    processed_input[CONF_NOTIFICATION_ENTITIES] = entity_list
+            if CONF_NOTIFY_ON_PLACES in user_input:
+                processed_input[CONF_NOTIFY_ON_PLACES] = user_input[CONF_NOTIFY_ON_PLACES]
+
+            new_options = {**self._entry.options, **processed_input}
+            return self.async_create_entry(title="", data=new_options)
+
+        current = {**self._entry.data, **self._entry.options}
+
+        # Parse current notification entities back to list
+        current_entities = current.get(CONF_NOTIFICATION_ENTITIES, DEFAULT_NOTIFICATION_ENTITIES)
+        if isinstance(current_entities, str) and current_entities:
+            current_entities = [e.strip() for e in current_entities.split(",") if e.strip()]
+        elif not current_entities:
+            current_entities = []
+
+        return self.async_show_form(
+            step_id="notifications",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_NOTIFICATION_ENTITIES,
+                        default=current_entities,
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="notify",
+                            multiple=True,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_NOTIFY_ON_PLACES,
+                        default=current.get(CONF_NOTIFY_ON_PLACES, DEFAULT_NOTIFY_ON_PLACES),
+                    ): cv.boolean,
+                }
+            ),
+            description_placeholders={
+                "notification_note": "Select mobile devices to receive notifications when location services are used.",
+            },
         )
 
     async def async_step_api_keys(
