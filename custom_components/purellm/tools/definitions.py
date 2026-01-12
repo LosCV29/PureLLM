@@ -152,7 +152,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "get_league_schedule",
-            "Get games for a league. HOW TO RESPOND: If user asked 'any games?'/'is there?', say ONLY the count (e.g., 'Yes, 3 NBA games today'). If user asked 'what games?'/'list'/'show', then list the games. Supports: NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League.",
+            "Get games for a league. Supports: NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League.",
             {
                 "league": {
                     "type": "string",
@@ -162,6 +162,10 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "type": "string",
                     "enum": ["today", "tomorrow"],
                     "description": "Which day to check (default: today)"
+                },
+                "list_games": {
+                    "type": "boolean",
+                    "description": "true = list the games ('what games', 'show me', 'list'). false/omit = count only ('any games?', 'how many', 'is there')."
                 }
             },
             ["league"]
