@@ -917,20 +917,42 @@ class PureLLMConversationEntity(ConversationEntity):
             if not restaurants:
                 return
 
-            # Get the top result
-            top_restaurant = restaurants[0]
-            name = top_restaurant.get("name", "Unknown")
-            address = top_restaurant.get("address", "")
-            rating = top_restaurant.get("rating")
-            review_count = top_restaurant.get("review_count", 0)
-            price = top_restaurant.get("price", "")
-            cuisine = top_restaurant.get("cuisine", "")
-            distance = top_restaurant.get("distance", "")
-            yelp_url = top_restaurant.get("yelp_url", "")
-            phone = top_restaurant.get("phone", "")
-            coordinates = top_restaurant.get("coordinates", {})
+            # Get top 3 results (or fewer if less available)
+            top_restaurants = restaurants[:3]
 
-            # Build Google Maps URL from coordinates
+            # Build message showing all top results
+            title = f"🍽️ Top {len(top_restaurants)} for '{query}'"
+            message_lines = []
+
+            for i, restaurant in enumerate(top_restaurants, 1):
+                name = restaurant.get("name", "Unknown")
+                rating = restaurant.get("rating")
+                review_count = restaurant.get("review_count", 0)
+                price = restaurant.get("price", "")
+                distance = restaurant.get("distance", "")
+
+                # Build compact line for each restaurant
+                line_parts = [f"{i}. {name}"]
+                if rating:
+                    line_parts.append(f"★{rating}")
+                if review_count:
+                    line_parts.append(f"({review_count:,})")
+                if price:
+                    line_parts.append(price)
+                if distance:
+                    line_parts.append(distance)
+
+                message_lines.append(" ".join(line_parts))
+
+            message = "\n".join(message_lines)
+
+            # Get details from #1 pick for action buttons
+            top_pick = top_restaurants[0]
+            yelp_url = top_pick.get("yelp_url", "")
+            phone = top_pick.get("phone", "")
+            coordinates = top_pick.get("coordinates", {})
+
+            # Build maps URLs for #1 pick
             google_maps_url = ""
             apple_maps_url = ""
             if coordinates and coordinates.get("lat") and coordinates.get("lng"):
@@ -938,60 +960,38 @@ class PureLLMConversationEntity(ConversationEntity):
                 google_maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lng}"
                 apple_maps_url = f"https://maps.apple.com/?daddr={lat},{lng}&dirflg=d"
 
-            # Build notification message
-            title = f"🍽️ {name}"
-            message_parts = []
-
-            if cuisine:
-                message_parts.append(cuisine)
-            if rating:
-                rating_str = f"★ {rating}"
-                if review_count:
-                    rating_str += f" ({review_count:,} reviews)"
-                message_parts.append(rating_str)
-            if price:
-                message_parts.append(price)
-            if distance:
-                message_parts.append(distance)
-            if address:
-                message_parts.append(address)
-
-            message = "\n".join(message_parts) if message_parts else name
-
-            # Build action buttons
+            # Build action buttons for #1 pick
             actions = []
 
             # Yelp page button
             if yelp_url:
                 actions.append({
                     "action": "URI",
-                    "title": "⭐ Yelp Page",
+                    "title": f"⭐ #{1} Yelp",
                     "uri": yelp_url,
                 })
 
-            # Google Maps directions button
+            # Add Yelp links for #2 and #3 if available
+            if len(top_restaurants) > 1 and top_restaurants[1].get("yelp_url"):
+                actions.append({
+                    "action": "URI",
+                    "title": f"⭐ #{2} Yelp",
+                    "uri": top_restaurants[1]["yelp_url"],
+                })
+
+            if len(top_restaurants) > 2 and top_restaurants[2].get("yelp_url"):
+                actions.append({
+                    "action": "URI",
+                    "title": f"⭐ #{3} Yelp",
+                    "uri": top_restaurants[2]["yelp_url"],
+                })
+
+            # Google Maps directions to #1
             if google_maps_url:
                 actions.append({
                     "action": "URI",
-                    "title": "🗺️ Google Maps",
+                    "title": "🗺️ Directions #1",
                     "uri": google_maps_url,
-                })
-
-            # Apple Maps directions button
-            if apple_maps_url:
-                actions.append({
-                    "action": "URI",
-                    "title": "🍎 Apple Maps",
-                    "uri": apple_maps_url,
-                })
-
-            # Call button (if phone available)
-            if phone:
-                phone_clean = "".join(c for c in phone if c.isdigit() or c == "+")
-                actions.append({
-                    "action": "URI",
-                    "title": "📞 Call",
-                    "uri": f"tel:{phone_clean}",
                 })
 
             # Build notification data with actions
@@ -999,7 +999,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 "title": title,
                 "message": message,
                 "data": {
-                    # Tapping notification opens Yelp page
+                    # Tapping notification opens #1's Yelp page
                     "url": yelp_url if yelp_url else google_maps_url,
                     "clickAction": yelp_url if yelp_url else google_maps_url,
                     # Action buttons

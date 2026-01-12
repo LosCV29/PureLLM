@@ -187,10 +187,19 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_restaurants and config.yelp_api_key:
         tools.append(_tool(
             "get_restaurant_recommendations",
-            "Get restaurant recommendations and reviews using Yelp. Use for 'best tacos near me', 'good sushi restaurants'. Do NOT use for directions.",
+            "Get restaurant recommendations from Yelp. SORTING: 'best'/'top rated' = rating, 'popular'/'most reviewed' = review_count, 'fancy'/'expensive'/'upscale' = use price filter $$$$, 'cheap'/'budget' = price $. Default sort is rating.",
             {
                 "query": {"type": "string", "description": "What type of food or restaurant to search for"},
-                "max_results": {"type": "integer", "description": "Number of results to return (default: 5, max: 10)"}
+                "sort_by": {
+                    "type": "string",
+                    "enum": ["rating", "review_count", "distance", "best_match"],
+                    "description": "How to sort: 'rating' for highest rated (default), 'review_count' for most popular/reviewed, 'distance' for closest, 'best_match' for Yelp's algorithm"
+                },
+                "price": {
+                    "type": "string",
+                    "description": "Price filter: '1' for $, '2' for $$, '3' for $$$, '4' for $$$$. Can combine like '1,2' for $ and $$. Use '3,4' for expensive/upscale, '1,2' for cheap/budget."
+                },
+                "max_results": {"type": "integer", "description": "Number of results to return (default: 3, max: 10)"}
             },
             ["query"]
         ))
