@@ -939,14 +939,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Handle notification settings configuration."""
         if user_input is not None:
-            # Convert entity list to comma-separated string
             processed_input = {}
             if CONF_NOTIFICATION_ENTITIES in user_input:
-                entity_list = user_input[CONF_NOTIFICATION_ENTITIES]
-                if isinstance(entity_list, list):
-                    processed_input[CONF_NOTIFICATION_ENTITIES] = ",".join(entity_list)
-                else:
-                    processed_input[CONF_NOTIFICATION_ENTITIES] = entity_list
+                # Store as-is (newline-separated string)
+                processed_input[CONF_NOTIFICATION_ENTITIES] = user_input[CONF_NOTIFICATION_ENTITIES]
             if CONF_NOTIFY_ON_PLACES in user_input:
                 processed_input[CONF_NOTIFY_ON_PLACES] = user_input[CONF_NOTIFY_ON_PLACES]
 
@@ -954,13 +950,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=new_options)
 
         current = {**self._entry.data, **self._entry.options}
-
-        # Parse current notification entities back to list
         current_entities = current.get(CONF_NOTIFICATION_ENTITIES, DEFAULT_NOTIFICATION_ENTITIES)
-        if isinstance(current_entities, str) and current_entities:
-            current_entities = [e.strip() for e in current_entities.split(",") if e.strip()]
-        elif not current_entities:
-            current_entities = []
 
         return self.async_show_form(
             step_id="notifications",
@@ -969,10 +959,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_NOTIFICATION_ENTITIES,
                         default=current_entities,
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="notify",
-                            multiple=True,
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.TEXT,
+                            multiline=True,
                         )
                     ),
                     vol.Optional(
@@ -981,9 +971,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     ): cv.boolean,
                 }
             ),
-            description_placeholders={
-                "notification_note": "Select mobile devices to receive notifications when location services are used.",
-            },
         )
 
     async def async_step_api_keys(
