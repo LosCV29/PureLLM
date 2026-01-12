@@ -163,9 +163,9 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "enum": ["today", "tomorrow"],
                     "description": "Which day to check (default: today)"
                 },
-                "detail": {
+                "count_only": {
                     "type": "boolean",
-                    "description": "false = just count ('Yes, 3 games'), true = list all games. Use false for 'any games?' and true for 'what games?'"
+                    "description": "Set to true ONLY for yes/no questions like 'any games today?', 'is there NFL today?'. For 'what games', 'show me games', 'list games' = use false or omit."
                 }
             },
             ["league"]
