@@ -336,7 +336,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== DEVICE CONTROL (always enabled - LLM fallback) =====
     tools.append(_tool(
         "control_device",
-        "Control smart home devices (lights, switches, locks, fans, blinds, shades, covers). Use this when you need to control a device. IMPORTANT: Use the 'device' parameter with the user's spoken name - it does fuzzy matching! For blinds/shades: 'raise/up'=open, 'lower/down'=close, 'stop'=halt.",
+        "Control smart home devices (lights, switches, locks, fans, blinds, shades, covers, media_player, receivers, TVs). Use this when you need to control a device. IMPORTANT: Use the 'device' parameter with the user's spoken name - it does fuzzy matching! For blinds/shades: 'raise/up'=open, 'lower/down'=close, 'stop'=halt. For media players/receivers/TVs: 'mute'=mute audio, 'unmute'=unmute audio, 'play'=resume, 'pause'=pause, 'volume_up'/'volume_down'=adjust volume.",
         {
             "device": {"type": "string", "description": "PREFERRED: Use the device name the user said - fuzzy matching finds the right entity."},
             "entity_id": {"type": "string", "description": "Only if you know the exact entity ID. Prefer 'device' for fuzzy matching."},
