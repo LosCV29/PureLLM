@@ -62,10 +62,12 @@ from .const import (
     CONF_NOTIFICATION_ENTITIES,
     CONF_NOTIFY_ON_PLACES,
     CONF_NOTIFY_ON_RESTAURANTS,
+    CONF_NOTIFY_ON_CAMERA,
     DEFAULT_API_KEY,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
     DEFAULT_NOTIFY_ON_RESTAURANTS,
+    DEFAULT_NOTIFY_ON_CAMERA,
     DEFAULT_ENABLE_CALENDAR,
     DEFAULT_ENABLE_CAMERAS,
     DEFAULT_ENABLE_DEVICE_STATUS,
@@ -271,6 +273,7 @@ class PureLLMConversationEntity(ConversationEntity):
             self.notification_entities = []
         self.notify_on_places = config.get(CONF_NOTIFY_ON_PLACES, DEFAULT_NOTIFY_ON_PLACES)
         self.notify_on_restaurants = config.get(CONF_NOTIFY_ON_RESTAURANTS, DEFAULT_NOTIFY_ON_RESTAURANTS)
+        self.notify_on_camera = config.get(CONF_NOTIFY_ON_CAMERA, DEFAULT_NOTIFY_ON_CAMERA)
 
         # Clear caches on config update
         self._tools = None
@@ -1128,6 +1131,69 @@ class PureLLMConversationEntity(ConversationEntity):
         except Exception as err:
             _LOGGER.error("Error sending reservation notification: %s", err, exc_info=True)
 
+    async def _send_camera_notification(self, camera_result: dict[str, Any]) -> None:
+        """Send notification with camera snapshot to configured devices."""
+        try:
+            location = camera_result.get("location", "Camera")
+            description = camera_result.get("description", "")
+            snapshot_url = camera_result.get("snapshot_url", "")
+            identified_people = camera_result.get("identified_people", [])
+
+            _LOGGER.info("Sending camera notification for: %s", location)
+
+            # Build title
+            title = f"📷 {location}"
+
+            # Build message - first sentence of description
+            if description:
+                message = description.split('.')[0] + '.' if '.' in description else description
+            else:
+                message = "Camera check completed."
+
+            # Add identified people if any
+            if identified_people:
+                people_names = [p.get("name", "Unknown") for p in identified_people if p.get("name")]
+                if people_names:
+                    message += f"\n👤 Identified: {', '.join(people_names)}"
+
+            # Build notification data
+            notification_data = {
+                "title": title,
+                "message": message,
+                "data": {
+                    "push": {
+                        "interruption-level": "time-sensitive",
+                    },
+                },
+            }
+
+            # Add image if snapshot URL available
+            if snapshot_url:
+                # ha_video_vision returns paths like /media/local/ha_video_vision/camera_latest.jpg
+                # For HA companion app, we need to use the /local/ or /media/ URL
+                notification_data["data"]["image"] = snapshot_url
+                notification_data["data"]["attachment"] = {"url": snapshot_url}
+
+            _LOGGER.info("Camera notification data: %s", notification_data)
+
+            # Send to all configured notification entities
+            for entity_id in self.notification_entities:
+                service_name = entity_id.replace("notify.", "") if entity_id.startswith("notify.") else entity_id
+                _LOGGER.info("Calling notify.%s for camera", service_name)
+                try:
+                    await self.hass.services.async_call(
+                        "notify",
+                        service_name,
+                        notification_data,
+                        blocking=False,
+                    )
+                    _LOGGER.info("Successfully sent camera notification to %s", service_name)
+                except Exception as notify_err:
+                    _LOGGER.error("Failed to send camera notification to %s: %s", entity_id, notify_err)
+
+        except Exception as err:
+            _LOGGER.error("Error sending camera notification: %s", err, exc_info=True)
+
     # =========================================================================
     # Tool Execution
     # =========================================================================
@@ -1230,14 +1296,22 @@ class PureLLMConversationEntity(ConversationEntity):
                 )
 
             elif tool_name == "check_camera":
-                return await camera_tool.check_camera(
+                result = await camera_tool.check_camera(
                     arguments, self.hass, None
                 )
+                # Send notification with snapshot if enabled
+                if self.notify_on_camera and self.notification_entities and result.get("snapshot_url"):
+                    await self._send_camera_notification(result)
+                return result
 
             elif tool_name == "quick_camera_check":
-                return await camera_tool.quick_camera_check(
+                result = await camera_tool.quick_camera_check(
                     arguments, self.hass, None
                 )
+                # Send notification with snapshot if enabled
+                if self.notify_on_camera and self.notification_entities and result.get("snapshot_url"):
+                    await self._send_camera_notification(result)
+                return result
 
             elif tool_name == "control_thermostat":
                 return await thermostat_tool.control_thermostat(
