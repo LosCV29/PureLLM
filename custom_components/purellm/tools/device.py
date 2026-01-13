@@ -359,7 +359,7 @@ async def control_device(
 
     # Service map
     service_map = {
-        "light": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"},
+        "light": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle", "dim": "turn_on"},
         "switch": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"},
         "fan": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle", "set_speed": "set_percentage"},
         "lock": {"lock": "lock", "unlock": "unlock", "turn_on": "lock", "turn_off": "unlock"},
@@ -507,7 +507,7 @@ async def control_device(
         service_data = {"entity_id": entity_id}
 
         # Light controls
-        if domain == "light" and action == "turn_on":
+        if domain == "light" and action in ("turn_on", "dim"):
             if brightness is not None:
                 service_data["brightness_pct"] = max(0, min(100, brightness))
             if color and color in color_map and color_map[color]:
@@ -594,8 +594,8 @@ async def control_device(
                 response = f"I've set the {controlled[0]} to its favorite position."
             elif action == "set_position" and position is not None:
                 response = f"I've set the {controlled[0]} to {position}% position."
-            elif brightness is not None and action == "turn_on":
-                response = f"I've turned on the {controlled[0]} at {brightness}% brightness."
+            elif brightness is not None and action in ("turn_on", "dim"):
+                response = f"I've set the {controlled[0]} to {brightness}% brightness."
             else:
                 action_word = action_words.get(service, action)
                 response = f"I've {action_word} the {controlled[0]}."
