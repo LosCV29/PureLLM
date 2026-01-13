@@ -1,11 +1,10 @@
 """Stock price tool handler."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, TYPE_CHECKING
 
-from ..const import API_TIMEOUT
+from ..utils.http_client import fetch_json, log_and_error
 
 if TYPE_CHECKING:
     import aiohttp
@@ -56,13 +55,11 @@ async def get_stock_price(
     try:
         track_api_call("stocks")
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d"
 
-        async with asyncio.timeout(API_TIMEOUT):
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=1d&range=1d"
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    return {"error": f"Could not find stock symbol '{symbol}'"}
-                data = await resp.json()
+        data, status = await fetch_json(session, url, headers=headers)
+        if data is None:
+            return {"error": f"Could not find stock symbol '{symbol}'"}
 
         result_data = data.get("chart", {}).get("result", [{}])[0]
         meta = result_data.get("meta", {})
@@ -91,5 +88,4 @@ async def get_stock_price(
         return result
 
     except Exception as err:
-        _LOGGER.error("Stock API error: %s", err, exc_info=True)
-        return {"error": f"Failed to get stock price: {str(err)}"}
+        return log_and_error("Failed to get stock price", err)

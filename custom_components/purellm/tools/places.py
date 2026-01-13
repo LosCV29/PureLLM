@@ -10,6 +10,7 @@ from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
 from ..utils.helpers import calculate_distance_miles
+from ..utils.http_client import post_json, fetch_json, log_and_error
 
 if TYPE_CHECKING:
     import aiohttp
@@ -227,14 +228,10 @@ async def find_nearby_places(
 
         track_api_call("places")
 
-        async with asyncio.timeout(API_TIMEOUT):
-            async with session.post(url, json=body, headers=headers) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    _LOGGER.error("Google Places HTTP error: %s - %s", response.status, error_text)
-                    return {"error": f"Google Places API error: {response.status}"}
-
-                data = await response.json()
+        data, status = await post_json(session, url, body, headers=headers)
+        if data is None:
+            _LOGGER.error("Google Places HTTP error: %s", status)
+            return {"error": f"Google Places API error: {status}"}
 
         places = data.get("places", [])
 
@@ -347,8 +344,7 @@ async def find_nearby_places(
         }
 
     except Exception as err:
-        _LOGGER.error("Error calling Google Places API: %s", err, exc_info=True)
-        return {"error": f"Failed to search for places: {str(err)}"}
+        return log_and_error("Failed to search for places", err)
 
 
 async def get_restaurant_recommendations(
@@ -408,75 +404,72 @@ async def get_restaurant_recommendations(
 
         track_api_call("restaurants")
 
-        async with asyncio.timeout(API_TIMEOUT):
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    businesses = data.get("businesses", [])
+        data, status = await fetch_json(session, url, headers=headers)
+        if data is None:
+            _LOGGER.error("Yelp API error: %s", status)
+            return {"error": f"Yelp API returned status {status}"}
 
-                    if not businesses:
-                        return {"message": f"No restaurants found for '{query}'"}
+        businesses = data.get("businesses", [])
 
-                    results = []
-                    for biz in businesses:
-                        result = {
-                            "name": biz.get("name"),
-                            "rating": biz.get("rating"),
-                            "review_count": biz.get("review_count"),
-                            "price": biz.get("price", "N/A"),
-                            "address": ", ".join(biz.get("location", {}).get("display_address", [])),
-                            "yelp_url": biz.get("url", ""),
-                            "phone": biz.get("display_phone", ""),
-                            "image_url": biz.get("image_url", ""),
-                        }
+        if not businesses:
+            return {"message": f"No restaurants found for '{query}'"}
 
-                        # Get coordinates for maps links
-                        coordinates = biz.get("coordinates", {})
-                        if coordinates:
-                            result["coordinates"] = {
-                                "lat": coordinates.get("latitude"),
-                                "lng": coordinates.get("longitude"),
-                            }
+        results = []
+        for biz in businesses:
+            result = {
+                "name": biz.get("name"),
+                "rating": biz.get("rating"),
+                "review_count": biz.get("review_count"),
+                "price": biz.get("price", "N/A"),
+                "address": ", ".join(biz.get("location", {}).get("display_address", [])),
+                "yelp_url": biz.get("url", ""),
+                "phone": biz.get("display_phone", ""),
+                "image_url": biz.get("image_url", ""),
+            }
 
-                        categories = [cat.get("title") for cat in biz.get("categories", [])]
-                        if categories:
-                            result["cuisine"] = ", ".join(categories[:2])
+            # Get coordinates for maps links
+            coordinates = biz.get("coordinates", {})
+            if coordinates:
+                result["coordinates"] = {
+                    "lat": coordinates.get("latitude"),
+                    "lng": coordinates.get("longitude"),
+                }
 
-                        distance_meters = biz.get("distance", 0)
-                        distance_miles = distance_meters / 1609.34
-                        result["distance"] = f"{distance_miles:.1f} miles"
+            categories = [cat.get("title") for cat in biz.get("categories", [])]
+            if categories:
+                result["cuisine"] = ", ".join(categories[:2])
 
-                        if not biz.get("is_closed", True):
-                            result["status"] = "Open now"
+            distance_meters = biz.get("distance", 0)
+            distance_miles = distance_meters / 1609.34
+            result["distance"] = f"{distance_miles:.1f} miles"
 
-                        # Capture reservation availability from transactions
-                        transactions = biz.get("transactions", [])
-                        result["supports_reservation"] = "restaurant_reservation" in transactions
-                        result["supports_delivery"] = "delivery" in transactions
-                        result["supports_pickup"] = "pickup" in transactions
+            if not biz.get("is_closed", True):
+                result["status"] = "Open now"
 
-                        # Build Yelp reservation URL if supported
-                        if result["supports_reservation"]:
-                            # Yelp reservation URL pattern
-                            biz_alias = biz.get("alias", "")
-                            if biz_alias:
-                                result["yelp_reservation_url"] = f"https://www.yelp.com/reservations/{biz_alias}"
+            # Capture reservation availability from transactions
+            transactions = biz.get("transactions", [])
+            result["supports_reservation"] = "restaurant_reservation" in transactions
+            result["supports_delivery"] = "delivery" in transactions
+            result["supports_pickup"] = "pickup" in transactions
 
-                        results.append(result)
+            # Build Yelp reservation URL if supported
+            if result["supports_reservation"]:
+                # Yelp reservation URL pattern
+                biz_alias = biz.get("alias", "")
+                if biz_alias:
+                    result["yelp_reservation_url"] = f"https://www.yelp.com/reservations/{biz_alias}"
 
-                    _LOGGER.info("Yelp found %d restaurants", len(results))
-                    return {
-                        "query": query,
-                        "count": len(results),
-                        "restaurants": results
-                    }
-                else:
-                    _LOGGER.error("Yelp API error: %s", response.status)
-                    return {"error": f"Yelp API returned status {response.status}"}
+            results.append(result)
+
+        _LOGGER.info("Yelp found %d restaurants", len(results))
+        return {
+            "query": query,
+            "count": len(results),
+            "restaurants": results
+        }
 
     except Exception as err:
-        _LOGGER.error("Error searching Yelp: %s", err, exc_info=True)
-        return {"error": f"Failed to search restaurants: {str(err)}"}
+        return log_and_error("Failed to search restaurants", err)
 
 
 async def book_restaurant(
@@ -545,111 +538,109 @@ async def book_restaurant(
         _LOGGER.info("Searching Yelp for reservation: %s", restaurant_name)
         track_api_call("book_restaurant")
 
-        async with asyncio.timeout(API_TIMEOUT):
-            async with session.get(url, headers=headers) as response:
-                if response.status != 200:
-                    _LOGGER.error("Yelp API error: %s", response.status)
-                    return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
+        data, status = await fetch_json(session, url, headers=headers)
+        if data is None:
+            _LOGGER.error("Yelp API error: %s", status)
+            return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
 
-                data = await response.json()
-                businesses = data.get("businesses", [])
+        businesses = data.get("businesses", [])
 
-                if not businesses:
-                    return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
+        if not businesses:
+            return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
 
-                # Find best match by name similarity - strict matching for specific restaurant bookings
-                search_name = restaurant_name.lower().strip()
-                search_words = search_name.replace("'s", "s").replace("'", "").split()
-                first_word = search_words[0] if search_words else ""
-                best_match = None
-                best_score = 0
+        # Find best match by name similarity - strict matching for specific restaurant bookings
+        search_name = restaurant_name.lower().strip()
+        search_words = search_name.replace("'s", "s").replace("'", "").split()
+        first_word = search_words[0] if search_words else ""
+        best_match = None
+        best_score = 0
 
-                for b in businesses:
-                    biz_name_lower = b.get("name", "").lower()
-                    biz_name_normalized = biz_name_lower.replace("'s", "s").replace("'", "")
-                    biz_words = biz_name_normalized.split()
-                    biz_first_word = biz_words[0] if biz_words else ""
+        for b in businesses:
+            biz_name_lower = b.get("name", "").lower()
+            biz_name_normalized = biz_name_lower.replace("'s", "s").replace("'", "")
+            biz_words = biz_name_normalized.split()
+            biz_first_word = biz_words[0] if biz_words else ""
 
-                    # First word must match exactly (sunny != sonny)
-                    if first_word and biz_first_word and first_word != biz_first_word:
-                        # Skip if first words don't match
-                        continue
+            # First word must match exactly (sunny != sonny)
+            if first_word and biz_first_word and first_word != biz_first_word:
+                # Skip if first words don't match
+                continue
 
-                    # Score based on how much of the search term appears in the business name
-                    if search_name in biz_name_lower or search_name.replace("'s", "s") in biz_name_normalized:
-                        score = 100  # Exact substring match
-                    elif biz_name_lower in search_name or biz_name_normalized in search_name.replace("'s", "s"):
-                        score = 90  # Business name is part of search
-                    else:
-                        # Count matching words
-                        matching = len(set(search_words) & set(biz_words))
-                        score = matching * 20
+            # Score based on how much of the search term appears in the business name
+            if search_name in biz_name_lower or search_name.replace("'s", "s") in biz_name_normalized:
+                score = 100  # Exact substring match
+            elif biz_name_lower in search_name or biz_name_normalized in search_name.replace("'s", "s"):
+                score = 90  # Business name is part of search
+            else:
+                # Count matching words
+                matching = len(set(search_words) & set(biz_words))
+                score = matching * 20
 
-                    if score > best_score:
-                        best_score = score
-                        best_match = b
+            if score > best_score:
+                best_score = score
+                best_match = b
 
-                # Fall back to first result only if we found no match at all
-                biz = best_match if best_match else businesses[0]
-                _LOGGER.info("Best match for '%s': %s (score: %d)", restaurant_name, biz.get("name"), best_score)
-                biz_name = biz.get("name", restaurant_name)
-                biz_alias = biz.get("alias", "")
-                transactions = biz.get("transactions", [])
-                yelp_url = biz.get("url", "")
-                phone = biz.get("display_phone", "")
-                address = ", ".join(biz.get("location", {}).get("display_address", []))
+        # Fall back to first result only if we found no match at all
+        biz = best_match if best_match else businesses[0]
+        _LOGGER.info("Best match for '%s': %s (score: %d)", restaurant_name, biz.get("name"), best_score)
+        biz_name = biz.get("name", restaurant_name)
+        biz_alias = biz.get("alias", "")
+        transactions = biz.get("transactions", [])
+        yelp_url = biz.get("url", "")
+        phone = biz.get("display_phone", "")
+        address = ", ".join(biz.get("location", {}).get("display_address", []))
 
-                result = {
-                    "restaurant_name": biz_name,
-                    "address": address,
-                    "phone": phone,
-                    "party_size": party_size,
-                    "date": date,
-                    "time": time,
-                    "yelp_url": yelp_url,
-                }
+        result = {
+            "restaurant_name": biz_name,
+            "address": address,
+            "phone": phone,
+            "party_size": party_size,
+            "date": date,
+            "time": time,
+            "yelp_url": yelp_url,
+        }
 
-                # Check if Yelp reservations are supported
-                if "restaurant_reservation" in transactions and biz_alias:
-                    # Build Yelp reservation URL with parameters
-                    yelp_resy_url = f"https://www.yelp.com/reservations/{biz_alias}"
+        # Check if Yelp reservations are supported
+        if "restaurant_reservation" in transactions and biz_alias:
+            # Build Yelp reservation URL with parameters
+            yelp_resy_url = f"https://www.yelp.com/reservations/{biz_alias}"
 
-                    # Add query params if we have date/time/covers
-                    params = []
-                    if party_size:
-                        params.append(f"covers={party_size}")
-                    if date:
-                        params.append(f"date={date}")
-                    if time:
-                        # Normalize time to HH:MM format
-                        params.append(f"time={_normalize_time(time)}")
+            # Add query params if we have date/time/covers
+            params = []
+            if party_size:
+                params.append(f"covers={party_size}")
+            if date:
+                params.append(f"date={date}")
+            if time:
+                # Normalize time to HH:MM format
+                params.append(f"time={_normalize_time(time)}")
 
-                    if params:
-                        yelp_resy_url += "?" + "&".join(params)
+            if params:
+                yelp_resy_url += "?" + "&".join(params)
 
-                    result["reservation_url"] = yelp_resy_url
-                    result["reservation_source"] = "Yelp"
-                    result["supports_reservation"] = True
-                    result["message"] = f"Reservation available at {biz_name} via Yelp!"
-                    result["response_text"] = f"I found {biz_name} and sent a reservation link to your phone."
+            result["reservation_url"] = yelp_resy_url
+            result["reservation_source"] = "Yelp"
+            result["supports_reservation"] = True
+            result["message"] = f"Reservation available at {biz_name} via Yelp!"
+            result["response_text"] = f"I found {biz_name} and sent a reservation link to your phone."
 
-                    _LOGGER.info("Found Yelp reservation for %s: %s", biz_name, yelp_resy_url)
-                else:
-                    # No Yelp reservation - fall back to Google
-                    result["supports_reservation"] = False
-                    fallback = _build_fallback_response(biz_name, party_size, date, time, latitude, longitude)
-                    result["reservation_url"] = fallback["reservation_url"]
-                    result["reservation_source"] = "Google Search"
-                    if phone:
-                        result["message"] = f"{biz_name} doesn't support online reservations through Yelp. Try searching Google or call them directly at {phone}."
-                        result["response_text"] = f"{biz_name} doesn't support online reservations. I sent a link to your phone, or you can call them at {phone}."
-                    else:
-                        result["message"] = f"{biz_name} doesn't support online reservations through Yelp. Use the Google link to search for booking options."
-                        result["response_text"] = f"{biz_name} doesn't support online reservations. I sent a search link to your phone."
+            _LOGGER.info("Found Yelp reservation for %s: %s", biz_name, yelp_resy_url)
+        else:
+            # No Yelp reservation - fall back to Google
+            result["supports_reservation"] = False
+            fallback = _build_fallback_response(biz_name, party_size, date, time, latitude, longitude)
+            result["reservation_url"] = fallback["reservation_url"]
+            result["reservation_source"] = "Google Search"
+            if phone:
+                result["message"] = f"{biz_name} doesn't support online reservations through Yelp. Try searching Google or call them directly at {phone}."
+                result["response_text"] = f"{biz_name} doesn't support online reservations. I sent a link to your phone, or you can call them at {phone}."
+            else:
+                result["message"] = f"{biz_name} doesn't support online reservations through Yelp. Use the Google link to search for booking options."
+                result["response_text"] = f"{biz_name} doesn't support online reservations. I sent a search link to your phone."
 
-                    _LOGGER.info("No Yelp reservation for %s, using Google fallback", biz_name)
+            _LOGGER.info("No Yelp reservation for %s, using Google fallback", biz_name)
 
-                return result
+        return result
 
     except Exception as err:
         _LOGGER.error("Error booking restaurant: %s", err, exc_info=True)
