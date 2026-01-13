@@ -1176,7 +1176,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 activity_lines.append(f"**{name}** ({keys})")
             description = "**Current SofaBaton activities:**\n" + "\n".join(activity_lines) + "\n\nSelect one to edit/delete, or add a new one below."
         else:
-            description = "No SofaBaton activities configured. Add your first activity below.\n\n**Example:**\n- Activity Name: Watch TV\n- Start Key: Your API key for starting the activity\n- Stop Key: Your API key for stopping the activity"
+            description = "No SofaBaton activities configured. Add your first activity below.\n\n**Instructions:**\n1. Open Sofabaton app → Me → API Interface\n2. Copy the full URL for each activity (On/Off)\n3. Paste the full URL below\n\n**Example:** PC, PS5, Stream Box"
 
         # Build select options for existing activities
         select_options = []

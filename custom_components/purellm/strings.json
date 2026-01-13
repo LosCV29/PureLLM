@@ -125,9 +125,9 @@
         "description": "{activities_info}",
         "data": {
           "select_activity": "Select Existing Activity",
-          "activity_name": "Activity Name (e.g., 'Watch TV', 'Movie Night')",
-          "start_key": "Start Activity API Key",
-          "stop_key": "Stop Activity API Key",
+          "activity_name": "Activity Name (e.g., 'PC', 'PS5', 'Stream Box')",
+          "start_key": "Start URL (copy full URL from Sofabaton app)",
+          "stop_key": "Stop URL (copy full URL from Sofabaton app)",
           "action": "Action"
         }
       },
