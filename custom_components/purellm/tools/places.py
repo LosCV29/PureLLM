@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import urllib.parse
 from datetime import datetime, time as dt_time
 from typing import Any, TYPE_CHECKING
@@ -515,9 +516,18 @@ async def book_restaurant(
     if not api_key:
         return {"error": "Yelp API key not configured. Add it in Settings → PolyVoice → API Keys."}
 
+    # Extract location from restaurant_name if it contains "in [city]"
+    # e.g., "Sunny's Steak House in Miami" -> name="Sunny's Steak House", location="Miami"
+    location_match = re.search(r'\s+in\s+([A-Za-z\s]+)$', restaurant_name, re.IGNORECASE)
+    if location_match and not location:
+        location = location_match.group(1).strip()
+        restaurant_name = restaurant_name[:location_match.start()].strip()
+        _LOGGER.info("Extracted location '%s' from restaurant name, searching for '%s'", location, restaurant_name)
+
     try:
-        # Search Yelp for this specific restaurant
-        encoded_query = urllib.parse.quote(restaurant_name)
+        # Include location in search term for better Yelp results
+        search_term = f"{restaurant_name} {location}" if location else restaurant_name
+        encoded_query = urllib.parse.quote(search_term)
 
         # Use location text if provided, otherwise fall back to lat/long
         if location:
