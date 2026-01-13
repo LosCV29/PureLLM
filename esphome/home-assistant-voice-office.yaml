@@ -1,0 +1,33 @@
+substitutions:
+  name: home-assistant-voice-09d983
+  friendly_name: Home Assistant Voice Office
+
+packages:
+  Nabu Casa.Home Assistant Voice PE: github://esphome/home-assistant-voice-pe/home-assistant-voice.yaml@dev
+
+esphome:
+  name: ${name}
+  name_add_mac_suffix: false
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - delay: 5s
+      - voice_assistant.start_continuous:
+
+api:
+  encryption:
+    key: WpK/n1LTn+DoIIbH/Giqlr6IBRmZU6ZA3MptO0D0t/4=
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+voice_assistant:
+  use_wake_word: true
+
+micro_wake_word:
+  models:
+    - model: hey_mycroft
+      probability_cutoff: 0.6
+      sliding_window_size: 5
