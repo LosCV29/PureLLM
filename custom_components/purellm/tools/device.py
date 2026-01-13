@@ -376,7 +376,7 @@ async def control_device(
         "climate": {"turn_on": "turn_on", "turn_off": "turn_off", "set_temperature": "set_temperature", "set_hvac_mode": "set_hvac_mode"},
         "media_player": {
             "turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle",
-            "play": "media_play", "pause": "media_pause", "stop": "media_stop",
+            "play": "media_play", "resume": "media_play", "pause": "media_pause", "stop": "media_stop",
             "next": "media_next_track", "previous": "media_previous_track",
             "volume_up": "volume_up", "volume_down": "volume_down",
             "set_volume": "volume_set", "mute": "volume_mute", "unmute": "volume_mute"
