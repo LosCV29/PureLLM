@@ -579,10 +579,19 @@ async def control_device(
         if domain == "media_player":
             if action == "set_volume" and volume is not None:
                 service_data["volume_level"] = max(0, min(100, volume)) / 100.0
-            if action == "mute":
-                service_data["is_volume_muted"] = True
-            if action == "unmute":
-                service_data["is_volume_muted"] = False
+            if action in ("mute", "unmute"):
+                # Check current mute state if available
+                state = hass.states.get(entity_id)
+                is_currently_muted = state.attributes.get("is_volume_muted") if state else None
+
+                # Only skip if we know the current state for sure
+                if is_currently_muted is True and action == "mute":
+                    return {"success": True, "response_text": f"The {friendly_name} is already muted."}
+                elif is_currently_muted is False and action == "unmute":
+                    return {"success": True, "response_text": f"The {friendly_name} is already unmuted."}
+
+                # Set the mute state explicitly
+                service_data["is_volume_muted"] = (action == "mute")
 
         # Climate controls
         if domain == "climate":
