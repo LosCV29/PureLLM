@@ -123,7 +123,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_sports:
         tools.append(_tool(
             "get_sports_info",
-            "Get info about a SPECIFIC TEAM. ALWAYS use this when user mentions a team name! Use for: 'do the Kings play today', 'did Lakers win', 'when is the next Cowboys game', 'Celtics score', 'does [team] play'. This looks up the team's schedule and results.",
+            "MANDATORY: You MUST call this tool for ANY question about a specific team. NEVER answer from memory - scores/schedules change constantly. Use for: 'do the Kings play today', 'did [team] win', 'when is the next [team] game', '[team] score', 'does [team] play'.",
             {
                 "team_name": {
                     "type": "string",
