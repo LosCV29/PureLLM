@@ -902,23 +902,20 @@ class MusicController:
                         if name_matches_query(p.get("name") or p.get("title") or "")
                     ]
 
-                    # Choose best playlist: Official > Name match > Non-radio > Any
+                    # ONLY use official Spotify playlists (e.g., "This Is Migos")
                     is_official = False
+                    chosen_playlist = None
                     if official_playlists:
                         # Among official, prefer ones with query in name
                         official_with_name = [p for p in official_playlists if name_matches_query(p.get("name") or p.get("title") or "")]
                         chosen_playlist = official_with_name[0] if official_with_name else official_playlists[0]
                         is_official = True
                         _LOGGER.info("Found official Spotify playlist")
-                    elif matching_name_playlists:
-                        chosen_playlist = matching_name_playlists[0]
-                        _LOGGER.info("Found playlist with '%s' in name", query)
-                    elif non_radio_playlists:
-                        chosen_playlist = non_radio_playlists[0]
-                        _LOGGER.info("Using first non-radio playlist")
-                    else:
-                        chosen_playlist = playlists[0]
-                        _LOGGER.info("Falling back to first playlist result")
+
+                    # If no official playlist found, don't fall back to user playlists
+                    if not chosen_playlist:
+                        _LOGGER.warning("No official Spotify playlist found for '%s'", query)
+                        return {"error": f"Could not find an official Spotify playlist for '{query}'. Try 'play {query}' instead to play the artist directly."}
 
                     # Get the EXACT playlist title for verbatim announcement
                     playlist_name = chosen_playlist.get("name") or chosen_playlist.get("title")
@@ -947,15 +944,15 @@ class MusicController:
             )
 
             # Return the EXACT playlist title for verbatim announcement
-            # Include playlist source so user knows it's an official/curated playlist
-            source_note = "Spotify's official" if is_official else "the Spotify"
+            # Include room name and confirm it's an official Spotify playlist
+            room_suffix = f" in the {room}" if room else ""
             return {
                 "status": "shuffling",
                 "playlist_title": playlist_name,
                 "playlist_owner": playlist_owner,
                 "is_official_playlist": is_official,
                 "room": room,
-                "response_text": f"Shuffling {source_note} playlist '{playlist_name}'"
+                "response_text": f"Playing {playlist_name}{room_suffix}"
             }
 
         except Exception as search_err:
