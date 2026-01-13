@@ -31,6 +31,7 @@
           "features": "Enable/Disable Features",
           "entities": "PureLLM Default Entities",
           "device_aliases": "Device Aliases",
+          "voice_scripts": "Voice Scripts",
           "music_rooms": "Music Room Mapping",
           "notifications": "Notification Settings",
           "api_keys": "External API Keys",
@@ -93,6 +94,18 @@
         "description": "Define custom voice names for your devices. Format: alias_name: entity_id (one per line)",
         "data": {
           "device_aliases": "Device Aliases"
+        }
+      },
+      "voice_scripts": {
+        "title": "Voice Scripts",
+        "description": "{scripts_info}",
+        "data": {
+          "select_script": "Select Existing Script",
+          "trigger_phrase": "Trigger Phrase (e.g., 'garage', 'mute', 'pause')",
+          "open_script": "Open/On Script (called for open/turn_on actions)",
+          "close_script": "Close/Off Script (called for close/turn_off actions)",
+          "sensor_entity": "State Sensor (optional - checks state before executing)",
+          "action": "Action"
         }
       },
       "music_rooms": {

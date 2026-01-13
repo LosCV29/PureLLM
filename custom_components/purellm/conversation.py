@@ -63,6 +63,8 @@ from .const import (
     CONF_NOTIFY_ON_PLACES,
     CONF_NOTIFY_ON_RESTAURANTS,
     CONF_NOTIFY_ON_CAMERA,
+    CONF_VOICE_SCRIPTS,
+    DEFAULT_VOICE_SCRIPTS,
     DEFAULT_API_KEY,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
@@ -274,6 +276,13 @@ class PureLLMConversationEntity(ConversationEntity):
         self.notify_on_places = config.get(CONF_NOTIFY_ON_PLACES, DEFAULT_NOTIFY_ON_PLACES)
         self.notify_on_restaurants = config.get(CONF_NOTIFY_ON_RESTAURANTS, DEFAULT_NOTIFY_ON_RESTAURANTS)
         self.notify_on_camera = config.get(CONF_NOTIFY_ON_CAMERA, DEFAULT_NOTIFY_ON_CAMERA)
+
+        # Voice scripts configuration
+        voice_scripts_json = config.get(CONF_VOICE_SCRIPTS, DEFAULT_VOICE_SCRIPTS)
+        try:
+            self.voice_scripts = json.loads(voice_scripts_json) if voice_scripts_json else []
+        except (json.JSONDecodeError, TypeError):
+            self.voice_scripts = []
 
         # Clear caches on config update
         self._tools = None
@@ -1344,7 +1353,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
             elif tool_name == "control_device":
                 return await device_tool.control_device(
-                    arguments, self.hass, self.device_aliases
+                    arguments, self.hass, self.device_aliases, self.voice_scripts
                 )
 
             elif tool_name == "control_music":

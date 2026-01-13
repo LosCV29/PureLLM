@@ -1,6 +1,7 @@
 """Config flow for PureLLM integration."""
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -115,6 +116,9 @@ from .const import (
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
     DEFAULT_NOTIFY_ON_RESTAURANTS,
+    # Voice Scripts
+    CONF_VOICE_SCRIPTS,
+    DEFAULT_VOICE_SCRIPTS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -435,6 +439,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "features": "Enable/Disable Features",
                 "entities": "PureLLM Default Entities",
                 "device_aliases": "Device Aliases",
+                "voice_scripts": "Voice Scripts",
                 "music_rooms": "Music Room Mapping",
                 "notifications": "Notification Settings",
                 "api_keys": "API Keys",
@@ -829,6 +834,152 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             description_placeholders={
                 "format_hint": "Format: alias_name: entity_id (one per line). Example:\nkitchen light: light.kitchen_ceiling\nfront door: lock.front_door",
             },
+        )
+
+    async def async_step_voice_scripts(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle voice scripts configuration with add/edit/delete support.
+
+        Voice scripts map trigger phrases to script entities for custom voice commands.
+        Supports bidirectional scripts (open/close) with optional sensor state checking.
+        """
+        current = {**self._entry.data, **self._entry.options}
+        current_scripts_json = current.get(CONF_VOICE_SCRIPTS, DEFAULT_VOICE_SCRIPTS)
+
+        # Parse current scripts from JSON
+        try:
+            scripts_list = json.loads(current_scripts_json) if current_scripts_json else []
+        except (json.JSONDecodeError, TypeError):
+            scripts_list = []
+
+        if user_input is not None:
+            selected = user_input.get("select_script", "")
+            trigger = user_input.get("trigger_phrase", "").strip().lower()
+            open_script = user_input.get("open_script", "")
+            close_script = user_input.get("close_script", "")
+            sensor = user_input.get("sensor_entity", "")
+            action = user_input.get("action", "add")
+
+            # Find index of selected script
+            selected_idx = None
+            if selected:
+                for i, s in enumerate(scripts_list):
+                    if s.get("trigger", "").lower() == selected.lower():
+                        selected_idx = i
+                        break
+
+            if action == "delete" and selected_idx is not None:
+                # Delete selected script
+                scripts_list.pop(selected_idx)
+            elif action == "update" and selected_idx is not None:
+                # Update selected script
+                scripts_list[selected_idx] = {
+                    "trigger": trigger if trigger else selected,
+                    "open_script": open_script,
+                    "close_script": close_script,
+                    "sensor": sensor,
+                }
+            elif action == "add" and trigger and (open_script or close_script):
+                # Add new script mapping
+                scripts_list.append({
+                    "trigger": trigger,
+                    "open_script": open_script,
+                    "close_script": close_script,
+                    "sensor": sensor,
+                })
+            elif not selected and not trigger and not open_script:
+                # Empty submit - return to menu
+                return self.async_create_entry(title="", data=self._entry.options)
+
+            # Save updated scripts as JSON
+            updated_json = json.dumps(scripts_list)
+            new_options = {**self._entry.options, CONF_VOICE_SCRIPTS: updated_json}
+            self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+            # Rebuild list for display
+            try:
+                scripts_list = json.loads(updated_json)
+            except (json.JSONDecodeError, TypeError):
+                scripts_list = []
+
+        # Build description showing current scripts
+        if scripts_list:
+            mapping_lines = []
+            for s in scripts_list:
+                trigger = s.get("trigger", "")
+                open_s = s.get("open_script", "")
+                close_s = s.get("close_script", "")
+                sensor = s.get("sensor", "")
+                parts = []
+                if open_s:
+                    parts.append(f"open: {open_s}")
+                if close_s:
+                    parts.append(f"close: {close_s}")
+                if sensor:
+                    parts.append(f"sensor: {sensor}")
+                mapping_lines.append(f"**{trigger}** → {', '.join(parts)}")
+            description = "**Current voice scripts:**\n" + "\n".join(mapping_lines) + "\n\nSelect one to edit/delete, or add a new one below."
+        else:
+            description = "No voice scripts configured. Add your first voice script below.\n\n**Examples:**\n- Garage door: Set trigger 'garage', open script for opening, close script for closing, and sensor to check state\n- Mute: Set trigger 'mute', open script to your mute-all script\n- Pause: Set trigger 'pause', open script to your pause-all script"
+
+        # Build select options for existing scripts
+        select_options = []
+        for s in scripts_list:
+            trigger = s.get("trigger", "")
+            open_s = s.get("open_script", "")
+            close_s = s.get("close_script", "")
+            label_parts = [trigger]
+            if open_s:
+                label_parts.append(f"→ {open_s}")
+            select_options.append(selector.SelectOptionDict(value=trigger, label=" ".join(label_parts)))
+
+        return self.async_show_form(
+            step_id="voice_scripts",
+            description_placeholders={"scripts_info": description},
+            data_schema=vol.Schema(
+                {
+                    vol.Optional("select_script"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=select_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional("trigger_phrase"): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.TEXT,
+                        )
+                    ),
+                    vol.Optional("open_script"): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="script",
+                            multiple=False,
+                        )
+                    ),
+                    vol.Optional("close_script"): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="script",
+                            multiple=False,
+                        )
+                    ),
+                    vol.Optional("sensor_entity"): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="binary_sensor",
+                            multiple=False,
+                        )
+                    ),
+                    vol.Optional("action", default="add"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(value="add", label="Add New"),
+                                selector.SelectOptionDict(value="update", label="Update Selected"),
+                                selector.SelectOptionDict(value="delete", label="Delete Selected"),
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            ),
         )
 
     async def async_step_music_rooms(

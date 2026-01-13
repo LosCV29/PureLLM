@@ -251,3 +251,12 @@ DEFAULT_NOTIFICATION_ENTITIES: Final = ""  # Newline-separated list of notify se
 DEFAULT_NOTIFY_ON_PLACES: Final = True
 DEFAULT_NOTIFY_ON_RESTAURANTS: Final = True
 DEFAULT_NOTIFY_ON_CAMERA: Final = True
+
+# =============================================================================
+# VOICE SCRIPTS - User-configurable trigger phrases mapped to scripts
+# =============================================================================
+CONF_VOICE_SCRIPTS: Final = "voice_scripts"
+
+# Default voice scripts with trigger phrases and script mappings
+# Format: JSON list of objects with trigger, open_script, close_script, sensor fields
+DEFAULT_VOICE_SCRIPTS: Final = "[]"

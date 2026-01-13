@@ -298,6 +298,7 @@ async def control_device(
     arguments: dict[str, Any],
     hass: "HomeAssistant",
     device_aliases: dict[str, str],
+    voice_scripts: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Control smart home devices.
 
@@ -310,16 +311,20 @@ async def control_device(
     - Media players
     - Climate
     - Vacuums
+    - Voice scripts (user-configured trigger phrases)
     - And more...
 
     Args:
         arguments: Tool arguments
         hass: Home Assistant instance
         device_aliases: Custom device name -> entity_id mapping
+        voice_scripts: List of voice script configs with trigger, open_script, close_script, sensor
 
     Returns:
         Control result dict
     """
+    if voice_scripts is None:
+        voice_scripts = []
     from homeassistant.helpers import entity_registry as er
     from homeassistant.helpers import area_registry as ar
     from homeassistant.helpers import device_registry as dr
@@ -480,18 +485,31 @@ async def control_device(
 
     # Method 4: Device name matching (uses fuzzy matching with aliases)
     elif device_name:
-        # Special handling for garage door - route to correct script based on action
-        GARAGE_KEYWORDS = ["garage", "garage door"]
         device_lower = device_name.lower().strip()
+        matched_voice_script = None
 
-        if any(kw in device_lower for kw in GARAGE_KEYWORDS):
-            # Determine which script to use based on action
-            if action in ("open", "turn_on"):
-                entities_to_control.append(("script.open_the_garage", "Garage Door"))
-            elif action in ("close", "turn_off"):
-                entities_to_control.append(("script.close_the_garage", "Garage Door"))
+        # Check if device name matches any configured voice script trigger
+        for vs in voice_scripts:
+            trigger = vs.get("trigger", "").lower().strip()
+            if trigger and trigger in device_lower:
+                matched_voice_script = vs
+                break
+
+        if matched_voice_script:
+            # Use configured voice script
+            open_script = matched_voice_script.get("open_script", "")
+            close_script = matched_voice_script.get("close_script", "")
+            trigger_name = matched_voice_script.get("trigger", "").title()
+
+            if action in ("open", "turn_on") and open_script:
+                entities_to_control.append((open_script, trigger_name))
+            elif action in ("close", "turn_off") and close_script:
+                entities_to_control.append((close_script, trigger_name))
+            elif open_script:
+                # Default to open_script for other actions like toggle, mute, pause
+                entities_to_control.append((open_script, trigger_name))
             else:
-                # For other actions like "toggle", try to find the entity normally
+                # Fall back to normal entity lookup
                 found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
                 if found_entity_id:
                     entities_to_control.append((found_entity_id, friendly_name))
@@ -508,21 +526,25 @@ async def control_device(
     else:
         return {"error": "No device specified. Provide entity_id, entity_ids, area, or device name."}
 
-    # Special handling for garage door - check sensor state before allowing open/close
-    GARAGE_SENSOR = "binary_sensor.garage_door_sensor"
-    GARAGE_OPEN_SCRIPT = "script.open_the_garage"
-    GARAGE_CLOSE_SCRIPT = "script.close_the_garage"
-
+    # Check sensor state for voice scripts before executing (e.g., garage door already open)
     for entity_id, friendly_name in entities_to_control:
-        if entity_id in (GARAGE_OPEN_SCRIPT, GARAGE_CLOSE_SCRIPT):
-            sensor_state = hass.states.get(GARAGE_SENSOR)
-            if sensor_state:
-                is_open = sensor_state.state == "on"  # binary_sensor: on = open, off = closed
+        # Find matching voice script for this entity
+        for vs in voice_scripts:
+            open_script = vs.get("open_script", "")
+            close_script = vs.get("close_script", "")
+            sensor = vs.get("sensor", "")
+            trigger_name = vs.get("trigger", "").title()
 
-                if entity_id == GARAGE_OPEN_SCRIPT and is_open:
-                    return {"response_text": "The garage door is already open."}
-                elif entity_id == GARAGE_CLOSE_SCRIPT and not is_open:
-                    return {"response_text": "The garage door is already closed."}
+            if sensor and entity_id in (open_script, close_script):
+                sensor_state = hass.states.get(sensor)
+                if sensor_state:
+                    is_open = sensor_state.state == "on"  # binary_sensor: on = open, off = closed
+
+                    if entity_id == open_script and is_open:
+                        return {"response_text": f"The {trigger_name} is already open."}
+                    elif entity_id == close_script and not is_open:
+                        return {"response_text": f"The {trigger_name} is already closed."}
+                break
 
     # Build service calls first, then execute in parallel
     service_calls: list[tuple[str, str, dict, str]] = []  # (domain, service, data, friendly_name)
