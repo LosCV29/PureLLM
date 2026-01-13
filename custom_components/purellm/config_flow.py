@@ -122,6 +122,9 @@ from .const import (
     # Camera Friendly Names
     CONF_CAMERA_FRIENDLY_NAMES,
     DEFAULT_CAMERA_FRIENDLY_NAMES,
+    # SofaBaton Activities
+    CONF_SOFABATON_ACTIVITIES,
+    DEFAULT_SOFABATON_ACTIVITIES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -444,6 +447,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "device_aliases": "Device Aliases",
                 "voice_scripts": "Voice Scripts",
                 "camera_names": "Camera Friendly Names",
+                "sofabaton": "SofaBaton Activities",
                 "music_rooms": "Music Room Mapping",
                 "notifications": "Notification Settings",
                 "api_keys": "API Keys",
@@ -1082,6 +1086,128 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional("friendly_name"): selector.TextSelector(
                         selector.TextSelectorConfig(
                             type=selector.TextSelectorType.TEXT,
+                        )
+                    ),
+                    vol.Optional("action", default="add"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(value="add", label="Add New"),
+                                selector.SelectOptionDict(value="update", label="Update Selected"),
+                                selector.SelectOptionDict(value="delete", label="Delete Selected"),
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_sofabaton(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle SofaBaton X2 activity configuration.
+
+        SofaBaton activities map custom names to API keys for starting/stopping activities.
+        """
+        current = {**self._entry.data, **self._entry.options}
+        current_activities_json = current.get(CONF_SOFABATON_ACTIVITIES, DEFAULT_SOFABATON_ACTIVITIES)
+
+        # Parse current activities from JSON
+        try:
+            activities_list = json.loads(current_activities_json) if current_activities_json else []
+        except (json.JSONDecodeError, TypeError):
+            activities_list = []
+
+        if user_input is not None:
+            selected = user_input.get("select_activity", "")
+            activity_name = user_input.get("activity_name", "").strip()
+            start_key = user_input.get("start_key", "").strip()
+            stop_key = user_input.get("stop_key", "").strip()
+            action = user_input.get("action", "add")
+
+            # Find index of selected activity
+            selected_idx = None
+            if selected:
+                for i, a in enumerate(activities_list):
+                    if a.get("name", "").lower() == selected.lower():
+                        selected_idx = i
+                        break
+
+            if action == "delete" and selected_idx is not None:
+                # Delete selected activity
+                activities_list.pop(selected_idx)
+            elif action == "update" and selected_idx is not None:
+                # Update selected activity
+                activities_list[selected_idx] = {
+                    "name": activity_name if activity_name else selected,
+                    "start_key": start_key,
+                    "stop_key": stop_key,
+                }
+            elif action == "add" and activity_name and (start_key or stop_key):
+                # Add new activity
+                activities_list.append({
+                    "name": activity_name,
+                    "start_key": start_key,
+                    "stop_key": stop_key,
+                })
+            elif not selected and not activity_name and not start_key:
+                # Empty submit - return to menu
+                return self.async_create_entry(title="", data=self._entry.options)
+
+            # Save updated activities as JSON
+            updated_json = json.dumps(activities_list)
+            new_options = {**self._entry.options, CONF_SOFABATON_ACTIVITIES: updated_json}
+            self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+            # Rebuild list for display
+            try:
+                activities_list = json.loads(updated_json)
+            except (json.JSONDecodeError, TypeError):
+                activities_list = []
+
+        # Build description showing current activities
+        if activities_list:
+            activity_lines = []
+            for a in activities_list:
+                name = a.get("name", "")
+                has_start = "Start" if a.get("start_key") else ""
+                has_stop = "Stop" if a.get("stop_key") else ""
+                keys = " | ".join(filter(None, [has_start, has_stop]))
+                activity_lines.append(f"**{name}** ({keys})")
+            description = "**Current SofaBaton activities:**\n" + "\n".join(activity_lines) + "\n\nSelect one to edit/delete, or add a new one below."
+        else:
+            description = "No SofaBaton activities configured. Add your first activity below.\n\n**Example:**\n- Activity Name: Watch TV\n- Start Key: Your API key for starting the activity\n- Stop Key: Your API key for stopping the activity"
+
+        # Build select options for existing activities
+        select_options = []
+        for a in activities_list:
+            name = a.get("name", "")
+            select_options.append(selector.SelectOptionDict(value=name, label=name))
+
+        return self.async_show_form(
+            step_id="sofabaton",
+            description_placeholders={"activities_info": description},
+            data_schema=vol.Schema(
+                {
+                    vol.Optional("select_activity"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=select_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional("activity_name"): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.TEXT,
+                        )
+                    ),
+                    vol.Optional("start_key"): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD,
+                        )
+                    ),
+                    vol.Optional("stop_key"): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD,
                         )
                     ),
                     vol.Optional("action", default="add"): selector.SelectSelector(

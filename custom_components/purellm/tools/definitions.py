@@ -411,6 +411,26 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         ["action"]
     ))
 
+    # ===== SOFABATON ACTIVITIES =====
+    if config.sofabaton_activities:
+        activity_names = [a.get("name", "") for a in config.sofabaton_activities if a.get("name")]
+        tools.append(_tool(
+            "control_sofabaton",
+            f"Control SofaBaton X2 remote activities. Available activities: {', '.join(activity_names)}. Use for starting or stopping entertainment activities like 'Watch TV', 'Movie Night', etc.",
+            {
+                "activity": {
+                    "type": "string",
+                    "description": f"Activity name to control. Available: {', '.join(activity_names)}"
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["start", "stop"],
+                    "description": "'start' to begin the activity, 'stop' to end it"
+                }
+            },
+            ["activity", "action"]
+        ))
+
     return tools
 
 
@@ -447,3 +467,4 @@ class ToolConfig:
 
         self.calendar_entities = entity.calendar_entities
         self.room_player_mapping = entity.room_player_mapping
+        self.sofabaton_activities = getattr(entity, 'sofabaton_activities', [])

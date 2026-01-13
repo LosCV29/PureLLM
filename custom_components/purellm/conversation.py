@@ -67,6 +67,8 @@ from .const import (
     DEFAULT_VOICE_SCRIPTS,
     CONF_CAMERA_FRIENDLY_NAMES,
     DEFAULT_CAMERA_FRIENDLY_NAMES,
+    CONF_SOFABATON_ACTIVITIES,
+    DEFAULT_SOFABATON_ACTIVITIES,
     DEFAULT_API_KEY,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
@@ -121,6 +123,7 @@ from .tools import device as device_tool
 from .tools.music import MusicController
 from .tools import timer as timer_tool
 from .tools import lists as lists_tool
+from .tools import sofabaton as sofabaton_tool
 from .tools import reminders as reminders_tool
 
 if TYPE_CHECKING:
@@ -299,6 +302,13 @@ class PureLLMConversationEntity(ConversationEntity):
             else:
                 location_key = entity_id
             self.camera_friendly_names[location_key] = friendly_name
+
+        # SofaBaton activities configuration
+        sofabaton_json = config.get(CONF_SOFABATON_ACTIVITIES, DEFAULT_SOFABATON_ACTIVITIES)
+        try:
+            self.sofabaton_activities = json.loads(sofabaton_json) if sofabaton_json else []
+        except (json.JSONDecodeError, TypeError):
+            self.sofabaton_activities = []
 
         # Clear caches on config update
         self._tools = None
@@ -1371,6 +1381,14 @@ class PureLLMConversationEntity(ConversationEntity):
                 return await device_tool.control_device(
                     arguments, self.hass, self.device_aliases, self.voice_scripts
                 )
+
+            elif tool_name == "control_sofabaton":
+                if self.sofabaton_activities:
+                    session = async_get_clientsession(self.hass)
+                    return await sofabaton_tool.control_sofabaton(
+                        arguments, session, self.sofabaton_activities
+                    )
+                return {"error": "No SofaBaton activities configured"}
 
             elif tool_name == "control_music":
                 if self._music_controller:
