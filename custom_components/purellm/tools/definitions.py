@@ -383,7 +383,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== DEVICE CONTROL (always enabled - LLM fallback) =====
     tools.append(_tool(
         "control_device",
-        "Control smart home devices (lights, switches, locks, fans, blinds, shades, covers, media_player, receivers, TVs). Use this when you need to control a device. IMPORTANT: Use the 'device' parameter with the user's spoken name - it does fuzzy matching! For blinds/shades: 'raise/up'=open, 'lower/down'=close, 'stop'=halt. For media players/receivers/TVs: 'mute'=mute audio, 'unmute'=unmute audio, 'play'=resume, 'pause'=pause, 'volume_up'/'volume_down'=adjust volume.",
+        "Control smart home devices (lights, switches, locks, fans, blinds, shades, covers, media_player, receivers, TVs). Use this when you need to control a device. IMPORTANT: Use the 'device' parameter with the user's spoken name - it does fuzzy matching! For blinds/shades: 'raise/up'=open, 'lower/down'=close, 'stop'=halt. For media players/receivers/TVs: 'pause'=pause playback, 'resume' or 'play'=UNPAUSE/resume playback (NOT unmute!), 'mute'=mute audio, 'unmute'=unmute audio (audio only, NOT for unpausing!).",
         {
             "device": {"type": "string", "description": "PREFERRED: Use the device name the user said - fuzzy matching finds the right entity."},
             "entity_id": {"type": "string", "description": "Only if you know the exact entity ID. Prefer 'device' for fuzzy matching."},
@@ -397,7 +397,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             "action": {
                 "type": "string",
                 "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "favorite", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "start", "dock", "locate", "return_home", "activate"],
-                "description": "Action to perform. For LIGHTS: 'dim' to set brightness (use with brightness param). For BLINDS/SHADES: 'open'=raise, 'close'=lower, 'stop'=halt movement, 'favorite' or 'preset'=go to saved position"
+                "description": "Action to perform. MEDIA: 'pause'=pause, 'resume'/'play'=UNPAUSE (use for unpause/resume/continue - NOT unmute!), 'mute'/'unmute'=audio mute only. LIGHTS: 'dim' with brightness. BLINDS: 'open'/'close'/'stop'/'preset'"
             },
             "brightness": {"type": "integer", "description": "Light brightness 0-100"},
             "color": {"type": "string", "description": "Light color name (red, blue, warm, cool, etc.)"},
