@@ -6,14 +6,13 @@ import logging
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
+from ..const import API_TIMEOUT
 from ..utils.helpers import get_nested
 
 if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
-
-API_TIMEOUT = 15
 
 
 async def calculate_age(

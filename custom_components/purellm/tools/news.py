@@ -7,13 +7,13 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 
+from ..const import API_TIMEOUT
+
 if TYPE_CHECKING:
     import aiohttp
     from homeassistant.util import dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
-
-API_TIMEOUT = 15
 
 # Valid categories for TheNewsAPI
 VALID_CATEGORIES = frozenset([

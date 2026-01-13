@@ -5,12 +5,12 @@ import asyncio
 import logging
 from typing import Any, TYPE_CHECKING
 
+from ..const import API_TIMEOUT
+
 if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
-
-API_TIMEOUT = 15
 
 # Common company name to symbol mappings
 COMPANY_TO_SYMBOL = {

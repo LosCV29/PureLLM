@@ -828,6 +828,70 @@ class PureLLMConversationEntity(ConversationEntity):
     # Notification Helpers
     # =========================================================================
 
+    async def _send_notification(
+        self,
+        notification_data: dict[str, Any],
+        notification_type: str = "notification",
+    ) -> None:
+        """Send notification to all configured notification entities.
+
+        Args:
+            notification_data: Dict with title, message, and data keys
+            notification_type: Type for logging (e.g., "places", "restaurant")
+        """
+        _LOGGER.info("%s notification data: %s", notification_type.capitalize(), notification_data)
+
+        for entity_id in self.notification_entities:
+            service_name = entity_id.replace("notify.", "") if entity_id.startswith("notify.") else entity_id
+            _LOGGER.info("Calling notify.%s for %s", service_name, notification_type)
+            try:
+                await self.hass.services.async_call(
+                    "notify",
+                    service_name,
+                    notification_data,
+                    blocking=False,
+                )
+                _LOGGER.info("Successfully sent %s notification to %s", notification_type, service_name)
+            except Exception as notify_err:
+                _LOGGER.error("Failed to send %s notification to %s: %s", notification_type, entity_id, notify_err)
+
+    def _build_notification_data(
+        self,
+        title: str,
+        message: str,
+        actions: list[dict] | None = None,
+        click_url: str = "",
+        image_url: str = "",
+    ) -> dict[str, Any]:
+        """Build standard notification data structure.
+
+        Args:
+            title: Notification title
+            message: Notification message
+            actions: Optional list of action buttons
+            click_url: URL to open when notification is tapped
+            image_url: Optional image URL for notification
+
+        Returns:
+            Notification data dict ready for HA notify service
+        """
+        data: dict[str, Any] = {
+            "push": {"interruption-level": "time-sensitive"},
+        }
+
+        if click_url:
+            data["url"] = click_url
+            data["clickAction"] = click_url
+
+        if actions:
+            data["actions"] = actions
+
+        if image_url:
+            data["image"] = image_url
+            data["attachment"] = {"url": image_url}
+
+        return {"title": title, "message": message, "data": data}
+
     async def _send_places_notification(self, places_result: dict[str, Any]) -> None:
         """Send notification with places/directions info to configured devices."""
         try:
@@ -843,9 +907,8 @@ class PureLLMConversationEntity(ConversationEntity):
             top_place = places[0]
             place_name = top_place.get("name", "Unknown")
             address = top_place.get("short_address") or top_place.get("address", "")
-            full_address = top_place.get("address", "")
             distance = top_place.get("distance_miles")
-            directions_url = top_place.get("directions_url", "")  # Google Maps URL
+            directions_url = top_place.get("directions_url", "")
             website = top_place.get("website", "")
             phone = top_place.get("phone", "")
             coordinates = top_place.get("coordinates", {})
@@ -854,92 +917,33 @@ class PureLLMConversationEntity(ConversationEntity):
             apple_maps_url = ""
             if coordinates and coordinates.get("lat") and coordinates.get("lng"):
                 lat, lng = coordinates["lat"], coordinates["lng"]
-                # Apple Maps URL with destination
                 apple_maps_url = f"https://maps.apple.com/?daddr={lat},{lng}&dirflg=d"
 
             # Build notification message
             title = f"📍 {place_name}"
             message_parts = []
-
             if address:
                 message_parts.append(address)
             if distance:
                 message_parts.append(f"{distance:.1f} miles away")
-
             message = "\n".join(message_parts) if message_parts else place_name
 
-            # Build action buttons for the notification
+            # Build action buttons
             actions = []
-
-            # Google Maps directions button
             if directions_url:
-                actions.append({
-                    "action": "URI",
-                    "title": "🗺️ Google Maps",
-                    "uri": directions_url,
-                })
-
-            # Apple Maps directions button
+                actions.append({"action": "URI", "title": "🗺️ Google Maps", "uri": directions_url})
             if apple_maps_url:
-                actions.append({
-                    "action": "URI",
-                    "title": "🍎 Apple Maps",
-                    "uri": apple_maps_url,
-                })
-
-            # Website button (if available)
+                actions.append({"action": "URI", "title": "🍎 Apple Maps", "uri": apple_maps_url})
             if website:
-                actions.append({
-                    "action": "URI",
-                    "title": "🌐 Website",
-                    "uri": website,
-                })
-
-            # Call button (if phone available)
+                actions.append({"action": "URI", "title": "🌐 Website", "uri": website})
             if phone:
-                # Clean phone number for tel: URI
                 phone_clean = "".join(c for c in phone if c.isdigit() or c == "+")
-                actions.append({
-                    "action": "URI",
-                    "title": "📞 Call",
-                    "uri": f"tel:{phone_clean}",
-                })
+                actions.append({"action": "URI", "title": "📞 Call", "uri": f"tel:{phone_clean}"})
 
-            # Build notification data with actions
-            notification_data = {
-                "title": title,
-                "message": message,
-                "data": {
-                    # Tapping notification opens Google Maps
-                    "url": directions_url if directions_url else apple_maps_url,
-                    "clickAction": directions_url if directions_url else apple_maps_url,
-                    # Action buttons
-                    "actions": actions,
-                    # iOS specific - make it a time-sensitive notification
-                    "push": {
-                        "interruption-level": "time-sensitive",
-                    },
-                },
-            }
-
-            _LOGGER.info("Notification data: %s", notification_data)
-            _LOGGER.info("Sending to entities: %s", self.notification_entities)
-
-            # Send to all configured notification entities
-            for entity_id in self.notification_entities:
-                # Extract service name from entity_id (e.g., notify.mobile_app_phone -> mobile_app_phone)
-                service_name = entity_id.replace("notify.", "") if entity_id.startswith("notify.") else entity_id
-                _LOGGER.info("Calling notify.%s", service_name)
-                try:
-                    await self.hass.services.async_call(
-                        "notify",
-                        service_name,
-                        notification_data,
-                        blocking=False,
-                    )
-                    _LOGGER.info("Successfully sent places notification to %s", service_name)
-                except Exception as notify_err:
-                    _LOGGER.error("Failed to send notification to %s: %s", entity_id, notify_err)
+            notification_data = self._build_notification_data(
+                title, message, actions, directions_url or apple_maps_url
+            )
+            await self._send_notification(notification_data, "places")
 
         except Exception as err:
             _LOGGER.error("Error sending places notification: %s", err, exc_info=True)
@@ -955,7 +959,6 @@ class PureLLMConversationEntity(ConversationEntity):
             if not restaurants:
                 return
 
-            # Get top 3 results (or fewer if less available)
             top_restaurants = restaurants[:3]
 
             # Build message showing all top results
@@ -969,7 +972,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 price = restaurant.get("price", "")
                 distance = restaurant.get("distance", "")
 
-                # Build compact line for each restaurant
                 line_parts = [f"{i}. {name}"]
                 if rating:
                     line_parts.append(f"★{rating}")
@@ -979,7 +981,6 @@ class PureLLMConversationEntity(ConversationEntity):
                     line_parts.append(price)
                 if distance:
                     line_parts.append(distance)
-
                 message_lines.append(" ".join(line_parts))
 
             message = "\n".join(message_lines)
@@ -987,84 +988,28 @@ class PureLLMConversationEntity(ConversationEntity):
             # Get details from #1 pick for action buttons
             top_pick = top_restaurants[0]
             yelp_url = top_pick.get("yelp_url", "")
-            phone = top_pick.get("phone", "")
             coordinates = top_pick.get("coordinates", {})
 
-            # Build maps URLs for #1 pick
             google_maps_url = ""
-            apple_maps_url = ""
             if coordinates and coordinates.get("lat") and coordinates.get("lng"):
                 lat, lng = coordinates["lat"], coordinates["lng"]
                 google_maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lng}"
-                apple_maps_url = f"https://maps.apple.com/?daddr={lat},{lng}&dirflg=d"
 
-            # Build action buttons for #1 pick
+            # Build action buttons
             actions = []
-
-            # Yelp page button
             if yelp_url:
-                actions.append({
-                    "action": "URI",
-                    "title": f"⭐ #{1} Yelp",
-                    "uri": yelp_url,
-                })
-
-            # Add Yelp links for #2 and #3 if available
+                actions.append({"action": "URI", "title": "⭐ #1 Yelp", "uri": yelp_url})
             if len(top_restaurants) > 1 and top_restaurants[1].get("yelp_url"):
-                actions.append({
-                    "action": "URI",
-                    "title": f"⭐ #{2} Yelp",
-                    "uri": top_restaurants[1]["yelp_url"],
-                })
-
+                actions.append({"action": "URI", "title": "⭐ #2 Yelp", "uri": top_restaurants[1]["yelp_url"]})
             if len(top_restaurants) > 2 and top_restaurants[2].get("yelp_url"):
-                actions.append({
-                    "action": "URI",
-                    "title": f"⭐ #{3} Yelp",
-                    "uri": top_restaurants[2]["yelp_url"],
-                })
-
-            # Google Maps directions to #1
+                actions.append({"action": "URI", "title": "⭐ #3 Yelp", "uri": top_restaurants[2]["yelp_url"]})
             if google_maps_url:
-                actions.append({
-                    "action": "URI",
-                    "title": "🗺️ Directions #1",
-                    "uri": google_maps_url,
-                })
+                actions.append({"action": "URI", "title": "🗺️ Directions #1", "uri": google_maps_url})
 
-            # Build notification data with actions
-            notification_data = {
-                "title": title,
-                "message": message,
-                "data": {
-                    # Tapping notification opens #1's Yelp page
-                    "url": yelp_url if yelp_url else google_maps_url,
-                    "clickAction": yelp_url if yelp_url else google_maps_url,
-                    # Action buttons
-                    "actions": actions,
-                    # iOS specific - make it a time-sensitive notification
-                    "push": {
-                        "interruption-level": "time-sensitive",
-                    },
-                },
-            }
-
-            _LOGGER.info("Restaurant notification data: %s", notification_data)
-
-            # Send to all configured notification entities
-            for entity_id in self.notification_entities:
-                service_name = entity_id.replace("notify.", "") if entity_id.startswith("notify.") else entity_id
-                _LOGGER.info("Calling notify.%s for restaurant", service_name)
-                try:
-                    await self.hass.services.async_call(
-                        "notify",
-                        service_name,
-                        notification_data,
-                        blocking=False,
-                    )
-                    _LOGGER.info("Successfully sent restaurant notification to %s", service_name)
-                except Exception as notify_err:
-                    _LOGGER.error("Failed to send restaurant notification to %s: %s", entity_id, notify_err)
+            notification_data = self._build_notification_data(
+                title, message, actions, yelp_url or google_maps_url
+            )
+            await self._send_notification(notification_data, "restaurant")
 
         except Exception as err:
             _LOGGER.error("Error sending restaurant notification: %s", err, exc_info=True)
@@ -1074,7 +1019,6 @@ class PureLLMConversationEntity(ConversationEntity):
         try:
             restaurant_name = reservation_result.get("restaurant_name", "Restaurant")
             reservation_url = reservation_result.get("reservation_url", "")
-            reservation_source = reservation_result.get("reservation_source", "")
             supports_reservation = reservation_result.get("supports_reservation", False)
             party_size = reservation_result.get("party_size", 2)
             date = reservation_result.get("date", "")
@@ -1085,10 +1029,7 @@ class PureLLMConversationEntity(ConversationEntity):
             _LOGGER.info("Sending reservation notification for: %s", restaurant_name)
 
             # Build title
-            if supports_reservation:
-                title = f"🍽️ Reserve at {restaurant_name}"
-            else:
-                title = f"📞 Book {restaurant_name}"
+            title = f"🍽️ Reserve at {restaurant_name}" if supports_reservation else f"📞 Book {restaurant_name}"
 
             # Build message
             message_parts = []
@@ -1098,70 +1039,25 @@ class PureLLMConversationEntity(ConversationEntity):
                 message_parts.append(f"📅 {date}")
             elif time:
                 message_parts.append(f"🕐 {time}")
-
             if party_size:
                 message_parts.append(f"👥 Party of {party_size}")
-
             if address:
                 message_parts.append(f"📍 {address}")
-
             if not supports_reservation and phone:
                 message_parts.append(f"📞 {phone}")
-
             message = "\n".join(message_parts) if message_parts else f"Book a table at {restaurant_name}"
 
             # Build action buttons
             actions = []
-
-            # Main reservation button
             if reservation_url:
                 button_title = "📅 Reserve Now" if supports_reservation else "🔍 Search Reservations"
-                actions.append({
-                    "action": "URI",
-                    "title": button_title,
-                    "uri": reservation_url,
-                })
-
-            # Add call button if we have a phone number
+                actions.append({"action": "URI", "title": button_title, "uri": reservation_url})
             if phone:
-                # Clean phone number for tel: URI
                 clean_phone = "".join(c for c in phone if c.isdigit() or c == "+")
-                actions.append({
-                    "action": "URI",
-                    "title": "📞 Call",
-                    "uri": f"tel:{clean_phone}",
-                })
+                actions.append({"action": "URI", "title": "📞 Call", "uri": f"tel:{clean_phone}"})
 
-            # Build notification data
-            notification_data = {
-                "title": title,
-                "message": message,
-                "data": {
-                    "url": reservation_url,
-                    "clickAction": reservation_url,
-                    "actions": actions,
-                    "push": {
-                        "interruption-level": "time-sensitive",
-                    },
-                },
-            }
-
-            _LOGGER.info("Reservation notification data: %s", notification_data)
-
-            # Send to all configured notification entities
-            for entity_id in self.notification_entities:
-                service_name = entity_id.replace("notify.", "") if entity_id.startswith("notify.") else entity_id
-                _LOGGER.info("Calling notify.%s for reservation", service_name)
-                try:
-                    await self.hass.services.async_call(
-                        "notify",
-                        service_name,
-                        notification_data,
-                        blocking=False,
-                    )
-                    _LOGGER.info("Successfully sent reservation notification to %s", service_name)
-                except Exception as notify_err:
-                    _LOGGER.error("Failed to send reservation notification to %s: %s", entity_id, notify_err)
+            notification_data = self._build_notification_data(title, message, actions, reservation_url)
+            await self._send_notification(notification_data, "reservation")
 
         except Exception as err:
             _LOGGER.error("Error sending reservation notification: %s", err, exc_info=True)
@@ -1176,7 +1072,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
             _LOGGER.info("Sending camera notification for: %s", location)
 
-            # Build title
             title = f"📷 {location}"
 
             # Build message - first sentence of description
@@ -1191,40 +1086,8 @@ class PureLLMConversationEntity(ConversationEntity):
                 if people_names:
                     message += f"\n👤 Identified: {', '.join(people_names)}"
 
-            # Build notification data
-            notification_data = {
-                "title": title,
-                "message": message,
-                "data": {
-                    "push": {
-                        "interruption-level": "time-sensitive",
-                    },
-                },
-            }
-
-            # Add image if snapshot URL available
-            if snapshot_url:
-                # ha_video_vision returns paths like /media/local/ha_video_vision/camera_latest.jpg
-                # For HA companion app, we need to use the /local/ or /media/ URL
-                notification_data["data"]["image"] = snapshot_url
-                notification_data["data"]["attachment"] = {"url": snapshot_url}
-
-            _LOGGER.info("Camera notification data: %s", notification_data)
-
-            # Send to all configured notification entities
-            for entity_id in self.notification_entities:
-                service_name = entity_id.replace("notify.", "") if entity_id.startswith("notify.") else entity_id
-                _LOGGER.info("Calling notify.%s for camera", service_name)
-                try:
-                    await self.hass.services.async_call(
-                        "notify",
-                        service_name,
-                        notification_data,
-                        blocking=False,
-                    )
-                    _LOGGER.info("Successfully sent camera notification to %s", service_name)
-                except Exception as notify_err:
-                    _LOGGER.error("Failed to send camera notification to %s: %s", entity_id, notify_err)
+            notification_data = self._build_notification_data(title, message, image_url=snapshot_url)
+            await self._send_notification(notification_data, "camera")
 
         except Exception as err:
             _LOGGER.error("Error sending camera notification: %s", err, exc_info=True)
@@ -1241,12 +1104,12 @@ class PureLLMConversationEntity(ConversationEntity):
     ) -> dict[str, Any]:
         """Execute a tool call."""
         try:
-            # Get location defaults
+            # Get location and timezone context
             latitude = self.custom_latitude or self.hass.config.latitude
             longitude = self.custom_longitude or self.hass.config.longitude
             hass_tz = dt_util.get_time_zone(self.hass.config.time_zone)
 
-            # Route to appropriate handler
+            # Built-in datetime tool
             if tool_name == "get_current_datetime":
                 now = datetime.now(hass_tz)
                 return {
@@ -1255,164 +1118,115 @@ class PureLLMConversationEntity(ConversationEntity):
                     "timezone": self.hass.config.time_zone,
                 }
 
-            elif tool_name == "get_weather_forecast":
-                return await weather_tool.get_weather_forecast(
+            # Sports tools (all use same pattern)
+            if tool_name in ("get_sports_info", "get_ufc_info", "check_league_games", "list_league_games"):
+                handler = getattr(sports_tool, tool_name)
+                return await handler(arguments, self._session, hass_tz, self._track_api_call)
+
+            # Wikipedia tools
+            if tool_name in ("calculate_age", "get_wikipedia_summary"):
+                handler = getattr(wikipedia_tool, tool_name)
+                return await handler(arguments, self._session, self._track_api_call)
+
+            # Reminder tools
+            if tool_name in ("create_reminder", "get_reminders"):
+                handler = getattr(reminders_tool, tool_name)
+                return await handler(arguments, self.hass, hass_tz)
+
+            # Simple tools with specific handlers
+            simple_handlers = {
+                "get_weather_forecast": lambda: weather_tool.get_weather_forecast(
                     arguments, self._session, self.openweathermap_api_key,
                     latitude, longitude, self._track_api_call
-                )
-
-            elif tool_name == "get_sports_info":
-                return await sports_tool.get_sports_info(
-                    arguments, self._session, hass_tz, self._track_api_call
-                )
-
-            elif tool_name == "get_ufc_info":
-                return await sports_tool.get_ufc_info(
-                    arguments, self._session, hass_tz, self._track_api_call
-                )
-
-            elif tool_name == "check_league_games":
-                return await sports_tool.check_league_games(
-                    arguments, self._session, hass_tz, self._track_api_call
-                )
-
-            elif tool_name == "list_league_games":
-                return await sports_tool.list_league_games(
-                    arguments, self._session, hass_tz, self._track_api_call
-                )
-
-            elif tool_name == "get_stock_price":
-                return await stocks_tool.get_stock_price(
+                ),
+                "get_stock_price": lambda: stocks_tool.get_stock_price(
                     arguments, self._session, self._track_api_call
-                )
-
-            elif tool_name == "get_news":
-                return await news_tool.get_news(
+                ),
+                "get_news": lambda: news_tool.get_news(
                     arguments, self._session, self.newsapi_key, hass_tz, self._track_api_call
-                )
+                ),
+                "get_calendar_events": lambda: calendar_tool.get_calendar_events(
+                    arguments, self.hass, self.calendar_entities, hass_tz
+                ),
+                "control_thermostat": lambda: thermostat_tool.control_thermostat(
+                    arguments, self.hass, self.thermostat_entity,
+                    self.thermostat_temp_step, self.thermostat_min_temp,
+                    self.thermostat_max_temp, self.format_temp
+                ),
+                "check_device_status": lambda: device_tool.check_device_status(
+                    arguments, self.hass, self.device_aliases,
+                    self._current_user_query, self.format_temp
+                ),
+                "get_device_history": lambda: device_tool.get_device_history(
+                    arguments, self.hass, self.device_aliases,
+                    hass_tz, self._current_user_query
+                ),
+                "control_device": lambda: device_tool.control_device(
+                    arguments, self.hass, self.device_aliases, self.voice_scripts
+                ),
+                "control_timer": lambda: timer_tool.control_timer(
+                    arguments, self.hass,
+                    device_id=user_input.device_id,
+                    room_player_mapping=self.room_player_mapping
+                ),
+                "manage_list": lambda: lists_tool.manage_list(arguments, self.hass),
+            }
 
-            elif tool_name == "find_nearby_places":
+            if tool_name in simple_handlers:
+                return await simple_handlers[tool_name]()
+
+            # Tools with notification post-processing
+            if tool_name == "find_nearby_places":
                 result = await places_tool.find_nearby_places(
                     arguments, self._session, self.google_places_api_key,
                     latitude, longitude, self._track_api_call
-                )
-                # Send notification if enabled and we have results
-                _LOGGER.debug(
-                    "Places notification check: notify_on_places=%s, entities=%s, has_places=%s",
-                    self.notify_on_places, self.notification_entities, bool(result.get("places"))
                 )
                 if self.notify_on_places and self.notification_entities and result.get("places"):
                     await self._send_places_notification(result)
                 return result
 
-            elif tool_name == "get_restaurant_recommendations":
+            if tool_name == "get_restaurant_recommendations":
                 result = await places_tool.get_restaurant_recommendations(
                     arguments, self._session, self.yelp_api_key,
                     latitude, longitude, self._track_api_call
                 )
-                # Send notification if enabled and we have results
                 if self.notify_on_restaurants and self.notification_entities and result.get("restaurants"):
                     await self._send_restaurant_notification(result)
                 return result
 
-            elif tool_name == "book_restaurant":
+            if tool_name == "book_restaurant":
                 result = await places_tool.book_restaurant(
                     arguments, self._session, self.yelp_api_key,
                     latitude, longitude, self._track_api_call
                 )
-                # Send notification with reservation link if available
                 if self.notification_entities and result.get("reservation_url"):
                     await self._send_reservation_notification(result)
                 return result
 
-            elif tool_name == "calculate_age":
-                return await wikipedia_tool.calculate_age(
-                    arguments, self._session, self._track_api_call
-                )
-
-            elif tool_name == "get_wikipedia_summary":
-                return await wikipedia_tool.get_wikipedia_summary(
-                    arguments, self._session, self._track_api_call
-                )
-
-            elif tool_name == "get_calendar_events":
-                return await calendar_tool.get_calendar_events(
-                    arguments, self.hass, self.calendar_entities, hass_tz
-                )
-
-            elif tool_name == "check_camera":
-                result = await camera_tool.check_camera(
-                    arguments, self.hass, self.camera_friendly_names or None
-                )
-                # Send notification with snapshot if enabled
+            # Camera tools with notification
+            if tool_name in ("check_camera", "quick_camera_check"):
+                handler = getattr(camera_tool, tool_name)
+                result = await handler(arguments, self.hass, self.camera_friendly_names or None)
                 if self.notify_on_camera and self.notification_entities and result.get("snapshot_url"):
                     await self._send_camera_notification(result)
                 return result
 
-            elif tool_name == "quick_camera_check":
-                result = await camera_tool.quick_camera_check(
-                    arguments, self.hass, self.camera_friendly_names or None
-                )
-                # Send notification with snapshot if enabled
-                if self.notify_on_camera and self.notification_entities and result.get("snapshot_url"):
-                    await self._send_camera_notification(result)
-                return result
-
-            elif tool_name == "control_thermostat":
-                return await thermostat_tool.control_thermostat(
-                    arguments, self.hass, self.thermostat_entity,
-                    self.thermostat_temp_step, self.thermostat_min_temp,
-                    self.thermostat_max_temp, self.format_temp
+            # Conditional tools (require configuration)
+            if tool_name == "control_sofabaton":
+                if not self.sofabaton_activities:
+                    return {"error": "No SofaBaton activities configured"}
+                session = async_get_clientsession(self.hass)
+                return await sofabaton_tool.control_sofabaton(
+                    arguments, session, self.sofabaton_activities
                 )
 
-            elif tool_name == "check_device_status":
-                return await device_tool.check_device_status(
-                    arguments, self.hass, self.device_aliases,
-                    self._current_user_query, self.format_temp
-                )
-
-            elif tool_name == "get_device_history":
-                return await device_tool.get_device_history(
-                    arguments, self.hass, self.device_aliases,
-                    hass_tz, self._current_user_query
-                )
-
-            elif tool_name == "control_device":
-                return await device_tool.control_device(
-                    arguments, self.hass, self.device_aliases, self.voice_scripts
-                )
-
-            elif tool_name == "control_sofabaton":
-                if self.sofabaton_activities:
-                    session = async_get_clientsession(self.hass)
-                    return await sofabaton_tool.control_sofabaton(
-                        arguments, session, self.sofabaton_activities
-                    )
-                return {"error": "No SofaBaton activities configured"}
-
-            elif tool_name == "control_music":
-                if self._music_controller:
-                    return await self._music_controller.control_music(arguments)
-                return {"error": "Music control not configured"}
-
-            elif tool_name == "control_timer":
-                return await timer_tool.control_timer(
-                    arguments, self.hass,
-                    device_id=user_input.device_id,
-                    room_player_mapping=self.room_player_mapping
-                )
-
-            elif tool_name == "manage_list":
-                return await lists_tool.manage_list(arguments, self.hass)
-
-            elif tool_name == "create_reminder":
-                return await reminders_tool.create_reminder(arguments, self.hass, hass_tz)
-
-            elif tool_name == "get_reminders":
-                return await reminders_tool.get_reminders(arguments, self.hass, hass_tz)
+            if tool_name == "control_music":
+                if not self._music_controller:
+                    return {"error": "Music control not configured"}
+                return await self._music_controller.control_music(arguments)
 
             # Fall back to script execution
-            elif self.hass.services.has_service("script", tool_name):
+            if self.hass.services.has_service("script", tool_name):
                 response = await self.hass.services.async_call(
                     "script", tool_name, arguments, blocking=True, return_response=True
                 )
@@ -1423,9 +1237,8 @@ class PureLLMConversationEntity(ConversationEntity):
                     return response
                 return {"status": "success", "script": tool_name}
 
-            else:
-                _LOGGER.warning("Unknown tool '%s' called", tool_name)
-                return {"success": True, "message": f"Custom function {tool_name} called"}
+            _LOGGER.warning("Unknown tool '%s' called", tool_name)
+            return {"success": True, "message": f"Custom function {tool_name} called"}
 
         except Exception as err:
             _LOGGER.error("Error executing tool %s: %s", tool_name, err, exc_info=True)

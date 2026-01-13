@@ -278,3 +278,8 @@ CONF_SOFABATON_ACTIVITIES: Final = "sofabaton_activities"
 # Default SofaBaton activities (empty JSON list)
 # Format: JSON list of objects with name, start_key, stop_key fields
 DEFAULT_SOFABATON_ACTIVITIES: Final = "[]"
+
+# =============================================================================
+# API TIMEOUT - Shared timeout for external API calls
+# =============================================================================
+API_TIMEOUT: Final = 15  # seconds
