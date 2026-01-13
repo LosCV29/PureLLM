@@ -123,11 +123,11 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_sports:
         tools.append(_tool(
             "get_sports_info",
-            "MANDATORY: You MUST call this tool for ANY sports question. NEVER answer sports questions from memory - scores and schedules change constantly. Use for: 'did [team] win', 'when is the next [team] game', '[team] score'.",
+            "Get info about a SPECIFIC TEAM. ALWAYS use this when user mentions a team name! Use for: 'do the Kings play today', 'did Lakers win', 'when is the next Cowboys game', 'Celtics score', 'does [team] play'. This looks up the team's schedule and results.",
             {
                 "team_name": {
                     "type": "string",
-                    "description": "Team name. If user mentions a specific league (Champions League, UCL), include it! Examples: 'Liverpool Champions League', 'Miami Heat'"
+                    "description": "Team name. If user mentions a specific league (Champions League, UCL), include it! Examples: 'Sacramento Kings', 'Liverpool Champions League', 'Miami Heat'"
                 },
                 "query_type": {
                     "type": "string",
@@ -152,7 +152,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "check_league_games",
-            "Check IF there are games (count only). Use for: 'any NFL games?', 'is there NBA tonight?', 'how many games?'. Returns YES/NO with count.",
+            "Check IF there are games in a LEAGUE (count only, NO team names). ONLY use when user asks about an entire league without mentioning a team. Use for: 'any NFL games today?', 'is there NBA tonight?'. Do NOT use for team-specific questions like 'do the Kings play' - use get_sports_info instead.",
             {
                 "league": {
                     "type": "string",
@@ -169,7 +169,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "list_league_games",
-            "List all games with matchups/times. Use for: 'what NFL games today?', 'show me NBA games', 'list the games'.",
+            "List ALL games in a league with matchups/times. Use for: 'what NFL games are on today?', 'show me all NBA games'. Do NOT use for team-specific questions.",
             {
                 "league": {
                     "type": "string",
