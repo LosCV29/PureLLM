@@ -490,6 +490,22 @@ async def control_device(
     else:
         return {"error": "No device specified. Provide entity_id, entity_ids, area, or device name."}
 
+    # Special handling for garage door - check sensor state before allowing open/close
+    GARAGE_SENSOR = "binary_sensor.garage_door_sensor"
+    GARAGE_OPEN_SCRIPT = "script.open_the_garage"
+    GARAGE_CLOSE_SCRIPT = "script.close_the_garage"
+
+    for entity_id, friendly_name in entities_to_control:
+        if entity_id in (GARAGE_OPEN_SCRIPT, GARAGE_CLOSE_SCRIPT):
+            sensor_state = hass.states.get(GARAGE_SENSOR)
+            if sensor_state:
+                is_open = sensor_state.state == "on"  # binary_sensor: on = open, off = closed
+
+                if entity_id == GARAGE_OPEN_SCRIPT and is_open:
+                    return {"response_text": "The garage door is already open."}
+                elif entity_id == GARAGE_CLOSE_SCRIPT and not is_open:
+                    return {"response_text": "The garage door is already closed."}
+
     # Build service calls first, then execute in parallel
     service_calls: list[tuple[str, str, dict, str]] = []  # (domain, service, data, friendly_name)
     failed = []
