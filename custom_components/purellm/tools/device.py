@@ -480,12 +480,30 @@ async def control_device(
 
     # Method 4: Device name matching (uses fuzzy matching with aliases)
     elif device_name:
-        found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
+        # Special handling for garage door - route to correct script based on action
+        GARAGE_KEYWORDS = ["garage", "garage door"]
+        device_lower = device_name.lower().strip()
 
-        if found_entity_id:
-            entities_to_control.append((found_entity_id, friendly_name))
+        if any(kw in device_lower for kw in GARAGE_KEYWORDS):
+            # Determine which script to use based on action
+            if action in ("open", "turn_on"):
+                entities_to_control.append(("script.open_the_garage", "Garage Door"))
+            elif action in ("close", "turn_off"):
+                entities_to_control.append(("script.close_the_garage", "Garage Door"))
+            else:
+                # For other actions like "toggle", try to find the entity normally
+                found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
+                if found_entity_id:
+                    entities_to_control.append((found_entity_id, friendly_name))
+                else:
+                    return {"error": f"Could not find a device matching '{device_name}'."}
         else:
-            return {"error": f"Could not find a device matching '{device_name}'."}
+            found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
+
+            if found_entity_id:
+                entities_to_control.append((found_entity_id, friendly_name))
+            else:
+                return {"error": f"Could not find a device matching '{device_name}'."}
 
     else:
         return {"error": "No device specified. Provide entity_id, entity_ids, area, or device name."}
