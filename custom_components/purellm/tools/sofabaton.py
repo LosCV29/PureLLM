@@ -4,13 +4,12 @@ from __future__ import annotations
 import logging
 from typing import Any, TYPE_CHECKING
 
+from ..const import API_TIMEOUT
+
 if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
-
-# API timeout in seconds
-API_TIMEOUT = 15
 
 # SofaBaton API base URL
 SOFABATON_API_URL = "https://rc.sofa.ai/api/open/activity"

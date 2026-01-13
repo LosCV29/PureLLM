@@ -8,14 +8,13 @@ import urllib.parse
 from datetime import datetime, time as dt_time
 from typing import Any, TYPE_CHECKING
 
+from ..const import API_TIMEOUT
 from ..utils.helpers import calculate_distance_miles
 
 if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
-
-API_TIMEOUT = 15
 
 # Price level mapping
 PRICE_LEVELS = {

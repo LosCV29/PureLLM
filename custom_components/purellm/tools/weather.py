@@ -6,13 +6,12 @@ import logging
 from datetime import datetime, timedelta
 from typing import Any, TYPE_CHECKING
 
+from ..const import API_TIMEOUT
+
 if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
-
-# API timeout in seconds
-API_TIMEOUT = 15
 
 # US state name to abbreviation mapping
 US_STATES = {
