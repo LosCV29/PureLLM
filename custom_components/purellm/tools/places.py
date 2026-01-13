@@ -613,6 +613,7 @@ async def book_restaurant(
                     result["reservation_source"] = "Yelp"
                     result["supports_reservation"] = True
                     result["message"] = f"Reservation available at {biz_name} via Yelp!"
+                    result["response_text"] = f"I found {biz_name} and sent a reservation link to your phone."
 
                     _LOGGER.info("Found Yelp reservation for %s: %s", biz_name, yelp_resy_url)
                 else:
@@ -621,7 +622,12 @@ async def book_restaurant(
                     fallback = _build_fallback_response(biz_name, party_size, date, time, latitude, longitude)
                     result["reservation_url"] = fallback["reservation_url"]
                     result["reservation_source"] = "Google Search"
-                    result["message"] = f"{biz_name} doesn't support online reservations through Yelp. Try searching Google or call them directly at {phone}." if phone else f"{biz_name} doesn't support online reservations through Yelp. Use the Google link to search for booking options."
+                    if phone:
+                        result["message"] = f"{biz_name} doesn't support online reservations through Yelp. Try searching Google or call them directly at {phone}."
+                        result["response_text"] = f"{biz_name} doesn't support online reservations. I sent a link to your phone, or you can call them at {phone}."
+                    else:
+                        result["message"] = f"{biz_name} doesn't support online reservations through Yelp. Use the Google link to search for booking options."
+                        result["response_text"] = f"{biz_name} doesn't support online reservations. I sent a search link to your phone."
 
                     _LOGGER.info("No Yelp reservation for %s, using Google fallback", biz_name)
 
@@ -693,5 +699,6 @@ def _build_fallback_response(
         "reservation_url": google_url,
         "reservation_source": "Google Search",
         "supports_reservation": False,
-        "message": f"No direct reservation link found for {restaurant_name}. Use the Google link to search for booking options, or call the restaurant directly."
+        "message": f"No direct reservation link found for {restaurant_name}. Use the Google link to search for booking options, or call the restaurant directly.",
+        "response_text": f"I couldn't find a direct reservation link for {restaurant_name}, but I sent a search link to your phone."
     }

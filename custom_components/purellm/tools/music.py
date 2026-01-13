@@ -854,6 +854,8 @@ class MusicController:
 
             playlist_name = None
             playlist_uri = None
+            playlist_owner = ""
+            is_official = False
 
             if search_result:
                 playlists = []
@@ -901,10 +903,12 @@ class MusicController:
                     ]
 
                     # Choose best playlist: Official > Name match > Non-radio > Any
+                    is_official = False
                     if official_playlists:
                         # Among official, prefer ones with query in name
                         official_with_name = [p for p in official_playlists if name_matches_query(p.get("name") or p.get("title") or "")]
                         chosen_playlist = official_with_name[0] if official_with_name else official_playlists[0]
+                        is_official = True
                         _LOGGER.info("Found official Spotify playlist")
                     elif matching_name_playlists:
                         chosen_playlist = matching_name_playlists[0]
@@ -919,7 +923,8 @@ class MusicController:
                     # Get the EXACT playlist title for verbatim announcement
                     playlist_name = chosen_playlist.get("name") or chosen_playlist.get("title")
                     playlist_uri = chosen_playlist.get("uri") or chosen_playlist.get("media_id")
-                    _LOGGER.info("Found Spotify playlist: '%s'", playlist_name)
+                    playlist_owner = chosen_playlist.get("owner", "")
+                    _LOGGER.info("Found Spotify playlist: '%s' (owner: %s)", playlist_name, playlist_owner)
 
             # NO artist fallback - shuffle is ONLY for playlists
             if not playlist_uri:
@@ -942,11 +947,15 @@ class MusicController:
             )
 
             # Return the EXACT playlist title for verbatim announcement
+            # Include playlist source so user knows it's an official/curated playlist
+            source_note = "Spotify's official" if is_official else "the Spotify"
             return {
                 "status": "shuffling",
                 "playlist_title": playlist_name,
+                "playlist_owner": playlist_owner,
+                "is_official_playlist": is_official,
                 "room": room,
-                "announcement": f"Now playing {playlist_name}"
+                "response_text": f"Shuffling {source_note} playlist '{playlist_name}'"
             }
 
         except Exception as search_err:

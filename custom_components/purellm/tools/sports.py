@@ -119,6 +119,71 @@ async def get_sports_info(
 
         result = {"team": full_name}
 
+        # Fetch standings if requested
+        if query_type == "standings" and team_id:
+            found_sport, found_league = team_leagues[0] if team_leagues else (None, None)
+            if found_sport and found_league:
+                try:
+                    standings_url = f"https://site.api.espn.com/apis/v2/sports/{found_sport}/{found_league}/standings"
+                    async with session.get(standings_url, headers=headers) as standings_resp:
+                        if standings_resp.status == 200:
+                            standings_data = await standings_resp.json()
+
+                            # Navigate standings structure to find the team
+                            for child in standings_data.get("children", []):
+                                for division in child.get("standings", {}).get("entries", []):
+                                    team_info = division.get("team", {})
+                                    if team_info.get("id") == team_id:
+                                        stats = {s.get("name"): s.get("displayValue", s.get("value")) for s in division.get("stats", [])}
+                                        wins = stats.get("wins", "0")
+                                        losses = stats.get("losses", "0")
+
+                                        # Get conference/division rank if available
+                                        conf_rank = stats.get("playoffSeed", stats.get("divisionRank", ""))
+
+                                        # Build standings summary
+                                        record = f"{wins}-{losses}"
+                                        if "OTL" in stats or "otLosses" in stats:  # NHL format
+                                            otl = stats.get("OTL", stats.get("otLosses", "0"))
+                                            record = f"{wins}-{losses}-{otl}"
+
+                                        standing_text = f"{full_name} is {record}"
+                                        if conf_rank:
+                                            standing_text += f", #{conf_rank} seed"
+
+                                        result["standings"] = {
+                                            "record": record,
+                                            "rank": conf_rank,
+                                            "summary": standing_text
+                                        }
+                                        break
+                                if "standings" in result:
+                                    break
+
+                            # Also check flat standings structure (some leagues use this)
+                            if "standings" not in result:
+                                for entry in standings_data.get("standings", {}).get("entries", []):
+                                    team_info = entry.get("team", {})
+                                    if team_info.get("id") == team_id:
+                                        stats = {s.get("name"): s.get("displayValue", s.get("value")) for s in entry.get("stats", [])}
+                                        wins = stats.get("wins", "0")
+                                        losses = stats.get("losses", "0")
+                                        conf_rank = stats.get("playoffSeed", stats.get("divisionRank", ""))
+
+                                        record = f"{wins}-{losses}"
+                                        standing_text = f"{full_name} is {record}"
+                                        if conf_rank:
+                                            standing_text += f", #{conf_rank} seed"
+
+                                        result["standings"] = {
+                                            "record": record,
+                                            "rank": conf_rank,
+                                            "summary": standing_text
+                                        }
+                                        break
+                except Exception as standings_err:
+                    _LOGGER.warning("Failed to fetch standings for %s: %s", full_name, standings_err)
+
         # Check scoreboard for live/upcoming games
         live_game_from_scoreboard = None
         next_game_from_scoreboard = None
@@ -349,6 +414,8 @@ async def get_sports_info(
 
         # Build response text
         response_parts = []
+        if "standings" in result:
+            response_parts.append(result["standings"]["summary"])
         if "live_game" in result:
             response_parts.append(result["live_game"]["summary"])
         if "last_game" in result:
