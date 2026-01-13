@@ -488,34 +488,29 @@ async def control_device(
         device_lower = device_name.lower().strip()
         matched_voice_script = None
 
-        # Check if device name matches any configured voice script trigger
-        for vs in voice_scripts:
-            trigger = vs.get("trigger", "").lower().strip()
-            if trigger and trigger in device_lower:
-                matched_voice_script = vs
-                break
+        # Media player actions should NOT use voice scripts - go straight to entity lookup
+        media_player_actions = ("mute", "unmute", "play", "pause", "resume", "stop", "next", "previous",
+                                "volume_up", "volume_down", "set_volume")
+
+        # Only check voice scripts for non-media-player actions
+        if action not in media_player_actions:
+            # Check if device name matches any configured voice script trigger
+            for vs in voice_scripts:
+                trigger = vs.get("trigger", "").lower().strip()
+                if trigger and trigger in device_lower:
+                    matched_voice_script = vs
+                    break
 
         if matched_voice_script:
-            # Use configured voice script - but only for actions that make sense for scripts
+            # Use configured voice script
             open_script = matched_voice_script.get("open_script", "")
             close_script = matched_voice_script.get("close_script", "")
             trigger_name = matched_voice_script.get("trigger", "").title()
-
-            # Voice scripts only handle basic on/off/open/close/toggle actions
-            # Media player actions (mute, play, pause, etc.) should use normal entity lookup
-            voice_script_actions = ("open", "turn_on", "close", "turn_off", "toggle")
 
             if action in ("open", "turn_on", "toggle") and open_script:
                 entities_to_control.append((open_script, trigger_name))
             elif action in ("close", "turn_off") and close_script:
                 entities_to_control.append((close_script, trigger_name))
-            elif action not in voice_script_actions:
-                # For media player actions (mute, play, pause, volume, etc.), use normal entity lookup
-                found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
-                if found_entity_id:
-                    entities_to_control.append((found_entity_id, friendly_name))
-                else:
-                    return {"error": f"Could not find a device matching '{device_name}'."}
             else:
                 # Fall back to normal entity lookup if no script configured for this action
                 found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
