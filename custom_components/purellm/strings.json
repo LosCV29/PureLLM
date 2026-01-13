@@ -33,6 +33,7 @@
           "device_aliases": "Device Aliases",
           "voice_scripts": "Voice Scripts",
           "camera_names": "Camera Friendly Names",
+          "sofabaton": "SofaBaton Activities",
           "music_rooms": "Music Room Mapping",
           "notifications": "Notification Settings",
           "api_keys": "External API Keys",
@@ -116,6 +117,17 @@
           "select_camera": "Select Existing Camera",
           "camera_entity": "Camera",
           "friendly_name": "Friendly Name (e.g., 'Front Porch', 'Driveway')",
+          "action": "Action"
+        }
+      },
+      "sofabaton": {
+        "title": "SofaBaton Activities",
+        "description": "{activities_info}",
+        "data": {
+          "select_activity": "Select Existing Activity",
+          "activity_name": "Activity Name (e.g., 'Watch TV', 'Movie Night')",
+          "start_key": "Start Activity API Key",
+          "stop_key": "Stop Activity API Key",
           "action": "Action"
         }
       },

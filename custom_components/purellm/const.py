@@ -269,3 +269,12 @@ CONF_CAMERA_FRIENDLY_NAMES: Final = "camera_friendly_names"
 # Default camera friendly names (empty - will use camera.py defaults if not configured)
 # Format: location_key: Friendly Name (one per line)
 DEFAULT_CAMERA_FRIENDLY_NAMES: Final = ""
+
+# =============================================================================
+# SOFABATON ACTIVITIES - API keys for SofaBaton X2 remote activities
+# =============================================================================
+CONF_SOFABATON_ACTIVITIES: Final = "sofabaton_activities"
+
+# Default SofaBaton activities (empty JSON list)
+# Format: JSON list of objects with name, start_key, stop_key fields
+DEFAULT_SOFABATON_ACTIVITIES: Final = "[]"
