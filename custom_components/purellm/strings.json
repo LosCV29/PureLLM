@@ -32,6 +32,7 @@
           "entities": "PureLLM Default Entities",
           "device_aliases": "Device Aliases",
           "voice_scripts": "Voice Scripts",
+          "camera_names": "Camera Friendly Names",
           "music_rooms": "Music Room Mapping",
           "notifications": "Notification Settings",
           "api_keys": "External API Keys",
@@ -106,6 +107,13 @@
           "close_script": "Close/Off Script (called for close/turn_off actions)",
           "sensor_entity": "State Sensor (optional - checks state before executing)",
           "action": "Action"
+        }
+      },
+      "camera_names": {
+        "title": "Camera Friendly Names",
+        "description": "{format_hint}",
+        "data": {
+          "camera_friendly_names": "Camera Location Names"
         }
       },
       "music_rooms": {

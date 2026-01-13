@@ -119,6 +119,9 @@ from .const import (
     # Voice Scripts
     CONF_VOICE_SCRIPTS,
     DEFAULT_VOICE_SCRIPTS,
+    # Camera Friendly Names
+    CONF_CAMERA_FRIENDLY_NAMES,
+    DEFAULT_CAMERA_FRIENDLY_NAMES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -440,6 +443,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "entities": "PureLLM Default Entities",
                 "device_aliases": "Device Aliases",
                 "voice_scripts": "Voice Scripts",
+                "camera_names": "Camera Friendly Names",
                 "music_rooms": "Music Room Mapping",
                 "notifications": "Notification Settings",
                 "api_keys": "API Keys",
@@ -980,6 +984,43 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                 }
             ),
+        )
+
+    async def async_step_camera_names(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle camera friendly names configuration.
+
+        Camera friendly names map camera location keys to human-friendly names.
+        Format: location_key: Friendly Name (one per line)
+        Example:
+            porch: Front Porch
+            driveway: Driveway Camera
+        """
+        if user_input is not None:
+            new_options = {**self._entry.options, **user_input}
+            return self.async_create_entry(title="", data=new_options)
+
+        current = {**self._entry.data, **self._entry.options}
+
+        return self.async_show_form(
+            step_id="camera_names",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_CAMERA_FRIENDLY_NAMES,
+                        default=current.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES),
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.TEXT,
+                            multiline=True,
+                        )
+                    ),
+                }
+            ),
+            description_placeholders={
+                "format_hint": "Format: location_key: Friendly Name (one per line)\n\nExample:\nporch: Front Porch\ndriveway: Driveway Camera\ngarage: Garage Cam\nbackyard: Back Yard\nfront_door: Front Door Camera",
+            },
         )
 
     async def async_step_music_rooms(

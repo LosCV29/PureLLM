@@ -260,3 +260,12 @@ CONF_VOICE_SCRIPTS: Final = "voice_scripts"
 # Default voice scripts with trigger phrases and script mappings
 # Format: JSON list of objects with trigger, open_script, close_script, sensor fields
 DEFAULT_VOICE_SCRIPTS: Final = "[]"
+
+# =============================================================================
+# CAMERA FRIENDLY NAMES - User-configurable camera location names
+# =============================================================================
+CONF_CAMERA_FRIENDLY_NAMES: Final = "camera_friendly_names"
+
+# Default camera friendly names (empty - will use camera.py defaults if not configured)
+# Format: location_key: Friendly Name (one per line)
+DEFAULT_CAMERA_FRIENDLY_NAMES: Final = ""

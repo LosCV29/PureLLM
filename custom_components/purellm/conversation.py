@@ -65,6 +65,8 @@ from .const import (
     CONF_NOTIFY_ON_CAMERA,
     CONF_VOICE_SCRIPTS,
     DEFAULT_VOICE_SCRIPTS,
+    CONF_CAMERA_FRIENDLY_NAMES,
+    DEFAULT_CAMERA_FRIENDLY_NAMES,
     DEFAULT_API_KEY,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
@@ -283,6 +285,10 @@ class PureLLMConversationEntity(ConversationEntity):
             self.voice_scripts = json.loads(voice_scripts_json) if voice_scripts_json else []
         except (json.JSONDecodeError, TypeError):
             self.voice_scripts = []
+
+        # Camera friendly names configuration
+        camera_names_str = config.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES)
+        self.camera_friendly_names = parse_entity_config(camera_names_str) if camera_names_str else {}
 
         # Clear caches on config update
         self._tools = None
@@ -1316,7 +1322,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
             elif tool_name == "check_camera":
                 result = await camera_tool.check_camera(
-                    arguments, self.hass, None
+                    arguments, self.hass, self.camera_friendly_names or None
                 )
                 # Send notification with snapshot if enabled
                 if self.notify_on_camera and self.notification_entities and result.get("snapshot_url"):
@@ -1325,7 +1331,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
             elif tool_name == "quick_camera_check":
                 result = await camera_tool.quick_camera_check(
-                    arguments, self.hass, None
+                    arguments, self.hass, self.camera_friendly_names or None
                 )
                 # Send notification with snapshot if enabled
                 if self.notify_on_camera and self.notification_entities and result.get("snapshot_url"):
