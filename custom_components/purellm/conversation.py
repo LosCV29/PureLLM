@@ -287,8 +287,18 @@ class PureLLMConversationEntity(ConversationEntity):
             self.voice_scripts = []
 
         # Camera friendly names configuration
+        # Config stores "camera.entity_id: Friendly Name", but camera tool expects location keys
+        # Extract location from entity_id (e.g., "camera.front_porch" -> "front_porch")
         camera_names_str = config.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES)
-        self.camera_friendly_names = parse_entity_config(camera_names_str) if camera_names_str else {}
+        raw_camera_names = parse_entity_config(camera_names_str) if camera_names_str else {}
+        self.camera_friendly_names = {}
+        for entity_id, friendly_name in raw_camera_names.items():
+            # Extract location key from entity_id (remove "camera." prefix)
+            if entity_id.startswith("camera."):
+                location_key = entity_id[7:]  # Remove "camera." prefix
+            else:
+                location_key = entity_id
+            self.camera_friendly_names[location_key] = friendly_name
 
         # Clear caches on config update
         self._tools = None

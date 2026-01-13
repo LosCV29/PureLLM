@@ -989,38 +989,113 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_camera_names(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle camera friendly names configuration.
+        """Handle camera friendly names configuration with dropdown selection.
 
-        Camera friendly names map camera location keys to human-friendly names.
-        Format: location_key: Friendly Name (one per line)
-        Example:
-            porch: Front Porch
-            driveway: Driveway Camera
+        Camera friendly names map camera entity IDs to human-friendly names.
+        Uses entity selector dropdown to prevent typos.
         """
-        if user_input is not None:
-            new_options = {**self._entry.options, **user_input}
-            return self.async_create_entry(title="", data=new_options)
-
         current = {**self._entry.data, **self._entry.options}
+        current_names_str = current.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES)
+
+        # Parse current mappings into dict {entity_id: friendly_name}
+        names_dict = {}
+        if current_names_str:
+            for line in current_names_str.split("\n"):
+                line = line.strip()
+                if ": " in line:
+                    entity_id, friendly_name = line.split(": ", 1)
+                    names_dict[entity_id.strip()] = friendly_name.strip()
+
+        if user_input is not None:
+            selected = user_input.get("select_camera", "")
+            new_camera = user_input.get("camera_entity", "")
+            new_name = user_input.get("friendly_name", "").strip()
+            action = user_input.get("action", "add")
+
+            if action == "delete" and selected:
+                # Delete selected camera mapping
+                if selected in names_dict:
+                    del names_dict[selected]
+            elif action == "update" and selected:
+                # Update selected camera
+                if selected in names_dict:
+                    del names_dict[selected]
+                camera_key = new_camera if new_camera else selected
+                if new_name:
+                    names_dict[camera_key] = new_name
+            elif action == "add" and new_camera and new_name:
+                # Add new camera mapping
+                names_dict[new_camera] = new_name
+            elif not selected and not new_camera and not new_name:
+                # Empty submit - return to menu
+                return self.async_create_entry(title="", data=self._entry.options)
+
+            # Save updated mappings
+            if names_dict:
+                updated_mapping = "\n".join([f"{k}: {v}" for k, v in names_dict.items()])
+            else:
+                updated_mapping = ""
+
+            new_options = {**self._entry.options, CONF_CAMERA_FRIENDLY_NAMES: updated_mapping}
+            self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+            # Reload for display
+            current_names_str = updated_mapping
+            names_dict = {}
+            if current_names_str:
+                for line in current_names_str.split("\n"):
+                    line = line.strip()
+                    if ": " in line:
+                        entity_id, friendly_name = line.split(": ", 1)
+                        names_dict[entity_id.strip()] = friendly_name.strip()
+
+        # Build description showing current mappings
+        if names_dict:
+            mapping_lines = [f"**{eid}** → {name}" for eid, name in names_dict.items()]
+            description = "**Current camera names:**\n" + "\n".join(mapping_lines) + "\n\nSelect one to edit/delete, or add a new one below."
+        else:
+            description = "No camera names configured. Add your first camera mapping below.\n\nSelect a camera from the dropdown and give it a friendly name like 'Front Porch' or 'Driveway'."
+
+        # Build select options for existing mappings
+        select_options = [
+            selector.SelectOptionDict(value=eid, label=f"{eid} → {name}")
+            for eid, name in names_dict.items()
+        ]
 
         return self.async_show_form(
             step_id="camera_names",
+            description_placeholders={"camera_info": description},
             data_schema=vol.Schema(
                 {
-                    vol.Optional(
-                        CONF_CAMERA_FRIENDLY_NAMES,
-                        default=current.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES),
-                    ): selector.TextSelector(
+                    vol.Optional("select_camera"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=select_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional("camera_entity"): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="camera",
+                            multiple=False,
+                        )
+                    ),
+                    vol.Optional("friendly_name"): selector.TextSelector(
                         selector.TextSelectorConfig(
                             type=selector.TextSelectorType.TEXT,
-                            multiline=True,
+                        )
+                    ),
+                    vol.Optional("action", default="add"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(value="add", label="Add New"),
+                                selector.SelectOptionDict(value="update", label="Update Selected"),
+                                selector.SelectOptionDict(value="delete", label="Delete Selected"),
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
                 }
             ),
-            description_placeholders={
-                "format_hint": "Format: location_key: Friendly Name (one per line)\n\nExample:\nporch: Front Porch\ndriveway: Driveway Camera\ngarage: Garage Cam\nbackyard: Back Yard\nfront_door: Front Door Camera",
-            },
         )
 
     async def async_step_music_rooms(

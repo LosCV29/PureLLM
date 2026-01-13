@@ -111,9 +111,12 @@
       },
       "camera_names": {
         "title": "Camera Friendly Names",
-        "description": "{format_hint}",
+        "description": "{camera_info}",
         "data": {
-          "camera_friendly_names": "Camera Location Names"
+          "select_camera": "Select Existing Camera",
+          "camera_entity": "Camera",
+          "friendly_name": "Friendly Name (e.g., 'Front Porch', 'Driveway')",
+          "action": "Action"
         }
       },
       "music_rooms": {
