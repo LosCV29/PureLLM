@@ -522,10 +522,10 @@ async def book_restaurant(
         # Use location text if provided, otherwise fall back to lat/long
         if location:
             encoded_location = urllib.parse.quote(location)
-            url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&location={encoded_location}&limit=3&categories=restaurants,food"
+            url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&location={encoded_location}&limit=10&categories=restaurants,food"
             _LOGGER.info("Searching Yelp in location '%s' for: %s", location, restaurant_name)
         else:
-            url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&latitude={latitude}&longitude={longitude}&limit=3&categories=restaurants,food"
+            url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&latitude={latitude}&longitude={longitude}&limit=10&categories=restaurants,food"
             _LOGGER.info("Searching Yelp near coordinates for: %s", restaurant_name)
 
         headers = {
@@ -548,30 +548,39 @@ async def book_restaurant(
                 if not businesses:
                     return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
 
-                # Find best match by name similarity
+                # Find best match by name similarity - strict matching for specific restaurant bookings
                 search_name = restaurant_name.lower().strip()
+                search_words = search_name.replace("'s", "s").replace("'", "").split()
+                first_word = search_words[0] if search_words else ""
                 best_match = None
                 best_score = 0
 
                 for b in businesses:
                     biz_name_lower = b.get("name", "").lower()
+                    biz_name_normalized = biz_name_lower.replace("'s", "s").replace("'", "")
+                    biz_words = biz_name_normalized.split()
+                    biz_first_word = biz_words[0] if biz_words else ""
+
+                    # First word must match exactly (sunny != sonny)
+                    if first_word and biz_first_word and first_word != biz_first_word:
+                        # Skip if first words don't match
+                        continue
+
                     # Score based on how much of the search term appears in the business name
-                    if search_name in biz_name_lower:
+                    if search_name in biz_name_lower or search_name.replace("'s", "s") in biz_name_normalized:
                         score = 100  # Exact substring match
-                    elif biz_name_lower in search_name:
+                    elif biz_name_lower in search_name or biz_name_normalized in search_name.replace("'s", "s"):
                         score = 90  # Business name is part of search
                     else:
                         # Count matching words
-                        search_words = set(search_name.split())
-                        biz_words = set(biz_name_lower.split())
-                        matching = len(search_words & biz_words)
+                        matching = len(set(search_words) & set(biz_words))
                         score = matching * 20
 
                     if score > best_score:
                         best_score = score
                         best_match = b
 
-                # Fall back to first result if no good match found
+                # Fall back to first result only if we found no match at all
                 biz = best_match if best_match else businesses[0]
                 _LOGGER.info("Best match for '%s': %s (score: %d)", restaurant_name, biz.get("name"), best_score)
                 biz_name = biz.get("name", restaurant_name)
