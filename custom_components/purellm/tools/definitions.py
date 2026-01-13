@@ -396,7 +396,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             },
             "action": {
                 "type": "string",
-                "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "favorite", "set_position", "play", "pause", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "start", "dock", "locate", "return_home", "activate"],
+                "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "favorite", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "start", "dock", "locate", "return_home", "activate"],
                 "description": "Action to perform. For LIGHTS: 'dim' to set brightness (use with brightness param). For BLINDS/SHADES: 'open'=raise, 'close'=lower, 'stop'=halt movement, 'favorite' or 'preset'=go to saved position"
             },
             "brightness": {"type": "integer", "description": "Light brightness 0-100"},
