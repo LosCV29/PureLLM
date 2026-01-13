@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
+from ..utils.http_client import fetch_json, log_and_error
 
 if TYPE_CHECKING:
     import aiohttp
@@ -97,27 +98,21 @@ async def get_weather_forecast(
     if location_query:
         # Normalize: convert full state names to abbreviations, add US suffix
         location_query = _normalize_location(location_query)
-        try:
-            geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={location_query}&limit=1&appid={api_key}"
-            async with session.get(geo_url) as geo_response:
-                if geo_response.status == 200:
-                    geo_data = await geo_response.json()
-                    if geo_data and len(geo_data) > 0:
-                        latitude = geo_data[0]["lat"]
-                        longitude = geo_data[0]["lon"]
-                        location_name = geo_data[0].get("name", location_query)
-                        if geo_data[0].get("state"):
-                            location_name += f", {geo_data[0]['state']}"
-                        if geo_data[0].get("country"):
-                            location_name += f", {geo_data[0]['country']}"
-                        _LOGGER.info("Geocoded '%s' to %s (%s, %s)", location_query, location_name, latitude, longitude)
-                    else:
-                        return {"error": f"Could not find location: {location_query}"}
-                else:
-                    return {"error": f"Geocoding failed for: {location_query}"}
-        except Exception as geo_err:
-            _LOGGER.error("Geocoding error: %s", geo_err)
-            return {"error": f"Could not geocode location: {location_query}"}
+        geo_url = f"http://api.openweathermap.org/geo/1.0/direct?q={location_query}&limit=1&appid={api_key}"
+        geo_data, status = await fetch_json(session, geo_url)
+        if geo_data is None:
+            return {"error": f"Geocoding failed for: {location_query}"}
+        if geo_data and len(geo_data) > 0:
+            latitude = geo_data[0]["lat"]
+            longitude = geo_data[0]["lon"]
+            location_name = geo_data[0].get("name", location_query)
+            if geo_data[0].get("state"):
+                location_name += f", {geo_data[0]['state']}"
+            if geo_data[0].get("country"):
+                location_name += f", {geo_data[0]['country']}"
+            _LOGGER.info("Geocoded '%s' to %s (%s, %s)", location_query, location_name, latitude, longitude)
+        else:
+            return {"error": f"Could not find location: {location_query}"}
 
     try:
         result = {}
@@ -301,5 +296,4 @@ async def get_weather_forecast(
         return result
 
     except Exception as err:
-        _LOGGER.error("Error getting weather: %s", err, exc_info=True)
-        return {"error": f"Failed to get weather: {str(err)}"}
+        return log_and_error("Failed to get weather", err)

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
+from ..utils.http_client import log_and_error
 
 if TYPE_CHECKING:
     import aiohttp
@@ -252,5 +253,4 @@ async def get_news(
                     return {"error": f"Failed to fetch news: HTTP {response.status}"}
 
     except Exception as err:
-        _LOGGER.error("Error getting news: %s", err, exc_info=True)
-        return {"error": f"Failed to get news: {str(err)}"}
+        return log_and_error("Failed to get news", err)

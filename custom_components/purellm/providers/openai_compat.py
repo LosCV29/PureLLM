@@ -191,24 +191,24 @@ class OpenAICompatibleProvider(BaseLLMProvider):
 
         return full_response if full_response else "I apologize, but I couldn't complete that request."
 
-    # These methods are not used for OpenAI-compatible provider
-    # since we override call_with_tools completely for streaming support
+    # These methods satisfy the abstract base class but are not used
+    # since this provider overrides call_with_tools for streaming support
 
     def format_tools(self, tools: list[dict]) -> list[dict]:
         """OpenAI format is the native format."""
         return tools
 
     async def make_request(self, conversation_state: Any, tools: Any, max_tokens: int) -> Any:
-        """Not used - see call_with_tools."""
-        raise NotImplementedError("Use call_with_tools for streaming")
+        """Not used - this provider uses streaming via call_with_tools."""
+        return {}
 
     def parse_response(self, response: Any) -> tuple[str, list[dict] | None]:
-        """Not used - see call_with_tools."""
-        raise NotImplementedError("Use call_with_tools for streaming")
+        """Not used - this provider uses streaming via call_with_tools."""
+        return "", None
 
     def _init_conversation(self, user_text: str, system_prompt: str) -> Any:
-        """Not used - see call_with_tools."""
-        raise NotImplementedError("Use call_with_tools for streaming")
+        """Not used - this provider uses streaming via call_with_tools."""
+        return []
 
     def _add_tool_results(
         self,
@@ -217,5 +217,5 @@ class OpenAICompatibleProvider(BaseLLMProvider):
         tool_calls: list[dict],
         tool_results: list[dict],
     ) -> Any:
-        """Not used - see call_with_tools."""
-        raise NotImplementedError("Use call_with_tools for streaming")
+        """Not used - this provider uses streaming via call_with_tools."""
+        return conversation_state

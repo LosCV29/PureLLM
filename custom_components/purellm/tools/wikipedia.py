@@ -8,6 +8,7 @@ from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
 from ..utils.helpers import get_nested
+from ..utils.http_client import fetch_json, log_and_error
 
 if TYPE_CHECKING:
     import aiohttp
@@ -41,11 +42,9 @@ async def calculate_age(
         # Step 1: Search Wikidata for the person
         search_url = f"https://www.wikidata.org/w/api.php?action=wbsearchentities&search={person_name}&language=en&format=json&limit=1"
 
-        async with asyncio.timeout(API_TIMEOUT):
-            async with session.get(search_url) as search_response:
-                if search_response.status != 200:
-                    return {"error": "Failed to search Wikidata"}
-                search_data = await search_response.json()
+        search_data, status = await fetch_json(session, search_url)
+        if search_data is None:
+            return {"error": "Failed to search Wikidata"}
 
         search_results = search_data.get("search", [])
         if not search_results:
@@ -58,11 +57,9 @@ async def calculate_age(
         # Step 2: Get entity details including birthdate
         entity_url = f"https://www.wikidata.org/w/api.php?action=wbgetentities&ids={entity_id}&props=claims&format=json"
 
-        async with asyncio.timeout(API_TIMEOUT):
-            async with session.get(entity_url) as entity_response:
-                if entity_response.status != 200:
-                    return {"error": "Failed to get entity details"}
-                entity_data = await entity_response.json()
+        entity_data, status = await fetch_json(session, entity_url)
+        if entity_data is None:
+            return {"error": "Failed to get entity details"}
 
         entities = entity_data.get("entities", {})
         entity = entities.get(entity_id, {})
@@ -121,8 +118,7 @@ async def calculate_age(
         return result
 
     except Exception as err:
-        _LOGGER.error("Age calculation error: %s", err, exc_info=True)
-        return {"error": f"Failed to calculate age: {str(err)}"}
+        return log_and_error("Failed to calculate age", err)
 
 
 async def get_wikipedia_summary(
@@ -198,5 +194,4 @@ async def get_wikipedia_summary(
         return result
 
     except Exception as err:
-        _LOGGER.error("Wikipedia lookup error: %s", err, exc_info=True)
-        return {"error": f"Failed to get Wikipedia summary: {str(err)}"}
+        return log_and_error("Failed to get Wikipedia summary", err)

@@ -7,12 +7,16 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
+from ..utils.http_client import fetch_json, log_and_error
 
 if TYPE_CHECKING:
     import aiohttp
     from homeassistant.util import dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
+
+# Common ESPN API headers
+ESPN_HEADERS = {"User-Agent": "HomeAssistant-PolyVoice/1.0"}
 
 
 async def get_sports_info(
@@ -42,7 +46,6 @@ async def get_sports_info(
 
     try:
         track_api_call("sports")
-        headers = {"User-Agent": "HomeAssistant-PolyVoice/1.0"}
         team_key = team_name.lower().strip()
 
         # Check for league-specific keywords to prioritize search
@@ -90,7 +93,7 @@ async def get_sports_info(
                 if team_found:
                     break
                 teams_url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams?limit=500"
-                async with session.get(teams_url, headers=headers) as teams_resp:
+                async with session.get(teams_url, headers=ESPN_HEADERS) as teams_resp:
                     if teams_resp.status == 200:
                         teams_data = await teams_resp.json()
                         for team in teams_data.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", []):
@@ -125,7 +128,7 @@ async def get_sports_info(
             if found_sport and found_league:
                 try:
                     standings_url = f"https://site.api.espn.com/apis/v2/sports/{found_sport}/{found_league}/standings"
-                    async with session.get(standings_url, headers=headers) as standings_resp:
+                    async with session.get(standings_url, headers=ESPN_HEADERS) as standings_resp:
                         if standings_resp.status == 200:
                             standings_data = await standings_resp.json()
 
@@ -202,7 +205,7 @@ async def get_sports_info(
                     break
 
                 scoreboard_url = f"https://site.api.espn.com/apis/site/v2/sports/{sb_sport}/{sb_league}/scoreboard"
-                async with session.get(scoreboard_url, headers=headers) as sb_resp:
+                async with session.get(scoreboard_url, headers=ESPN_HEADERS) as sb_resp:
                     if sb_resp.status != 200:
                         continue
                     sb_data = await sb_resp.json()
@@ -281,7 +284,7 @@ async def get_sports_info(
 
         # Get schedule for last game
         if url:
-            async with session.get(url, headers=headers) as resp:
+            async with session.get(url, headers=ESPN_HEADERS) as resp:
                 if resp.status == 200:
                     data = await resp.json()
                     events = data.get("events", [])
@@ -455,8 +458,7 @@ async def get_sports_info(
         return {"response_text": result["response_text"], "team": result.get("team", "")}
 
     except Exception as err:
-        _LOGGER.error("Sports API error: %s", err, exc_info=True)
-        return {"error": f"Failed to get sports info: {str(err)}"}
+        return log_and_error("Failed to get sports info", err)
 
 
 async def get_ufc_info(
@@ -480,14 +482,11 @@ async def get_ufc_info(
 
     try:
         track_api_call("sports")
-        headers = {"User-Agent": "HomeAssistant-PolyVoice/1.0"}
+        events_url = "https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard"
 
-        async with asyncio.timeout(API_TIMEOUT):
-            events_url = "https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard"
-            async with session.get(events_url, headers=headers) as resp:
-                if resp.status != 200:
-                    return {"error": f"ESPN UFC API error: {resp.status}"}
-                data = await resp.json()
+        data, status = await fetch_json(session, events_url, headers=ESPN_HEADERS)
+        if data is None:
+            return {"error": f"ESPN UFC API error: {status}"}
 
         leagues = data.get("leagues", [{}])
         calendar = leagues[0].get("calendar", []) if leagues else []
@@ -537,8 +536,7 @@ async def get_ufc_info(
         return result
 
     except Exception as err:
-        _LOGGER.error("UFC API error: %s", err, exc_info=True)
-        return {"error": f"Failed to get UFC info: {str(err)}"}
+        return log_and_error("Failed to get UFC info", err)
 
 
 # League code mappings for ESPN API
@@ -622,14 +620,11 @@ async def check_league_games(
 
     try:
         track_api_call("sports")
-        headers = {"User-Agent": "HomeAssistant-PolyVoice/1.0"}
         url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league_code}/scoreboard?dates={date_str}"
 
-        async with asyncio.timeout(API_TIMEOUT):
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    return {"error": f"ESPN API error: {resp.status}"}
-                data = await resp.json()
+        data, status = await fetch_json(session, url, headers=ESPN_HEADERS)
+        if data is None:
+            return {"error": f"ESPN API error: {status}"}
 
         game_count = len(data.get("events", []))
 
@@ -648,8 +643,7 @@ async def check_league_games(
         }
 
     except Exception as err:
-        _LOGGER.error("Check league games error: %s", err, exc_info=True)
-        return {"error": f"Failed to check {league_display} games: {str(err)}"}
+        return log_and_error(f"Failed to check {league_display} games", err)
 
 
 async def list_league_games(
@@ -668,14 +662,11 @@ async def list_league_games(
 
     try:
         track_api_call("sports")
-        headers = {"User-Agent": "HomeAssistant-PolyVoice/1.0"}
         url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league_code}/scoreboard?dates={date_str}"
 
-        async with asyncio.timeout(API_TIMEOUT):
-            async with session.get(url, headers=headers) as resp:
-                if resp.status != 200:
-                    return {"error": f"ESPN API error: {resp.status}"}
-                data = await resp.json()
+        data, status = await fetch_json(session, url, headers=ESPN_HEADERS)
+        if data is None:
+            return {"error": f"ESPN API error: {status}"}
 
         events = data.get("events", [])
         game_count = len(events)
@@ -739,5 +730,4 @@ async def list_league_games(
         }
 
     except Exception as err:
-        _LOGGER.error("List league games error: %s", err, exc_info=True)
-        return {"error": f"Failed to list {league_display} games: {str(err)}"}
+        return log_and_error(f"Failed to list {league_display} games", err)
