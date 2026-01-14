@@ -488,8 +488,8 @@ async def control_device(
         device_lower = device_name.lower().strip()
         matched_voice_script = None
 
-        # Media player actions should NOT use voice scripts - go straight to entity lookup
-        media_player_actions = ("mute", "unmute", "play", "pause", "resume", "stop", "next", "previous",
+        # Media player actions that should skip voice scripts (mute/unmute excluded - they can use toggle scripts)
+        media_player_actions = ("play", "pause", "resume", "stop", "next", "previous",
                                 "volume_up", "volume_down", "set_volume")
 
         # Only check voice scripts for non-media-player actions
@@ -507,7 +507,7 @@ async def control_device(
             close_script = matched_voice_script.get("close_script", "")
             trigger_name = matched_voice_script.get("trigger", "").title()
 
-            if action in ("open", "turn_on", "toggle") and open_script:
+            if action in ("open", "turn_on", "toggle", "mute", "unmute") and open_script:
                 entities_to_control.append((open_script, trigger_name))
             elif action in ("close", "turn_off") and close_script:
                 entities_to_control.append((close_script, trigger_name))
