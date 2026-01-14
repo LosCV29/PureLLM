@@ -377,12 +377,13 @@ class PureLLMConversationEntity(ConversationEntity):
                 azure_endpoint=azure_endpoint,
                 api_key=self.api_key,
                 api_version="2024-02-01",
+                timeout=180.0,  # 3 minutes - VLM operations need more time
             )
         elif self.provider in OPENAI_COMPATIBLE_PROVIDERS:
             return AsyncOpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key if self.api_key else "ollama",
-                timeout=60.0,
+                timeout=180.0,  # 3 minutes - VLM operations need more time
                 max_retries=2,
             )
         return None
@@ -698,7 +699,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     f"{self.base_url}/v1/messages",
                     json=payload,
                     headers=headers,
-                    timeout=60,
+                    timeout=180,  # 3 minutes - VLM operations need more time
                 ) as response:
                     if response.status != 200:
                         error = await response.text()
@@ -860,7 +861,7 @@ class PureLLMConversationEntity(ConversationEntity):
             self._track_api_call("llm")
 
             try:
-                async with self._session.post(url, json=payload, headers=headers, timeout=60) as response:
+                async with self._session.post(url, json=payload, headers=headers, timeout=180) as response:  # 3 minutes - VLM operations need more time
                     if response.status != 200:
                         error = await response.text()
                         _LOGGER.error("Google API error: %s", error)
