@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
@@ -16,6 +17,7 @@ from homeassistant.components import conversation
 from homeassistant.components.conversation import ChatLog, ConversationEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import intent
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
@@ -408,17 +410,20 @@ class PureLLMConversationEntity(ConversationEntity):
         """Handle an incoming chat message with streaming support.
 
         This is the new HA 2025.3+ API that enables streaming TTS.
+        STATELESS: Each request is independent - no conversation memory.
         """
         user_text = user_input.text.strip()
         self._current_user_query = user_text
         self._current_user_input = user_input
 
-        _LOGGER.debug("Processing query with streaming: '%s'", user_text)
+        _LOGGER.debug("Processing query with streaming (stateless): '%s'", user_text)
 
         # Build tools and system prompt
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
         max_tokens = self._calculate_max_tokens(user_text)
+
+        final_response = ""
 
         try:
             # Create the streaming generator based on provider
@@ -431,29 +436,31 @@ class PureLLMConversationEntity(ConversationEntity):
             else:
                 # Fallback for unknown providers
                 async def error_stream() -> AsyncGenerator[ContentDelta, None]:
-                    yield {"role": "assistant", "content": "Unknown provider configured."}
+                    yield {"content": "Unknown provider configured."}
                 stream = error_stream()
 
-            # Stream deltas to the chat log - this is what enables streaming TTS!
+            # Stream deltas to the chat log - this enables streaming TTS!
             async for content in chat_log.async_add_delta_content_stream(
                 self.entity_id,
                 stream,
             ):
-                # Content is yielded as it's added to the chat log
-                # Tool calls are executed automatically by the chat log
-                pass
+                # Collect the final response text
+                if hasattr(content, 'content') and content.content:
+                    final_response += content.content
 
         except Exception as err:
             _LOGGER.error("Error processing request: %s", err, exc_info=True)
-            # Add error message to chat log
-            chat_log.async_add_assistant_content(
-                conversation.AssistantContent(
-                    agent_id=self.entity_id,
-                    content="Sorry, there was an error processing your request.",
-                )
-            )
+            final_response = "Sorry, there was an error processing your request."
 
-        return conversation.async_get_result_from_chat_log(user_input, chat_log)
+        # STATELESS: Return result with a NEW conversation_id to prevent follow-ups
+        # This breaks the conversation chain so HA won't ask for more input
+        response = intent.IntentResponse(language=user_input.language)
+        response.async_set_speech(final_response if final_response else "I couldn't process that request.")
+
+        return conversation.ConversationResult(
+            response=response,
+            conversation_id=str(uuid.uuid4()),  # New ID = no continuation!
+        )
 
     def _calculate_max_tokens(self, user_text: str) -> int:
         """Calculate max tokens based on query complexity."""
