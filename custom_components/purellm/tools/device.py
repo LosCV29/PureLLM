@@ -519,16 +519,15 @@ async def control_device(
                 else:
                     return {"error": f"Could not find a device matching '{device_name}'."}
         else:
-            # For mute/unmute, check if there's a {device}_mute_toggle script first
-            if action in ("mute", "unmute"):
+            # For mute only, check if there's a {device}_mute_toggle script first
+            if action == "mute":
                 toggle_script_id = f"script.{device_lower.replace(' ', '_')}_mute_toggle"
                 toggle_state = hass.states.get(toggle_script_id)
                 if toggle_state:
                     friendly_name = toggle_state.attributes.get("friendly_name", device_name)
                     entities_to_control.append((toggle_script_id, friendly_name))
-                    _LOGGER.info("Using mute toggle script: %s for %s", toggle_script_id, action)
+                    _LOGGER.info("Using mute toggle script: %s", toggle_script_id)
                 else:
-                    # Fall back to regular entity lookup
                     found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
                     if found_entity_id:
                         entities_to_control.append((found_entity_id, friendly_name))
