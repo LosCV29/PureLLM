@@ -14,10 +14,9 @@ from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from homeassistant.components import conversation
-from homeassistant.components.conversation import ChatLog, ConversationEntity
+from homeassistant.components.conversation import AssistantContent, ChatLog, ConversationEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import intent
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
@@ -103,6 +102,8 @@ from .const import (
     PROVIDER_AZURE,
     PROVIDER_BASE_URLS,
     PROVIDER_GOOGLE,
+    PROVIDER_LM_STUDIO,
+    PROVIDER_OLLAMA,
     get_version,
 )
 
@@ -512,80 +513,391 @@ class PureLLMConversationEntity(ConversationEntity):
         user_input: conversation.ConversationInput,
         chat_log: ChatLog,
     ) -> conversation.ConversationResult:
-        """Handle an incoming chat message with streaming support.
+        """Handle an incoming chat message.
 
-        This is the new HA 2025.3+ API that enables streaming TTS.
         STATELESS: Each request is independent - no conversation memory.
+        Uses simple non-streaming for cloud providers (proven to work with voice).
         """
+        from homeassistant.helpers import intent
+
         user_text = user_input.text.strip()
         self._current_user_query = user_text
         self._current_user_input = user_input
 
-        _LOGGER.debug("Processing query with streaming (stateless): '%s'", user_text)
+        _LOGGER.debug("Processing query (stateless): '%s' with provider: %s", user_text, self.provider)
 
         # Build tools and system prompt
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
         max_tokens = self._calculate_max_tokens(user_text)
 
-        final_response = ""
-        collected_content: list[str] = []
-
+        # Use simple non-streaming for ALL providers - streaming breaks voice pipelines
         try:
-            # Create the streaming generator based on provider
-            if self.provider in OPENAI_COMPATIBLE_PROVIDERS or self.provider == PROVIDER_AZURE:
-                base_stream = self._stream_openai_compatible(user_text, tools, system_prompt, max_tokens)
-            elif self.provider == PROVIDER_ANTHROPIC:
-                base_stream = self._stream_anthropic(user_text, tools, system_prompt, max_tokens)
-            elif self.provider == PROVIDER_GOOGLE:
-                base_stream = self._stream_google(user_text, tools, system_prompt, max_tokens)
-            else:
-                # Fallback for unknown providers
-                async def error_stream() -> AsyncGenerator[ContentDelta, None]:
-                    yield {"content": "Unknown provider configured."}
-                base_stream = error_stream()
+            _LOGGER.debug("Using non-streaming query for provider: %s", self.provider)
+            final_response = await self._query_llm_simple(user_text, tools, system_prompt, max_tokens)
 
-            # Wrapper to capture content before it goes to HA's chat_log API
-            async def capturing_stream() -> AsyncGenerator[ContentDelta, None]:
-                async for delta in base_stream:
-                    if isinstance(delta, dict) and delta.get('content'):
-                        _LOGGER.debug("Capturing stream: Got content chunk (%d chars)", len(delta['content']))
-                        collected_content.append(delta['content'])
-                    yield delta
-
-            # Stream deltas to the chat log - this enables streaming TTS!
-            _LOGGER.debug("Starting chat_log.async_add_delta_content_stream")
-            async for content in chat_log.async_add_delta_content_stream(
-                self.entity_id,
-                capturing_stream(),
-            ):
-                # Also try to collect from what HA yields back (as backup)
-                _LOGGER.debug("chat_log yielded: type=%s, value=%s", type(content).__name__, repr(content)[:200])
-                if isinstance(content, dict) and content.get('content'):
-                    pass  # Already captured in collecting_stream
-                elif hasattr(content, 'content') and content.content:
-                    # HA may transform to objects - capture those too
-                    if content.content not in collected_content:
-                        collected_content.append(content.content)
-
-            # Join all collected content
-            final_response = "".join(collected_content)
-            _LOGGER.debug("Final response collected: %d chunks, %d chars total: %s",
-                         len(collected_content), len(final_response), final_response[:200] if final_response else "(empty)")
+            _LOGGER.debug("Got response (%d chars): %s", len(final_response) if final_response else 0,
+                         final_response[:200] if final_response else "(empty)")
 
         except Exception as err:
             _LOGGER.error("Error processing request: %s", err, exc_info=True)
             final_response = "Sorry, there was an error processing your request."
 
-        # STATELESS: Return result with a NEW conversation_id to prevent follow-ups
-        # This breaks the conversation chain so HA won't ask for more input
-        response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(final_response if final_response else "I couldn't process that request.")
+        # Build result manually - this pattern works with voice pipelines
+        intent_response = intent.IntentResponse(language=user_input.language)
+        intent_response.async_set_speech(final_response if final_response else "I couldn't process that request.")
 
         return conversation.ConversationResult(
-            response=response,
-            conversation_id=str(uuid.uuid4()),  # New ID = no continuation!
+            response=intent_response,
+            conversation_id=user_input.conversation_id or str(uuid.uuid4()),
         )
+
+    async def _query_llm_simple(
+        self,
+        user_text: str,
+        tools: list[dict],
+        system_prompt: str,
+        max_tokens: int,
+    ) -> str:
+        """Simple non-streaming LLM query for cloud providers.
+
+        This approach is proven to work with voice pipelines.
+        """
+        if self.provider in OPENAI_COMPATIBLE_PROVIDERS or self.provider == PROVIDER_AZURE:
+            return await self._query_openai_simple(user_text, tools, system_prompt, max_tokens)
+        elif self.provider == PROVIDER_ANTHROPIC:
+            return await self._query_anthropic_simple(user_text, tools, system_prompt, max_tokens)
+        elif self.provider == PROVIDER_GOOGLE:
+            return await self._query_google_simple(user_text, tools, system_prompt, max_tokens)
+        else:
+            return "Unknown provider configured."
+
+    async def _query_openai_simple(
+        self,
+        user_text: str,
+        tools: list[dict],
+        system_prompt: str,
+        max_tokens: int,
+    ) -> str:
+        """Simple non-streaming OpenAI query."""
+        _LOGGER.debug("OpenAI simple: Starting query for: %s", user_text[:100])
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ]
+
+        called_tools: set[str] = set()
+
+        for iteration in range(5):  # Max 5 tool iterations
+            _LOGGER.debug("OpenAI simple: Iteration %d", iteration)
+
+            kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": self.temperature,
+                "max_tokens": max_tokens,
+                "top_p": self.top_p,
+            }
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+
+            self._track_api_call("llm")
+
+            try:
+                _LOGGER.debug("OpenAI simple: Calling API with model=%s", self.model)
+                response = await self.client.chat.completions.create(**kwargs)
+                _LOGGER.debug("OpenAI simple: Got response")
+                choice = response.choices[0]
+                message = choice.message
+
+                # Check for tool calls
+                if message.tool_calls:
+                    tool_calls = message.tool_calls
+                    unique_tool_calls = []
+
+                    for tc in tool_calls:
+                        tool_key = f"{tc.function.name}:{tc.function.arguments}"
+                        if tool_key not in called_tools:
+                            called_tools.add(tool_key)
+                            unique_tool_calls.append(tc)
+
+                    if unique_tool_calls:
+                        # Add assistant message with tool calls
+                        messages.append({
+                            "role": "assistant",
+                            "content": message.content,
+                            "tool_calls": [
+                                {
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": tc.function.name,
+                                        "arguments": tc.function.arguments,
+                                    }
+                                }
+                                for tc in unique_tool_calls
+                            ]
+                        })
+
+                        # Execute tools
+                        for tc in unique_tool_calls:
+                            try:
+                                args = json.loads(tc.function.arguments)
+                            except json.JSONDecodeError:
+                                args = {}
+
+                            result = await self._execute_tool(tc.function.name, args)
+
+                            if isinstance(result, dict) and "response_text" in result:
+                                content = result["response_text"]
+                            else:
+                                content = json.dumps(result, ensure_ascii=False)
+
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.id,
+                                "content": content,
+                            })
+
+                        continue  # Get LLM response after tools
+
+                # No tool calls - return content
+                if message.content:
+                    return message.content
+
+                break
+
+            except Exception as e:
+                _LOGGER.error("OpenAI API error: %s", e)
+                return "Sorry, there was an error processing your request."
+
+        return "I apologize, but I couldn't complete that request."
+
+    async def _query_anthropic_simple(
+        self,
+        user_text: str,
+        tools: list[dict],
+        system_prompt: str,
+        max_tokens: int,
+    ) -> str:
+        """Simple non-streaming Anthropic query."""
+        # Convert tools to Anthropic format
+        anthropic_tools = []
+        for tool in tools:
+            func = tool.get("function", {})
+            anthropic_tools.append({
+                "name": func.get("name"),
+                "description": func.get("description"),
+                "input_schema": func.get("parameters", {"type": "object", "properties": {}})
+            })
+
+        messages = [{"role": "user", "content": user_text}]
+        called_tools: set[str] = set()
+
+        for iteration in range(5):
+            payload = {
+                "model": self.model,
+                "max_tokens": max_tokens,
+                "temperature": self.temperature,
+                "system": system_prompt,
+                "messages": messages,
+            }
+            if anthropic_tools:
+                payload["tools"] = anthropic_tools
+
+            headers = {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+
+            self._track_api_call("llm")
+
+            try:
+                async with self._session.post(
+                    f"{self.base_url}/v1/messages",
+                    json=payload,
+                    headers=headers,
+                    timeout=180,
+                ) as response:
+                    if response.status != 200:
+                        error = await response.text()
+                        _LOGGER.error("Anthropic API error: %s", error)
+                        return "Sorry, there was an error with the AI service."
+
+                    data = await response.json()
+
+                content_blocks = data.get("content", [])
+                text_content = ""
+                tool_uses = []
+
+                for block in content_blocks:
+                    if block.get("type") == "text":
+                        text_content += block.get("text", "")
+                    elif block.get("type") == "tool_use":
+                        tool_uses.append(block)
+
+                if tool_uses:
+                    # Add assistant message
+                    messages.append({"role": "assistant", "content": content_blocks})
+
+                    # Execute tools and add results
+                    tool_results = []
+                    for tool_use in tool_uses:
+                        tool_key = f"{tool_use['name']}:{tool_use.get('input', {})}"
+                        if tool_key in called_tools:
+                            continue
+                        called_tools.add(tool_key)
+
+                        result = await self._execute_tool(tool_use["name"], tool_use.get("input", {}))
+
+                        if isinstance(result, dict) and "response_text" in result:
+                            content = result["response_text"]
+                        else:
+                            content = json.dumps(result, ensure_ascii=False)
+
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use["id"],
+                            "content": content,
+                        })
+
+                    if tool_results:
+                        messages.append({"role": "user", "content": tool_results})
+                        continue
+
+                if text_content:
+                    return text_content
+
+                break
+
+            except Exception as e:
+                _LOGGER.error("Anthropic API error: %s", e)
+                return "Sorry, there was an error processing your request."
+
+        return "I apologize, but I couldn't complete that request."
+
+    async def _query_google_simple(
+        self,
+        user_text: str,
+        tools: list[dict],
+        system_prompt: str,
+        max_tokens: int,
+    ) -> str:
+        """Simple non-streaming Google Gemini query."""
+        _LOGGER.debug("Google simple: Starting query for: %s", user_text[:100])
+
+        # Convert tools to Gemini format
+        function_declarations = []
+        for tool in tools:
+            func = tool.get("function", {})
+            function_declarations.append({
+                "name": func.get("name"),
+                "description": func.get("description"),
+                "parameters": func.get("parameters", {"type": "object", "properties": {}})
+            })
+
+        contents = [
+            {"role": "user", "parts": [{"text": f"System: {system_prompt}"}]},
+            {"role": "model", "parts": [{"text": "Understood."}]},
+            {"role": "user", "parts": [{"text": user_text}]},
+        ]
+
+        called_tools: set[str] = set()
+
+        for iteration in range(5):
+            payload = {
+                "contents": contents,
+                "generationConfig": {"maxOutputTokens": max_tokens, "temperature": self.temperature},
+            }
+
+            if function_declarations:
+                payload["tools"] = [{"functionDeclarations": function_declarations}]
+
+            # Use non-streaming endpoint
+            url = f"{self.base_url}/models/{self.model}:generateContent"
+            headers = {"x-goog-api-key": self.api_key}
+
+            _LOGGER.debug("Google simple: Calling API at %s with model=%s", url, self.model)
+            self._track_api_call("llm")
+
+            try:
+                async with self._session.post(url, json=payload, headers=headers, timeout=180) as response:
+                    _LOGGER.debug("Google simple: Got response status %d", response.status)
+                    if response.status != 200:
+                        error = await response.text()
+                        _LOGGER.error("Google API error: %s", error)
+                        return "Sorry, there was an error with the AI service."
+
+                    data = await response.json()
+                    _LOGGER.debug("Google simple: Got JSON response")
+
+                candidates = data.get("candidates", [])
+                _LOGGER.debug("Google simple: Got %d candidates", len(candidates))
+                if not candidates:
+                    _LOGGER.warning("Google simple: No candidates in response")
+                    break
+
+                content = candidates[0].get("content", {})
+                parts = content.get("parts", [])
+                _LOGGER.debug("Google simple: Got %d parts", len(parts))
+
+                text_content = ""
+                function_calls = []
+
+                for part in parts:
+                    if "text" in part:
+                        text_content += part["text"]
+                        _LOGGER.debug("Google simple: Got text part (%d chars)", len(part["text"]))
+                    elif "functionCall" in part:
+                        function_calls.append(part["functionCall"])
+                        _LOGGER.debug("Google simple: Got function call: %s", part["functionCall"].get("name"))
+
+                if function_calls:
+                    # Add model response
+                    contents.append({"role": "model", "parts": parts})
+
+                    # Execute tools
+                    function_responses = []
+                    for fc in function_calls:
+                        tool_key = f"{fc['name']}:{fc.get('args', {})}"
+                        if tool_key in called_tools:
+                            continue
+                        called_tools.add(tool_key)
+
+                        result = await self._execute_tool(fc["name"], fc.get("args", {}))
+
+                        if isinstance(result, dict) and "response_text" in result:
+                            response_content = result["response_text"]
+                        else:
+                            response_content = json.dumps(result, ensure_ascii=False)
+
+                        function_responses.append({
+                            "functionResponse": {
+                                "name": fc["name"],
+                                "response": {"result": response_content}
+                            }
+                        })
+
+                    if function_responses:
+                        contents.append({"role": "user", "parts": function_responses})
+                        continue
+
+                if text_content:
+                    _LOGGER.debug("Google simple: Returning text response (%d chars): %s", len(text_content), text_content[:200])
+                    return text_content
+
+                _LOGGER.warning("Google simple: No text content, breaking loop")
+                break
+
+            except Exception as e:
+                _LOGGER.error("Google API error: %s", e, exc_info=True)
+                return "Sorry, there was an error processing your request."
+
+        _LOGGER.warning("Google simple: Exhausted iterations, returning fallback")
+        return "I apologize, but I couldn't complete that request."
 
     def _calculate_max_tokens(self, user_text: str) -> int:
         """Calculate max tokens based on query complexity."""
@@ -630,6 +942,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
             accumulated_content = ""
             tool_calls_buffer: list[dict] = []
+            first_content = True
 
             self._track_api_call("llm")
 
@@ -646,7 +959,12 @@ class PureLLMConversationEntity(ConversationEntity):
                         # Yield content deltas immediately for streaming TTS
                         if delta.content:
                             accumulated_content += delta.content
-                            yield {"content": delta.content}
+                            # First delta must include role to start the message
+                            if first_content:
+                                yield {"role": "assistant", "content": delta.content}
+                                first_content = False
+                            else:
+                                yield {"content": delta.content}
 
                         # Accumulate tool calls
                         if delta.tool_calls:
@@ -737,11 +1055,11 @@ class PureLLMConversationEntity(ConversationEntity):
 
             except Exception as e:
                 _LOGGER.error("OpenAI API error: %s", e)
-                yield {"content": "Sorry, there was an error processing your request."}
+                yield {"role": "assistant", "content": "Sorry, there was an error processing your request."}
                 return
 
         # If we get here with no content, yield a fallback
-        yield {"content": "I apologize, but I couldn't complete that request."}
+        yield {"role": "assistant", "content": "I apologize, but I couldn't complete that request."}
 
     async def _stream_anthropic(
         self,
@@ -793,64 +1111,63 @@ class PureLLMConversationEntity(ConversationEntity):
                     if response.status != 200:
                         error = await response.text()
                         _LOGGER.error("Anthropic API error: %s", error)
-                        yield {"content": "Sorry, there was an error with the AI service."}
+                        yield {"role": "assistant", "content": "Sorry, there was an error with the AI service."}
                         return
 
-                    # Process SSE stream with proper buffering
+                    # Process SSE stream
                     accumulated_content = ""
                     tool_calls = []
                     current_tool: dict | None = None
-                    buffer = ""
+                    first_content = True
 
-                    async for chunk in response.content.iter_any():
-                        buffer += chunk.decode("utf-8")
+                    async for line in response.content:
+                        line = line.decode("utf-8").strip()
+                        if not line or not line.startswith("data: "):
+                            continue
 
-                        # Process complete lines from buffer
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
+                        data_str = line[6:]  # Remove "data: " prefix
+                        if data_str == "[DONE]":
+                            break
 
-                            if not line or not line.startswith("data: "):
-                                continue
+                        try:
+                            event = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
-                            data_str = line[6:]  # Remove "data: " prefix
-                            if data_str == "[DONE]":
-                                break
+                        event_type = event.get("type")
 
-                            try:
-                                event = json.loads(data_str)
-                            except json.JSONDecodeError:
-                                continue
+                        if event_type == "content_block_start":
+                            block = event.get("content_block", {})
+                            if block.get("type") == "tool_use":
+                                current_tool = {
+                                    "id": block.get("id"),
+                                    "name": block.get("name"),
+                                    "arguments": "",
+                                }
 
-                            event_type = event.get("type")
-
-                            if event_type == "content_block_start":
-                                block = event.get("content_block", {})
-                                if block.get("type") == "tool_use":
-                                    current_tool = {
-                                        "id": block.get("id"),
-                                        "name": block.get("name"),
-                                        "arguments": "",
-                                    }
-
-                            elif event_type == "content_block_delta":
-                                delta = event.get("delta", {})
-                                if delta.get("type") == "text_delta":
-                                    text = delta.get("text", "")
-                                    accumulated_content += text
+                        elif event_type == "content_block_delta":
+                            delta = event.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text", "")
+                                accumulated_content += text
+                                # First delta must include role to start the message
+                                if first_content:
+                                    yield {"role": "assistant", "content": text}
+                                    first_content = False
+                                else:
                                     yield {"content": text}
-                                elif delta.get("type") == "input_json_delta":
-                                    if current_tool:
-                                        current_tool["arguments"] += delta.get("partial_json", "")
-
-                            elif event_type == "content_block_stop":
+                            elif delta.get("type") == "input_json_delta":
                                 if current_tool:
-                                    try:
-                                        current_tool["arguments"] = json.loads(current_tool["arguments"])
-                                    except json.JSONDecodeError:
-                                        current_tool["arguments"] = {}
-                                    tool_calls.append(current_tool)
-                                    current_tool = None
+                                    current_tool["arguments"] += delta.get("partial_json", "")
+
+                        elif event_type == "content_block_stop":
+                            if current_tool:
+                                try:
+                                    current_tool["arguments"] = json.loads(current_tool["arguments"])
+                                except json.JSONDecodeError:
+                                    current_tool["arguments"] = {}
+                                tool_calls.append(current_tool)
+                                current_tool = None
 
                 # Process tool calls if any
                 if tool_calls:
@@ -910,10 +1227,10 @@ class PureLLMConversationEntity(ConversationEntity):
 
             except Exception as e:
                 _LOGGER.error("Anthropic API error: %s", e)
-                yield {"content": "Sorry, there was an error processing your request."}
+                yield {"role": "assistant", "content": "Sorry, there was an error processing your request."}
                 return
 
-        yield {"content": "I apologize, but I couldn't complete that request."}
+        yield {"role": "assistant", "content": "I apologize, but I couldn't complete that request."}
 
     async def _stream_google(
         self,
@@ -923,8 +1240,6 @@ class PureLLMConversationEntity(ConversationEntity):
         max_tokens: int,
     ) -> AsyncGenerator[ContentDelta, None]:
         """Stream from Google Gemini API."""
-        _LOGGER.debug("Google streaming: Starting request for query: %s", user_text[:100])
-
         # Convert tools to Gemini format
         function_declarations = []
         for tool in tools:
@@ -956,68 +1271,56 @@ class PureLLMConversationEntity(ConversationEntity):
             url = f"{self.base_url}/models/{self.model}:streamGenerateContent?alt=sse"
             headers = {"x-goog-api-key": self.api_key}
 
-            _LOGGER.debug("Google streaming: POST to %s (iteration %d)", url, iteration)
             self._track_api_call("llm")
 
             try:
                 async with self._session.post(url, json=payload, headers=headers, timeout=180) as response:  # 3 minutes - VLM operations need more time
-                    _LOGGER.debug("Google streaming: Response status %d", response.status)
                     if response.status != 200:
                         error = await response.text()
                         _LOGGER.error("Google API error: %s", error)
-                        yield {"content": "Sorry, there was an error with the AI service."}
+                        yield {"role": "assistant", "content": "Sorry, there was an error with the AI service."}
                         return
 
                     accumulated_content = ""
                     tool_calls = []
                     model_parts = []
-                    line_count = 0
+                    first_content = True
 
-                    # Buffer for handling chunked SSE data
-                    buffer = ""
+                    async for line in response.content:
+                        line = line.decode("utf-8").strip()
+                        if not line or not line.startswith("data: "):
+                            continue
 
-                    async for chunk in response.content.iter_any():
-                        buffer += chunk.decode("utf-8")
+                        data_str = line[6:]
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
-                        # Process complete lines from buffer
-                        while "\n" in buffer:
-                            line, buffer = buffer.split("\n", 1)
-                            line = line.strip()
-                            line_count += 1
+                        candidates = data.get("candidates", [])
+                        if not candidates:
+                            continue
 
-                            if not line or not line.startswith("data: "):
-                                continue
+                        content = candidates[0].get("content", {})
+                        parts = content.get("parts", [])
 
-                            data_str = line[6:]
-                            try:
-                                data = json.loads(data_str)
-                            except json.JSONDecodeError:
-                                _LOGGER.debug("Google streaming: JSON decode error for line: %s", data_str[:200])
-                                continue
-
-                            candidates = data.get("candidates", [])
-                            if not candidates:
-                                _LOGGER.debug("Google streaming: No candidates in response")
-                                continue
-
-                            content = candidates[0].get("content", {})
-                            parts = content.get("parts", [])
-                            _LOGGER.debug("Google streaming: Got %d parts", len(parts))
-
-                            for part in parts:
-                                model_parts.append(part)
-                                if "text" in part:
-                                    text = part["text"]
-                                    accumulated_content += text
-                                    _LOGGER.debug("Google streaming: Yielding text chunk (%d chars): %s", len(text), text[:100])
+                        for part in parts:
+                            model_parts.append(part)
+                            if "text" in part:
+                                text = part["text"]
+                                accumulated_content += text
+                                # First delta must include role to start the message
+                                if first_content:
+                                    yield {"role": "assistant", "content": text}
+                                    first_content = False
+                                else:
                                     yield {"content": text}
-                                elif "functionCall" in part:
-                                    fc = part["functionCall"]
-                                    _LOGGER.debug("Google streaming: Got function call: %s", fc.get("name"))
-                                    tool_calls.append({
-                                        "name": fc.get("name"),
-                                        "arguments": fc.get("args", {}),
-                                    })
+                            elif "functionCall" in part:
+                                fc = part["functionCall"]
+                                tool_calls.append({
+                                    "name": fc.get("name"),
+                                    "arguments": fc.get("args", {}),
+                                })
 
                 # Process tool calls if any
                 if tool_calls:
@@ -1056,21 +1359,17 @@ class PureLLMConversationEntity(ConversationEntity):
                         continue
 
                 # No tool calls - we're done
-                _LOGGER.debug("Google streaming: Finished iteration %d, accumulated %d chars, %d tool calls",
-                             iteration, len(accumulated_content), len(tool_calls))
                 if accumulated_content:
-                    _LOGGER.debug("Google streaming: Returning with content: %s", accumulated_content[:200])
                     return
 
-                _LOGGER.warning("Google streaming: No content accumulated, breaking loop")
                 break
 
             except Exception as e:
-                _LOGGER.error("Google API error: %s", e, exc_info=True)
-                yield {"content": "Sorry, there was an error processing your request."}
+                _LOGGER.error("Google API error: %s", e)
+                yield {"role": "assistant", "content": "Sorry, there was an error processing your request."}
                 return
 
-        yield {"content": "I apologize, but I couldn't complete that request."}
+        yield {"role": "assistant", "content": "I apologize, but I couldn't complete that request."}
 
     # =========================================================================
     # Notification Helpers
