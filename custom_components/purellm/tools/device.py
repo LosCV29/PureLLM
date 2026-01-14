@@ -593,10 +593,8 @@ async def control_device(
                 elif is_currently_muted is False and action == "unmute":
                     return {"success": True, "response_text": f"The {friendly_name} is already unmuted."}
 
-                # For unmute, explicitly set is_volume_muted: False (this works)
-                # For mute, just toggle (don't set is_volume_muted - avoids volume drop issue)
-                if action == "unmute":
-                    service_data["is_volume_muted"] = False
+                # Explicitly set mute state
+                service_data["is_volume_muted"] = (action == "mute")
 
         # Climate controls
         if domain == "climate":
