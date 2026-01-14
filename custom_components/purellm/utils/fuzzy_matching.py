@@ -248,14 +248,14 @@ def _find_entity_by_query(
 ) -> tuple[str | None, str | None]:
     """Internal entity search - direct matching only, no fuzzy logic."""
     query_lower = query.lower().strip()
-    _LOGGER.info("Fuzzy search for: '%s'", query_lower)
+    _LOGGER.warning("DEBUG Fuzzy search for: '%s' with aliases: %s", query_lower, device_aliases)
 
     # PRIORITY 1: Exact match in configured device aliases
     if query_lower in device_aliases:
         entity_id = device_aliases[query_lower]
         state = hass.states.get(entity_id)
         friendly_name = state.attributes.get("friendly_name", query) if state else query
-        _LOGGER.info("Found via device alias: %s -> %s", query_lower, entity_id)
+        _LOGGER.warning("DEBUG Found via device alias: %s -> %s", query_lower, entity_id)
         return (entity_id, friendly_name)
 
     # PRIORITY 2: Partial match in device aliases (all words present)
@@ -317,7 +317,7 @@ def _find_entity_by_query(
     # Return best match - sort by match priority first, then domain priority
     if partial_matches:
         partial_matches.sort(key=lambda x: (x[0], x[1]))
-        _LOGGER.info("Best match for '%s': %s (%s)", query_lower, partial_matches[0][2], partial_matches[0][3])
+        _LOGGER.warning("DEBUG Best match for '%s': %s (%s)", query_lower, partial_matches[0][2], partial_matches[0][3])
         return (partial_matches[0][2], partial_matches[0][3])
 
     _LOGGER.warning("No entity found for query: '%s'", query_lower)

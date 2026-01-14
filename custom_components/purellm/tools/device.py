@@ -329,8 +329,8 @@ async def control_device(
     from homeassistant.helpers import area_registry as ar
     from homeassistant.helpers import device_registry as dr
 
-    _LOGGER.info("control_device called with: %s", arguments)
-    _LOGGER.info("device_aliases: %s", device_aliases)
+    _LOGGER.warning("DEBUG control_device called with: %s", arguments)
+    _LOGGER.warning("DEBUG device_aliases: %s", device_aliases)
 
     action = arguments.get("action", "").strip().lower()
     brightness = arguments.get("brightness")
