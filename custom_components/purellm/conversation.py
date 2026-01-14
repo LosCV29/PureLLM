@@ -103,6 +103,8 @@ from .const import (
     PROVIDER_AZURE,
     PROVIDER_BASE_URLS,
     PROVIDER_GOOGLE,
+    PROVIDER_LM_STUDIO,
+    PROVIDER_OLLAMA,
     get_version,
 )
 
@@ -512,19 +514,34 @@ class PureLLMConversationEntity(ConversationEntity):
         user_input: conversation.ConversationInput,
         chat_log: ChatLog,
     ) -> conversation.ConversationResult:
-        """Handle an incoming chat message - SIMPLE NON-STREAMING."""
+        """Handle an incoming chat message.
+
+        Uses streaming for local providers (LM Studio, Ollama) and
+        non-streaming for cloud providers (Google, OpenAI, Anthropic, etc.).
+        """
         user_text = user_input.text.strip()
         self._current_user_query = user_text
         self._current_user_input = user_input
 
-        _LOGGER.info("PureLLM processing: '%s' provider=%s", user_text, self.provider)
+        # Local providers use streaming, cloud providers use non-streaming
+        local_providers = {PROVIDER_LM_STUDIO, PROVIDER_OLLAMA}
+        is_local = self.provider in local_providers
+
+        _LOGGER.info("PureLLM processing: '%s' provider=%s streaming=%s", user_text, self.provider, is_local)
 
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
         max_tokens = self._calculate_max_tokens(user_text)
 
         try:
-            if self.provider == PROVIDER_GOOGLE:
+            if is_local:
+                # Use streaming for local providers (LM Studio, Ollama)
+                final_response = ""
+                stream = self._stream_openai_compatible(user_text, tools, system_prompt, max_tokens)
+                async for delta in stream:
+                    if isinstance(delta, dict) and delta.get("content"):
+                        final_response += delta["content"]
+            elif self.provider == PROVIDER_GOOGLE:
                 final_response = await self._call_google(user_text, tools, system_prompt, max_tokens)
             elif self.provider in OPENAI_COMPATIBLE_PROVIDERS or self.provider == PROVIDER_AZURE:
                 final_response = await self._call_openai(user_text, tools, system_prompt, max_tokens)
