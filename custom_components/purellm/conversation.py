@@ -512,57 +512,229 @@ class PureLLMConversationEntity(ConversationEntity):
         user_input: conversation.ConversationInput,
         chat_log: ChatLog,
     ) -> conversation.ConversationResult:
-        """Handle an incoming chat message.
-
-        STATELESS: Each request is independent - no conversation memory.
-        Uses direct streaming consumption (not HA's chat_log API) for reliability.
-        """
+        """Handle an incoming chat message - SIMPLE NON-STREAMING."""
         user_text = user_input.text.strip()
         self._current_user_query = user_text
         self._current_user_input = user_input
 
-        _LOGGER.debug("Processing query: '%s' with provider: %s", user_text, self.provider)
+        _LOGGER.info("PureLLM processing: '%s' provider=%s", user_text, self.provider)
 
-        # Build tools and system prompt
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
         max_tokens = self._calculate_max_tokens(user_text)
 
-        final_response = ""
-
         try:
-            # Create the streaming generator based on provider
-            if self.provider in OPENAI_COMPATIBLE_PROVIDERS or self.provider == PROVIDER_AZURE:
-                stream = self._stream_openai_compatible(user_text, tools, system_prompt, max_tokens)
+            if self.provider == PROVIDER_GOOGLE:
+                final_response = await self._call_google(user_text, tools, system_prompt, max_tokens)
+            elif self.provider in OPENAI_COMPATIBLE_PROVIDERS or self.provider == PROVIDER_AZURE:
+                final_response = await self._call_openai(user_text, tools, system_prompt, max_tokens)
             elif self.provider == PROVIDER_ANTHROPIC:
-                stream = self._stream_anthropic(user_text, tools, system_prompt, max_tokens)
-            elif self.provider == PROVIDER_GOOGLE:
-                stream = self._stream_google(user_text, tools, system_prompt, max_tokens)
+                final_response = await self._call_anthropic(user_text, tools, system_prompt, max_tokens)
             else:
-                async def error_stream() -> AsyncGenerator[ContentDelta, None]:
-                    yield {"content": "Unknown provider configured."}
-                stream = error_stream()
+                final_response = "Unknown provider."
 
-            # Consume stream directly - don't use chat_log.async_add_delta_content_stream
-            # which has issues with voice pipelines
-            async for delta in stream:
-                if isinstance(delta, dict) and delta.get("content"):
-                    final_response += delta["content"]
-
-            _LOGGER.debug("Got response (%d chars): %s", len(final_response), final_response[:100] if final_response else "(empty)")
+            _LOGGER.info("PureLLM response (%d chars): %s", len(final_response) if final_response else 0, (final_response or "")[:100])
 
         except Exception as err:
-            _LOGGER.error("Error processing request: %s", err, exc_info=True)
-            final_response = "Sorry, there was an error processing your request."
+            _LOGGER.error("PureLLM error: %s", err, exc_info=True)
+            final_response = "Sorry, there was an error."
 
-        # Return result
         response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(final_response if final_response else "I couldn't process that request.")
+        response.async_set_speech(final_response or "No response.")
 
         return conversation.ConversationResult(
             response=response,
             conversation_id=str(uuid.uuid4()),
         )
+
+    async def _call_google(self, user_text: str, tools: list, system_prompt: str, max_tokens: int) -> str:
+        """Simple non-streaming Google Gemini call."""
+        function_declarations = []
+        for tool in tools:
+            func = tool.get("function", {})
+            function_declarations.append({
+                "name": func.get("name"),
+                "description": func.get("description"),
+                "parameters": func.get("parameters", {"type": "object", "properties": {}})
+            })
+
+        contents = [
+            {"role": "user", "parts": [{"text": f"System: {system_prompt}"}]},
+            {"role": "model", "parts": [{"text": "Understood."}]},
+            {"role": "user", "parts": [{"text": user_text}]},
+        ]
+
+        for iteration in range(5):
+            payload = {
+                "contents": contents,
+                "generationConfig": {"maxOutputTokens": max_tokens, "temperature": self.temperature},
+            }
+            if function_declarations:
+                payload["tools"] = [{"functionDeclarations": function_declarations}]
+
+            url = f"{self.base_url}/models/{self.model}:generateContent"
+            headers = {"x-goog-api-key": self.api_key}
+
+            self._track_api_call("llm")
+            _LOGGER.debug("Google API call to %s", url)
+
+            async with self._session.post(url, json=payload, headers=headers, timeout=120) as resp:
+                if resp.status != 200:
+                    error = await resp.text()
+                    _LOGGER.error("Google API error %d: %s", resp.status, error)
+                    return "Error calling Google API."
+
+                data = await resp.json()
+
+            candidates = data.get("candidates", [])
+            if not candidates:
+                return "No response from Google."
+
+            parts = candidates[0].get("content", {}).get("parts", [])
+            text_response = ""
+            function_calls = []
+
+            for part in parts:
+                if "text" in part:
+                    text_response += part["text"]
+                elif "functionCall" in part:
+                    function_calls.append(part["functionCall"])
+
+            if function_calls:
+                contents.append({"role": "model", "parts": parts})
+                function_responses = []
+
+                for fc in function_calls:
+                    result = await self._execute_tool(fc["name"], fc.get("args", {}))
+                    if isinstance(result, dict) and "response_text" in result:
+                        resp_content = result["response_text"]
+                    else:
+                        resp_content = json.dumps(result, ensure_ascii=False)
+
+                    function_responses.append({
+                        "functionResponse": {"name": fc["name"], "response": {"result": resp_content}}
+                    })
+
+                contents.append({"role": "user", "parts": function_responses})
+                continue
+
+            if text_response:
+                return text_response
+
+        return "Could not get response."
+
+    async def _call_openai(self, user_text: str, tools: list, system_prompt: str, max_tokens: int) -> str:
+        """Simple non-streaming OpenAI call."""
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_text},
+        ]
+
+        for iteration in range(5):
+            kwargs = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": self.temperature,
+                "max_tokens": max_tokens,
+            }
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
+
+            self._track_api_call("llm")
+            response = await self.client.chat.completions.create(**kwargs)
+            message = response.choices[0].message
+
+            if message.tool_calls:
+                messages.append({
+                    "role": "assistant",
+                    "content": message.content,
+                    "tool_calls": [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}} for tc in message.tool_calls]
+                })
+
+                for tc in message.tool_calls:
+                    try:
+                        args = json.loads(tc.function.arguments)
+                    except:
+                        args = {}
+                    result = await self._execute_tool(tc.function.name, args)
+                    if isinstance(result, dict) and "response_text" in result:
+                        content = result["response_text"]
+                    else:
+                        content = json.dumps(result, ensure_ascii=False)
+                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
+                continue
+
+            if message.content:
+                return message.content
+
+        return "Could not get response."
+
+    async def _call_anthropic(self, user_text: str, tools: list, system_prompt: str, max_tokens: int) -> str:
+        """Simple non-streaming Anthropic call."""
+        anthropic_tools = []
+        for tool in tools:
+            func = tool.get("function", {})
+            anthropic_tools.append({
+                "name": func.get("name"),
+                "description": func.get("description"),
+                "input_schema": func.get("parameters", {"type": "object", "properties": {}})
+            })
+
+        messages = [{"role": "user", "content": user_text}]
+
+        for iteration in range(5):
+            payload = {
+                "model": self.model,
+                "max_tokens": max_tokens,
+                "system": system_prompt,
+                "messages": messages,
+            }
+            if anthropic_tools:
+                payload["tools"] = anthropic_tools
+
+            headers = {
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            }
+
+            self._track_api_call("llm")
+
+            async with self._session.post(f"{self.base_url}/v1/messages", json=payload, headers=headers, timeout=120) as resp:
+                if resp.status != 200:
+                    return "Error calling Anthropic API."
+                data = await resp.json()
+
+            content_blocks = data.get("content", [])
+            text_content = ""
+            tool_uses = []
+
+            for block in content_blocks:
+                if block.get("type") == "text":
+                    text_content += block.get("text", "")
+                elif block.get("type") == "tool_use":
+                    tool_uses.append(block)
+
+            if tool_uses:
+                messages.append({"role": "assistant", "content": content_blocks})
+                tool_results = []
+
+                for tu in tool_uses:
+                    result = await self._execute_tool(tu["name"], tu.get("input", {}))
+                    if isinstance(result, dict) and "response_text" in result:
+                        content = result["response_text"]
+                    else:
+                        content = json.dumps(result, ensure_ascii=False)
+                    tool_results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": content})
+
+                messages.append({"role": "user", "content": tool_results})
+                continue
+
+            if text_content:
+                return text_content
+
+        return "Could not get response."
 
     def _calculate_max_tokens(self, user_text: str) -> int:
         """Calculate max tokens based on query complexity."""
