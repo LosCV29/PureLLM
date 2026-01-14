@@ -266,7 +266,7 @@ class PureLLMConversationEntity(ConversationEntity):
         self.thermostat_entity = config.get(CONF_THERMOSTAT_ENTITY, "")
         self.calendar_entities = parse_list_config(config.get(CONF_CALENDAR_ENTITIES, ""))
         self.camera_entities = parse_list_config(config.get(CONF_CAMERA_ENTITIES, ""))
-        self.device_aliases = parse_entity_config(config.get(CONF_DEVICE_ALIASES, ""))
+        self.device_aliases = self._parse_device_aliases(config.get(CONF_DEVICE_ALIASES, ""))
 
         # Thermostat settings
         self.thermostat_use_celsius = config.get(CONF_THERMOSTAT_USE_CELSIUS, DEFAULT_THERMOSTAT_USE_CELSIUS)
@@ -331,6 +331,41 @@ class PureLLMConversationEntity(ConversationEntity):
         if temp is None:
             return "unknown"
         return f"{int(temp)}{self.temp_unit}"
+
+    def _parse_device_aliases(self, config_value: str) -> dict[str, str]:
+        """Parse device aliases from config - supports both old text and new JSON format.
+
+        Old format (text): "alias:entity_id" per line
+        New format (JSON): [{"alias": "name", "entity": "entity_id"}, ...]
+
+        Returns: dict mapping alias -> entity_id
+        """
+        result: dict[str, str] = {}
+        if not config_value:
+            return result
+
+        # Try JSON format first (new format)
+        try:
+            aliases_list = json.loads(config_value)
+            if isinstance(aliases_list, list):
+                for item in aliases_list:
+                    if isinstance(item, dict):
+                        alias = item.get("alias", "").lower().strip()
+                        entity = item.get("entity", "").strip()
+                        if alias and entity:
+                            result[alias] = entity
+                return result
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+        # Fall back to old text format: "alias:entity_id" per line
+        for line in config_value.strip().split("\n"):
+            line = line.strip()
+            if ":" in line:
+                alias, entity_id = line.split(":", 1)
+                result[alias.strip().lower()] = entity_id.strip()
+
+        return result
 
     def _create_openai_client(self):
         """Create OpenAI client (runs in executor to avoid blocking SSL)."""

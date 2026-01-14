@@ -93,9 +93,12 @@
       },
       "device_aliases": {
         "title": "Device Aliases",
-        "description": "Define custom voice names for your devices. Format: alias_name: entity_id (one per line)",
+        "description": "{aliases_info}",
         "data": {
-          "device_aliases": "Device Aliases"
+          "select_alias": "Select Existing Alias",
+          "alias_name": "Alias Name (what you say, e.g., 'receiver', 'front door')",
+          "entity_id": "Entity",
+          "action": "Action"
         }
       },
       "voice_scripts": {
