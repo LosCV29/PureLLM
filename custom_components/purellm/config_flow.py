@@ -813,35 +813,136 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_device_aliases(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle device aliases configuration.
+        """Handle device aliases configuration with add/edit/delete support.
 
         Device aliases allow users to define custom voice names for entities.
-        Format: alias_name: entity_id (one per line)
+        Uses entity selector dropdown to prevent typos.
         """
-        if user_input is not None:
-            new_options = {**self._entry.options, **user_input}
-            return self.async_create_entry(title="", data=new_options)
-
         current = {**self._entry.data, **self._entry.options}
+        current_aliases_raw = current.get(CONF_DEVICE_ALIASES, DEFAULT_DEVICE_ALIASES)
+
+        # Parse current aliases - support both old text format and new JSON format
+        aliases_list: list[dict[str, str]] = []
+        if current_aliases_raw:
+            try:
+                # Try JSON format first (new format)
+                aliases_list = json.loads(current_aliases_raw)
+                if not isinstance(aliases_list, list):
+                    aliases_list = []
+            except (json.JSONDecodeError, TypeError):
+                # Fall back to old text format: "alias:entity_id" per line
+                for line in current_aliases_raw.strip().split("\n"):
+                    line = line.strip()
+                    if ":" in line:
+                        alias, entity_id = line.split(":", 1)
+                        aliases_list.append({
+                            "alias": alias.strip().lower(),
+                            "entity": entity_id.strip()
+                        })
+
+        if user_input is not None:
+            selected = user_input.get("select_alias", "")
+            alias_name = user_input.get("alias_name", "").strip().lower()
+            entity_id = user_input.get("entity_id", "")
+            action = user_input.get("action", "add")
+
+            # Find index of selected alias
+            selected_idx = None
+            if selected:
+                for i, a in enumerate(aliases_list):
+                    if a.get("alias", "").lower() == selected.lower():
+                        selected_idx = i
+                        break
+
+            if action == "delete" and selected_idx is not None:
+                # Delete selected alias
+                aliases_list.pop(selected_idx)
+            elif action == "update" and selected_idx is not None:
+                # Update selected alias
+                aliases_list[selected_idx] = {
+                    "alias": alias_name if alias_name else selected,
+                    "entity": entity_id if entity_id else aliases_list[selected_idx].get("entity", ""),
+                }
+            elif action == "add" and alias_name and entity_id:
+                # Add new alias - check for duplicates first
+                existing = [a for a in aliases_list if a.get("alias", "").lower() == alias_name]
+                if existing:
+                    # Update existing instead of adding duplicate
+                    for a in aliases_list:
+                        if a.get("alias", "").lower() == alias_name:
+                            a["entity"] = entity_id
+                            break
+                else:
+                    aliases_list.append({
+                        "alias": alias_name,
+                        "entity": entity_id,
+                    })
+            elif not selected and not alias_name and not entity_id:
+                # Empty submit - return to menu
+                return self.async_create_entry(title="", data=self._entry.options)
+
+            # Save updated aliases as JSON
+            updated_json = json.dumps(aliases_list)
+            new_options = {**self._entry.options, CONF_DEVICE_ALIASES: updated_json}
+            self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+            # Rebuild list for display
+            try:
+                aliases_list = json.loads(updated_json)
+            except (json.JSONDecodeError, TypeError):
+                aliases_list = []
+
+        # Build description showing current aliases
+        if aliases_list:
+            mapping_lines = []
+            for a in aliases_list:
+                alias = a.get("alias", "")
+                entity = a.get("entity", "")
+                mapping_lines.append(f"**{alias}** → {entity}")
+            description = "**Current device aliases:**\n" + "\n".join(mapping_lines) + "\n\nSelect one to edit/delete, or add a new one below."
+        else:
+            description = "No device aliases configured. Add your first alias below.\n\n**Examples:**\n- 'receiver' → media_player.living_room_receiver\n- 'front door' → lock.front_door_lock\n- 'kitchen light' → light.kitchen_ceiling"
+
+        # Build select options for existing aliases
+        select_options = []
+        for a in aliases_list:
+            alias = a.get("alias", "")
+            entity = a.get("entity", "")
+            select_options.append(selector.SelectOptionDict(value=alias, label=f"{alias} → {entity}"))
 
         return self.async_show_form(
             step_id="device_aliases",
+            description_placeholders={"aliases_info": description},
             data_schema=vol.Schema(
                 {
-                    vol.Optional(
-                        CONF_DEVICE_ALIASES,
-                        default=current.get(CONF_DEVICE_ALIASES, DEFAULT_DEVICE_ALIASES),
-                    ): selector.TextSelector(
+                    vol.Optional("select_alias"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=select_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional("alias_name"): selector.TextSelector(
                         selector.TextSelectorConfig(
                             type=selector.TextSelectorType.TEXT,
-                            multiline=True,
+                        )
+                    ),
+                    vol.Optional("entity_id"): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            multiple=False,
+                        )
+                    ),
+                    vol.Optional("action", default="add"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(value="add", label="Add New"),
+                                selector.SelectOptionDict(value="update", label="Update Selected"),
+                                selector.SelectOptionDict(value="delete", label="Delete Selected"),
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
                 }
             ),
-            description_placeholders={
-                "format_hint": "Format: alias_name: entity_id (one per line). Example:\nkitchen light: light.kitchen_ceiling\nfront door: lock.front_door",
-            },
         )
 
     async def async_step_voice_scripts(
