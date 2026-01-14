@@ -1,21 +1,21 @@
-"""PureLLM Conversation Entity - Pure LLM Voice Assistant v4.0.
+"""PureLLM Conversation Entity - Pure LLM Voice Assistant v5.0.
 
 This is the main conversation entity that handles ALL voice commands
-through the LLM pipeline with tool calling. No native HA intent interception.
+through the LLM pipeline with tool calling and STREAMING TTS support.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from homeassistant.components import conversation
-from homeassistant.components.conversation import ConversationEntity
+from homeassistant.components.conversation import ChatLog, ConversationEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import intent
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
@@ -131,6 +131,10 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Type for delta dictionaries used in streaming
+ContentDelta = dict[str, Any]
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -146,10 +150,11 @@ async def async_setup_entry(
 
 
 class PureLLMConversationEntity(ConversationEntity):
-    """PureLLM conversation agent entity - Pure LLM pipeline."""
+    """PureLLM conversation agent entity - Pure LLM pipeline with streaming."""
 
     _attr_has_entity_name = True
     _attr_name = None
+    _attr_supports_streaming = True  # Enable streaming TTS support!
 
     @property
     def supported_languages(self) -> list[str] | str:
@@ -178,6 +183,9 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Current query for tool context
         self._current_user_query: str = ""
+
+        # Current user_input for tool execution
+        self._current_user_input: conversation.ConversationInput | None = None
 
         # Initialize config
         self._update_from_config({**config_entry.data, **config_entry.options})
@@ -290,15 +298,12 @@ class PureLLMConversationEntity(ConversationEntity):
             self.voice_scripts = []
 
         # Camera friendly names configuration
-        # Config stores "camera.entity_id: Friendly Name", but camera tool expects location keys
-        # Extract location from entity_id (e.g., "camera.front_porch" -> "front_porch")
         camera_names_str = config.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES)
         raw_camera_names = parse_entity_config(camera_names_str) if camera_names_str else {}
         self.camera_friendly_names = {}
         for entity_id, friendly_name in raw_camera_names.items():
-            # Extract location key from entity_id (remove "camera." prefix)
             if entity_id.startswith("camera."):
-                location_key = entity_id[7:]  # Remove "camera." prefix
+                location_key = entity_id[7:]
             else:
                 location_key = entity_id
             self.camera_friendly_names[location_key] = friendly_name
@@ -395,54 +400,64 @@ class PureLLMConversationEntity(ConversationEntity):
         self._tools = build_tools(ToolConfig(self))
         return self._tools
 
-    async def async_process(
+    async def _async_handle_message(
         self,
         user_input: conversation.ConversationInput,
+        chat_log: ChatLog,
     ) -> conversation.ConversationResult:
-        """Process user input."""
+        """Handle an incoming chat message with streaming support.
+
+        This is the new HA 2025.3+ API that enables streaming TTS.
+        """
         user_text = user_input.text.strip()
         self._current_user_query = user_text
+        self._current_user_input = user_input
 
-        _LOGGER.debug("Processing query: '%s'", user_text)
+        _LOGGER.debug("Processing query with streaming: '%s'", user_text)
 
         # Build tools and system prompt
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
         max_tokens = self._calculate_max_tokens(user_text)
 
-        # Route to appropriate provider
         try:
+            # Create the streaming generator based on provider
             if self.provider in OPENAI_COMPATIBLE_PROVIDERS or self.provider == PROVIDER_AZURE:
-                response = await self._call_openai_compatible(user_input, tools, system_prompt, max_tokens)
+                stream = self._stream_openai_compatible(user_text, tools, system_prompt, max_tokens)
             elif self.provider == PROVIDER_ANTHROPIC:
-                response = await self._call_anthropic(user_input, tools, system_prompt, max_tokens)
+                stream = self._stream_anthropic(user_text, tools, system_prompt, max_tokens)
             elif self.provider == PROVIDER_GOOGLE:
-                response = await self._call_google(user_input, tools, system_prompt, max_tokens)
+                stream = self._stream_google(user_text, tools, system_prompt, max_tokens)
             else:
-                response = "Unknown provider configured."
+                # Fallback for unknown providers
+                async def error_stream() -> AsyncGenerator[ContentDelta, None]:
+                    yield {"role": "assistant", "content": "Unknown provider configured."}
+                stream = error_stream()
+
+            # Stream deltas to the chat log - this is what enables streaming TTS!
+            async for content in chat_log.async_add_delta_content_stream(
+                self.entity_id,
+                stream,
+            ):
+                # Content is yielded as it's added to the chat log
+                # Tool calls are executed automatically by the chat log
+                pass
+
         except Exception as err:
             _LOGGER.error("Error processing request: %s", err, exc_info=True)
-            response = "Sorry, there was an error processing your request."
+            # Add error message to chat log
+            chat_log.async_add_assistant_content(
+                conversation.AssistantContent(
+                    agent_id=self.entity_id,
+                    content="Sorry, there was an error processing your request.",
+                )
+            )
 
-        return self._create_response(response, user_input)
-
-    def _create_response(
-        self,
-        text: str,
-        user_input: conversation.ConversationInput,
-    ) -> conversation.ConversationResult:
-        """Create a conversation result."""
-        response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(text)
-        return conversation.ConversationResult(
-            response=response,
-            conversation_id=user_input.conversation_id,
-        )
+        return conversation.async_get_result_from_chat_log(user_input, chat_log)
 
     def _calculate_max_tokens(self, user_text: str) -> int:
         """Calculate max tokens based on query complexity."""
         base = self.max_tokens
-        # Short queries need shorter responses
         if len(user_text) < 30:
             return min(base, 500)
         elif len(user_text) < 100:
@@ -450,23 +465,22 @@ class PureLLMConversationEntity(ConversationEntity):
         return base
 
     # =========================================================================
-    # LLM Provider Methods
+    # Streaming LLM Provider Methods
     # =========================================================================
 
-    async def _call_openai_compatible(
+    async def _stream_openai_compatible(
         self,
-        user_input: conversation.ConversationInput,
+        user_text: str,
         tools: list[dict],
         system_prompt: str,
         max_tokens: int,
-    ) -> str:
-        """Call OpenAI-compatible API with streaming and tool support."""
+    ) -> AsyncGenerator[ContentDelta, None]:
+        """Stream from OpenAI-compatible API with tool support."""
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_input.text},
+            {"role": "user", "content": user_text},
         ]
 
-        full_response = ""
         called_tools: set[str] = set()
 
         for iteration in range(5):  # Max 5 tool iterations
@@ -497,10 +511,12 @@ class PureLLMConversationEntity(ConversationEntity):
 
                         delta = chunk.choices[0].delta
 
+                        # Yield content deltas immediately for streaming TTS
                         if delta.content:
                             accumulated_content += delta.content
-                            full_response += delta.content
+                            yield {"content": delta.content}
 
+                        # Accumulate tool calls
                         if delta.tool_calls:
                             for tc_delta in delta.tool_calls:
                                 if tc_delta.index is not None:
@@ -522,7 +538,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 finally:
                     await stream.close()
 
-                # Process tool calls
+                # Process tool calls if any
                 valid_tool_calls = [
                     tc for tc in tool_calls_buffer
                     if tc.get("id") and tc.get("function", {}).get("name")
@@ -538,6 +554,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 if unique_tool_calls:
                     _LOGGER.info("Processing %d tool call(s)", len(unique_tool_calls))
 
+                    # Add assistant message with tool calls to conversation
                     messages.append({
                         "role": "assistant",
                         "content": accumulated_content if accumulated_content else None,
@@ -554,48 +571,54 @@ class PureLLMConversationEntity(ConversationEntity):
                             arguments = {}
 
                         _LOGGER.info("Tool call: %s(%s)", tool_name, arguments)
-                        tool_tasks.append(self._execute_tool(tool_name, arguments, user_input))
+                        tool_tasks.append(self._execute_tool(tool_name, arguments))
 
                     tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
 
+                    # Yield tool calls and results as deltas
                     for tool_call, result in zip(unique_tool_calls, tool_results):
                         if isinstance(result, Exception):
                             _LOGGER.error("Tool %s failed: %s", tool_call["function"]["name"], result)
                             result = {"error": str(result)}
 
-                        # If tool returned response_text, use it directly to prevent LLM reformatting
+                        # Get content for the message
                         if isinstance(result, dict) and "response_text" in result:
                             content = result["response_text"]
                         else:
                             content = json.dumps(result, ensure_ascii=False)
 
+                        # Add tool result to messages for next iteration
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call["id"],
                             "content": content,
                         })
 
+                    # Continue to next iteration to get LLM's response after tools
                     continue
 
+                # No tool calls - we're done
                 if accumulated_content:
-                    return full_response
+                    return
 
                 break
 
             except Exception as e:
                 _LOGGER.error("OpenAI API error: %s", e)
-                return "Sorry, there was an error processing your request."
+                yield {"content": "Sorry, there was an error processing your request."}
+                return
 
-        return full_response if full_response else "I apologize, but I couldn't complete that request."
+        # If we get here with no content, yield a fallback
+        yield {"content": "I apologize, but I couldn't complete that request."}
 
-    async def _call_anthropic(
+    async def _stream_anthropic(
         self,
-        user_input: conversation.ConversationInput,
+        user_text: str,
         tools: list[dict],
         system_prompt: str,
         max_tokens: int,
-    ) -> str:
-        """Call Anthropic Claude API."""
+    ) -> AsyncGenerator[ContentDelta, None]:
+        """Stream from Anthropic Claude API with SSE support."""
         # Convert tools to Anthropic format
         anthropic_tools = []
         for tool in tools:
@@ -606,8 +629,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 "input_schema": func.get("parameters", {"type": "object", "properties": {}})
             })
 
-        messages = [{"role": "user", "content": user_input.text}]
-        full_response = ""
+        messages = [{"role": "user", "content": user_text}]
         called_tools: set[str] = set()
 
         for iteration in range(5):
@@ -616,6 +638,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 "max_tokens": max_tokens,
                 "system": system_prompt,
                 "messages": messages,
+                "stream": True,  # Enable streaming!
             }
             if anthropic_tools:
                 payload["tools"] = anthropic_tools
@@ -638,30 +661,60 @@ class PureLLMConversationEntity(ConversationEntity):
                     if response.status != 200:
                         error = await response.text()
                         _LOGGER.error("Anthropic API error: %s", error)
-                        return "Sorry, there was an error with the AI service."
+                        yield {"content": "Sorry, there was an error with the AI service."}
+                        return
 
-                    data = await response.json()
+                    # Process SSE stream
+                    accumulated_content = ""
+                    tool_calls = []
+                    current_tool: dict | None = None
 
-                text_content = ""
-                tool_calls = []
+                    async for line in response.content:
+                        line = line.decode("utf-8").strip()
+                        if not line or not line.startswith("data: "):
+                            continue
 
-                for block in data.get("content", []):
-                    if block.get("type") == "text":
-                        text_content += block.get("text", "")
-                    elif block.get("type") == "tool_use":
-                        tool_calls.append({
-                            "id": block.get("id"),
-                            "name": block.get("name"),
-                            "arguments": block.get("input", {}),
-                        })
+                        data_str = line[6:]  # Remove "data: " prefix
+                        if data_str == "[DONE]":
+                            break
 
-                if text_content:
-                    full_response += text_content
+                        try:
+                            event = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
+                        event_type = event.get("type")
+
+                        if event_type == "content_block_start":
+                            block = event.get("content_block", {})
+                            if block.get("type") == "tool_use":
+                                current_tool = {
+                                    "id": block.get("id"),
+                                    "name": block.get("name"),
+                                    "arguments": "",
+                                }
+
+                        elif event_type == "content_block_delta":
+                            delta = event.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text", "")
+                                accumulated_content += text
+                                yield {"content": text}
+                            elif delta.get("type") == "input_json_delta":
+                                if current_tool:
+                                    current_tool["arguments"] += delta.get("partial_json", "")
+
+                        elif event_type == "content_block_stop":
+                            if current_tool:
+                                try:
+                                    current_tool["arguments"] = json.loads(current_tool["arguments"])
+                                except json.JSONDecodeError:
+                                    current_tool["arguments"] = {}
+                                tool_calls.append(current_tool)
+                                current_tool = None
+
+                # Process tool calls if any
                 if tool_calls:
-                    messages.append({"role": "assistant", "content": data.get("content", [])})
-
-                    # Execute tools in parallel
                     unique_tool_calls = []
                     for tc in tool_calls:
                         tool_key = f"{tc['name']}:{tc.get('arguments', '')}"
@@ -670,49 +723,67 @@ class PureLLMConversationEntity(ConversationEntity):
                             unique_tool_calls.append(tc)
                             _LOGGER.info("Tool call: %s(%s)", tc["name"], tc["arguments"])
 
-                    # Run all tool calls concurrently
-                    tool_tasks = [
-                        self._execute_tool(tc["name"], tc["arguments"], user_input)
-                        for tc in unique_tool_calls
-                    ]
-                    results = await asyncio.gather(*tool_tasks, return_exceptions=True)
+                    if unique_tool_calls:
+                        # Build assistant content for Anthropic format
+                        assistant_content = []
+                        if accumulated_content:
+                            assistant_content.append({"type": "text", "text": accumulated_content})
+                        for tc in unique_tool_calls:
+                            assistant_content.append({
+                                "type": "tool_use",
+                                "id": tc["id"],
+                                "name": tc["name"],
+                                "input": tc["arguments"],
+                            })
 
-                    tool_results = []
-                    for tc, result in zip(unique_tool_calls, results):
-                        if isinstance(result, Exception):
-                            content = json.dumps({"error": str(result)}, ensure_ascii=False)
-                        elif isinstance(result, dict) and "response_text" in result:
-                            content = result["response_text"]
-                        else:
-                            content = json.dumps(result, ensure_ascii=False)
-                        tool_results.append({
-                            "type": "tool_result",
-                            "tool_use_id": tc["id"],
-                            "content": content
-                        })
+                        messages.append({"role": "assistant", "content": assistant_content})
 
-                    messages.append({"role": "user", "content": tool_results})
-                    continue
+                        # Execute tools in parallel
+                        tool_tasks = [
+                            self._execute_tool(tc["name"], tc["arguments"])
+                            for tc in unique_tool_calls
+                        ]
+                        results = await asyncio.gather(*tool_tasks, return_exceptions=True)
 
-                if full_response:
-                    return full_response
+                        # Add tool results
+                        tool_results = []
+                        for tc, result in zip(unique_tool_calls, results):
+                            if isinstance(result, Exception):
+                                content = json.dumps({"error": str(result)}, ensure_ascii=False)
+                            elif isinstance(result, dict) and "response_text" in result:
+                                content = result["response_text"]
+                            else:
+                                content = json.dumps(result, ensure_ascii=False)
+                            tool_results.append({
+                                "type": "tool_result",
+                                "tool_use_id": tc["id"],
+                                "content": content
+                            })
+
+                        messages.append({"role": "user", "content": tool_results})
+                        continue
+
+                # No tool calls - we're done
+                if accumulated_content:
+                    return
 
                 break
 
             except Exception as e:
                 _LOGGER.error("Anthropic API error: %s", e)
-                return "Sorry, there was an error processing your request."
+                yield {"content": "Sorry, there was an error processing your request."}
+                return
 
-        return full_response if full_response else "I apologize, but I couldn't complete that request."
+        yield {"content": "I apologize, but I couldn't complete that request."}
 
-    async def _call_google(
+    async def _stream_google(
         self,
-        user_input: conversation.ConversationInput,
+        user_text: str,
         tools: list[dict],
         system_prompt: str,
         max_tokens: int,
-    ) -> str:
-        """Call Google Gemini API with optional search grounding."""
+    ) -> AsyncGenerator[ContentDelta, None]:
+        """Stream from Google Gemini API."""
         # Convert tools to Gemini format
         function_declarations = []
         for tool in tools:
@@ -726,10 +797,9 @@ class PureLLMConversationEntity(ConversationEntity):
         contents = [
             {"role": "user", "parts": [{"text": f"System: {system_prompt}"}]},
             {"role": "model", "parts": [{"text": "Understood."}]},
-            {"role": "user", "parts": [{"text": user_input.text}]},
+            {"role": "user", "parts": [{"text": user_text}]},
         ]
 
-        full_response = ""
         called_tools: set[str] = set()
 
         for iteration in range(5):
@@ -738,11 +808,11 @@ class PureLLMConversationEntity(ConversationEntity):
                 "generationConfig": {"maxOutputTokens": max_tokens, "temperature": self.temperature},
             }
 
-            # Add function tools (google_search grounding is incompatible with function calling)
             if function_declarations:
                 payload["tools"] = [{"functionDeclarations": function_declarations}]
 
-            url = f"{self.base_url}/models/{self.model}:generateContent"
+            # Use streaming endpoint
+            url = f"{self.base_url}/models/{self.model}:streamGenerateContent?alt=sse"
             headers = {"x-goog-api-key": self.api_key}
 
             self._track_api_call("llm")
@@ -752,37 +822,46 @@ class PureLLMConversationEntity(ConversationEntity):
                     if response.status != 200:
                         error = await response.text()
                         _LOGGER.error("Google API error: %s", error)
-                        return "Sorry, there was an error with the AI service."
+                        yield {"content": "Sorry, there was an error with the AI service."}
+                        return
 
-                    data = await response.json()
+                    accumulated_content = ""
+                    tool_calls = []
+                    model_parts = []
 
-                candidates = data.get("candidates", [])
-                if not candidates:
-                    break
+                    async for line in response.content:
+                        line = line.decode("utf-8").strip()
+                        if not line or not line.startswith("data: "):
+                            continue
 
-                content = candidates[0].get("content", {})
-                parts = content.get("parts", [])
+                        data_str = line[6:]
+                        try:
+                            data = json.loads(data_str)
+                        except json.JSONDecodeError:
+                            continue
 
-                text_content = ""
-                tool_calls = []
+                        candidates = data.get("candidates", [])
+                        if not candidates:
+                            continue
 
-                for part in parts:
-                    if "text" in part:
-                        text_content += part["text"]
-                    elif "functionCall" in part:
-                        fc = part["functionCall"]
-                        tool_calls.append({
-                            "name": fc.get("name"),
-                            "arguments": fc.get("args", {}),
-                        })
+                        content = candidates[0].get("content", {})
+                        parts = content.get("parts", [])
 
-                if text_content:
-                    full_response += text_content
+                        for part in parts:
+                            model_parts.append(part)
+                            if "text" in part:
+                                text = part["text"]
+                                accumulated_content += text
+                                yield {"content": text}
+                            elif "functionCall" in part:
+                                fc = part["functionCall"]
+                                tool_calls.append({
+                                    "name": fc.get("name"),
+                                    "arguments": fc.get("args", {}),
+                                })
 
+                # Process tool calls if any
                 if tool_calls:
-                    contents.append({"role": "model", "parts": parts})
-
-                    # Execute tools in parallel
                     unique_tool_calls = []
                     for tc in tool_calls:
                         tool_key = f"{tc['name']}:{tc.get('arguments', '')}"
@@ -791,38 +870,44 @@ class PureLLMConversationEntity(ConversationEntity):
                             unique_tool_calls.append(tc)
                             _LOGGER.info("Tool call: %s(%s)", tc["name"], tc["arguments"])
 
-                    # Run all tool calls concurrently
-                    tool_tasks = [
-                        self._execute_tool(tc["name"], tc["arguments"], user_input)
-                        for tc in unique_tool_calls
-                    ]
-                    results = await asyncio.gather(*tool_tasks, return_exceptions=True)
+                    if unique_tool_calls:
+                        contents.append({"role": "model", "parts": model_parts})
 
-                    function_responses = []
-                    for tc, result in zip(unique_tool_calls, results):
-                        if isinstance(result, Exception):
-                            response_content = {"error": str(result)}
-                        elif isinstance(result, dict) and "response_text" in result:
-                            response_content = {"text": result["response_text"]}
-                        else:
-                            response_content = result
-                        function_responses.append({
-                            "functionResponse": {"name": tc["name"], "response": response_content}
-                        })
+                        # Execute tools in parallel
+                        tool_tasks = [
+                            self._execute_tool(tc["name"], tc["arguments"])
+                            for tc in unique_tool_calls
+                        ]
+                        results = await asyncio.gather(*tool_tasks, return_exceptions=True)
 
-                    contents.append({"role": "user", "parts": function_responses})
-                    continue
+                        # Add function responses
+                        function_responses = []
+                        for tc, result in zip(unique_tool_calls, results):
+                            if isinstance(result, Exception):
+                                response_content = {"error": str(result)}
+                            elif isinstance(result, dict) and "response_text" in result:
+                                response_content = {"text": result["response_text"]}
+                            else:
+                                response_content = result
+                            function_responses.append({
+                                "functionResponse": {"name": tc["name"], "response": response_content}
+                            })
 
-                if full_response:
-                    return full_response
+                        contents.append({"role": "user", "parts": function_responses})
+                        continue
+
+                # No tool calls - we're done
+                if accumulated_content:
+                    return
 
                 break
 
             except Exception as e:
                 _LOGGER.error("Google API error: %s", e)
-                return "Sorry, there was an error processing your request."
+                yield {"content": "Sorry, there was an error processing your request."}
+                return
 
-        return full_response if full_response else "I apologize, but I couldn't complete that request."
+        yield {"content": "I apologize, but I couldn't complete that request."}
 
     # =========================================================================
     # Notification Helpers
@@ -833,12 +918,7 @@ class PureLLMConversationEntity(ConversationEntity):
         notification_data: dict[str, Any],
         notification_type: str = "notification",
     ) -> None:
-        """Send notification to all configured notification entities.
-
-        Args:
-            notification_data: Dict with title, message, and data keys
-            notification_type: Type for logging (e.g., "places", "restaurant")
-        """
+        """Send notification to all configured notification entities."""
         _LOGGER.info("%s notification data: %s", notification_type.capitalize(), notification_data)
 
         for entity_id in self.notification_entities:
@@ -863,18 +943,7 @@ class PureLLMConversationEntity(ConversationEntity):
         click_url: str = "",
         image_url: str = "",
     ) -> dict[str, Any]:
-        """Build standard notification data structure.
-
-        Args:
-            title: Notification title
-            message: Notification message
-            actions: Optional list of action buttons
-            click_url: URL to open when notification is tapped
-            image_url: Optional image URL for notification
-
-        Returns:
-            Notification data dict ready for HA notify service
-        """
+        """Build standard notification data structure."""
         data: dict[str, Any] = {
             "push": {"interruption-level": "time-sensitive"},
         }
@@ -903,7 +972,6 @@ class PureLLMConversationEntity(ConversationEntity):
             if not places:
                 return
 
-            # Get the top result
             top_place = places[0]
             place_name = top_place.get("name", "Unknown")
             address = top_place.get("short_address") or top_place.get("address", "")
@@ -913,13 +981,11 @@ class PureLLMConversationEntity(ConversationEntity):
             phone = top_place.get("phone", "")
             coordinates = top_place.get("coordinates", {})
 
-            # Build Apple Maps URL if coordinates available
             apple_maps_url = ""
             if coordinates and coordinates.get("lat") and coordinates.get("lng"):
                 lat, lng = coordinates["lat"], coordinates["lng"]
                 apple_maps_url = f"https://maps.apple.com/?daddr={lat},{lng}&dirflg=d"
 
-            # Build notification message
             title = f"📍 {place_name}"
             message_parts = []
             if address:
@@ -928,7 +994,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 message_parts.append(f"{distance:.1f} miles away")
             message = "\n".join(message_parts) if message_parts else place_name
 
-            # Build action buttons
             actions = []
             if directions_url:
                 actions.append({"action": "URI", "title": "🗺️ Google Maps", "uri": directions_url})
@@ -961,7 +1026,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
             top_restaurants = restaurants[:3]
 
-            # Build message showing all top results
             title = f"🍽️ Top {len(top_restaurants)} for '{query}'"
             message_lines = []
 
@@ -985,7 +1049,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
             message = "\n".join(message_lines)
 
-            # Get details from #1 pick for action buttons
             top_pick = top_restaurants[0]
             yelp_url = top_pick.get("yelp_url", "")
             coordinates = top_pick.get("coordinates", {})
@@ -995,7 +1058,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 lat, lng = coordinates["lat"], coordinates["lng"]
                 google_maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lng}"
 
-            # Build action buttons
             actions = []
             if yelp_url:
                 actions.append({"action": "URI", "title": "⭐ #1 Yelp", "uri": yelp_url})
@@ -1028,10 +1090,8 @@ class PureLLMConversationEntity(ConversationEntity):
 
             _LOGGER.info("Sending reservation notification for: %s", restaurant_name)
 
-            # Build title
             title = f"🍽️ Reserve at {restaurant_name}" if supports_reservation else f"📞 Book {restaurant_name}"
 
-            # Build message
             message_parts = []
             if date and time:
                 message_parts.append(f"📅 {date} at {time}")
@@ -1047,7 +1107,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 message_parts.append(f"📞 {phone}")
             message = "\n".join(message_parts) if message_parts else f"Book a table at {restaurant_name}"
 
-            # Build action buttons
             actions = []
             if reservation_url:
                 button_title = "📅 Reserve Now" if supports_reservation else "🔍 Search Reservations"
@@ -1074,13 +1133,11 @@ class PureLLMConversationEntity(ConversationEntity):
 
             title = f"📷 {location}"
 
-            # Build message - first sentence of description
             if description:
                 message = description.split('.')[0] + '.' if '.' in description else description
             else:
                 message = "Camera check completed."
 
-            # Add identified people if any
             if identified_people:
                 people_names = [p.get("name", "Unknown") for p in identified_people if p.get("name")]
                 if people_names:
@@ -1100,7 +1157,6 @@ class PureLLMConversationEntity(ConversationEntity):
         self,
         tool_name: str,
         arguments: dict[str, Any],
-        user_input: conversation.ConversationInput,
     ) -> dict[str, Any]:
         """Execute a tool call."""
         try:
@@ -1166,7 +1222,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 ),
                 "control_timer": lambda: timer_tool.control_timer(
                     arguments, self.hass,
-                    device_id=user_input.device_id,
+                    device_id=self._current_user_input.device_id if self._current_user_input else None,
                     room_player_mapping=self.room_player_mapping
                 ),
                 "manage_list": lambda: lists_tool.manage_list(arguments, self.hass),

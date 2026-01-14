@@ -4,9 +4,10 @@
   "codeowners": ["@LosCV29"],
   "config_flow": true,
   "dependencies": ["conversation"],
-  "documentation": "https://github.com/LosCV29/polyvoice",
-  "issue_tracker": "https://github.com/LosCV29/polyvoice/issues",
+  "documentation": "https://github.com/LosCV29/purellm",
+  "issue_tracker": "https://github.com/LosCV29/purellm/issues",
+  "homeassistant": "2025.3.0",
   "iot_class": "cloud_polling",
   "requirements": ["openai>=1.0.0"],
-  "version": "4.5.68"
+  "version": "5.0.0"
 }
