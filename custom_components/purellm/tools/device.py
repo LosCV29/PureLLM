@@ -664,6 +664,10 @@ async def control_device(
                 response = f"I've set the {controlled[0]} to {position}% position."
             elif brightness is not None and action in ("turn_on", "dim"):
                 response = f"I've set the {controlled[0]} to {brightness}% brightness."
+            elif action == "mute":
+                response = f"I've muted the {controlled[0]}."
+            elif action == "unmute":
+                response = f"I've unmuted the {controlled[0]}."
             else:
                 action_word = action_words.get(service, action)
                 response = f"I've {action_word} the {controlled[0]}."
