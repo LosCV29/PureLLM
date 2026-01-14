@@ -549,15 +549,18 @@ class PureLLMConversationEntity(ConversationEntity):
             async def capturing_stream() -> AsyncGenerator[ContentDelta, None]:
                 async for delta in base_stream:
                     if isinstance(delta, dict) and delta.get('content'):
+                        _LOGGER.debug("Capturing stream: Got content chunk (%d chars)", len(delta['content']))
                         collected_content.append(delta['content'])
                     yield delta
 
             # Stream deltas to the chat log - this enables streaming TTS!
+            _LOGGER.debug("Starting chat_log.async_add_delta_content_stream")
             async for content in chat_log.async_add_delta_content_stream(
                 self.entity_id,
                 capturing_stream(),
             ):
                 # Also try to collect from what HA yields back (as backup)
+                _LOGGER.debug("chat_log yielded: type=%s, value=%s", type(content).__name__, repr(content)[:200])
                 if isinstance(content, dict) and content.get('content'):
                     pass  # Already captured in collecting_stream
                 elif hasattr(content, 'content') and content.content:
@@ -567,6 +570,8 @@ class PureLLMConversationEntity(ConversationEntity):
 
             # Join all collected content
             final_response = "".join(collected_content)
+            _LOGGER.debug("Final response collected: %d chunks, %d chars total: %s",
+                         len(collected_content), len(final_response), final_response[:200] if final_response else "(empty)")
 
         except Exception as err:
             _LOGGER.error("Error processing request: %s", err, exc_info=True)
@@ -791,54 +796,61 @@ class PureLLMConversationEntity(ConversationEntity):
                         yield {"content": "Sorry, there was an error with the AI service."}
                         return
 
-                    # Process SSE stream
+                    # Process SSE stream with proper buffering
                     accumulated_content = ""
                     tool_calls = []
                     current_tool: dict | None = None
+                    buffer = ""
 
-                    async for line in response.content:
-                        line = line.decode("utf-8").strip()
-                        if not line or not line.startswith("data: "):
-                            continue
+                    async for chunk in response.content.iter_any():
+                        buffer += chunk.decode("utf-8")
 
-                        data_str = line[6:]  # Remove "data: " prefix
-                        if data_str == "[DONE]":
-                            break
+                        # Process complete lines from buffer
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
 
-                        try:
-                            event = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
+                            if not line or not line.startswith("data: "):
+                                continue
 
-                        event_type = event.get("type")
+                            data_str = line[6:]  # Remove "data: " prefix
+                            if data_str == "[DONE]":
+                                break
 
-                        if event_type == "content_block_start":
-                            block = event.get("content_block", {})
-                            if block.get("type") == "tool_use":
-                                current_tool = {
-                                    "id": block.get("id"),
-                                    "name": block.get("name"),
-                                    "arguments": "",
-                                }
+                            try:
+                                event = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                continue
 
-                        elif event_type == "content_block_delta":
-                            delta = event.get("delta", {})
-                            if delta.get("type") == "text_delta":
-                                text = delta.get("text", "")
-                                accumulated_content += text
-                                yield {"content": text}
-                            elif delta.get("type") == "input_json_delta":
+                            event_type = event.get("type")
+
+                            if event_type == "content_block_start":
+                                block = event.get("content_block", {})
+                                if block.get("type") == "tool_use":
+                                    current_tool = {
+                                        "id": block.get("id"),
+                                        "name": block.get("name"),
+                                        "arguments": "",
+                                    }
+
+                            elif event_type == "content_block_delta":
+                                delta = event.get("delta", {})
+                                if delta.get("type") == "text_delta":
+                                    text = delta.get("text", "")
+                                    accumulated_content += text
+                                    yield {"content": text}
+                                elif delta.get("type") == "input_json_delta":
+                                    if current_tool:
+                                        current_tool["arguments"] += delta.get("partial_json", "")
+
+                            elif event_type == "content_block_stop":
                                 if current_tool:
-                                    current_tool["arguments"] += delta.get("partial_json", "")
-
-                        elif event_type == "content_block_stop":
-                            if current_tool:
-                                try:
-                                    current_tool["arguments"] = json.loads(current_tool["arguments"])
-                                except json.JSONDecodeError:
-                                    current_tool["arguments"] = {}
-                                tool_calls.append(current_tool)
-                                current_tool = None
+                                    try:
+                                        current_tool["arguments"] = json.loads(current_tool["arguments"])
+                                    except json.JSONDecodeError:
+                                        current_tool["arguments"] = {}
+                                    tool_calls.append(current_tool)
+                                    current_tool = None
 
                 # Process tool calls if any
                 if tool_calls:
@@ -911,6 +923,8 @@ class PureLLMConversationEntity(ConversationEntity):
         max_tokens: int,
     ) -> AsyncGenerator[ContentDelta, None]:
         """Stream from Google Gemini API."""
+        _LOGGER.debug("Google streaming: Starting request for query: %s", user_text[:100])
+
         # Convert tools to Gemini format
         function_declarations = []
         for tool in tools:
@@ -942,10 +956,12 @@ class PureLLMConversationEntity(ConversationEntity):
             url = f"{self.base_url}/models/{self.model}:streamGenerateContent?alt=sse"
             headers = {"x-goog-api-key": self.api_key}
 
+            _LOGGER.debug("Google streaming: POST to %s (iteration %d)", url, iteration)
             self._track_api_call("llm")
 
             try:
                 async with self._session.post(url, json=payload, headers=headers, timeout=180) as response:  # 3 minutes - VLM operations need more time
+                    _LOGGER.debug("Google streaming: Response status %d", response.status)
                     if response.status != 200:
                         error = await response.text()
                         _LOGGER.error("Google API error: %s", error)
@@ -955,37 +971,53 @@ class PureLLMConversationEntity(ConversationEntity):
                     accumulated_content = ""
                     tool_calls = []
                     model_parts = []
+                    line_count = 0
 
-                    async for line in response.content:
-                        line = line.decode("utf-8").strip()
-                        if not line or not line.startswith("data: "):
-                            continue
+                    # Buffer for handling chunked SSE data
+                    buffer = ""
 
-                        data_str = line[6:]
-                        try:
-                            data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
+                    async for chunk in response.content.iter_any():
+                        buffer += chunk.decode("utf-8")
 
-                        candidates = data.get("candidates", [])
-                        if not candidates:
-                            continue
+                        # Process complete lines from buffer
+                        while "\n" in buffer:
+                            line, buffer = buffer.split("\n", 1)
+                            line = line.strip()
+                            line_count += 1
 
-                        content = candidates[0].get("content", {})
-                        parts = content.get("parts", [])
+                            if not line or not line.startswith("data: "):
+                                continue
 
-                        for part in parts:
-                            model_parts.append(part)
-                            if "text" in part:
-                                text = part["text"]
-                                accumulated_content += text
-                                yield {"content": text}
-                            elif "functionCall" in part:
-                                fc = part["functionCall"]
-                                tool_calls.append({
-                                    "name": fc.get("name"),
-                                    "arguments": fc.get("args", {}),
-                                })
+                            data_str = line[6:]
+                            try:
+                                data = json.loads(data_str)
+                            except json.JSONDecodeError:
+                                _LOGGER.debug("Google streaming: JSON decode error for line: %s", data_str[:200])
+                                continue
+
+                            candidates = data.get("candidates", [])
+                            if not candidates:
+                                _LOGGER.debug("Google streaming: No candidates in response")
+                                continue
+
+                            content = candidates[0].get("content", {})
+                            parts = content.get("parts", [])
+                            _LOGGER.debug("Google streaming: Got %d parts", len(parts))
+
+                            for part in parts:
+                                model_parts.append(part)
+                                if "text" in part:
+                                    text = part["text"]
+                                    accumulated_content += text
+                                    _LOGGER.debug("Google streaming: Yielding text chunk (%d chars): %s", len(text), text[:100])
+                                    yield {"content": text}
+                                elif "functionCall" in part:
+                                    fc = part["functionCall"]
+                                    _LOGGER.debug("Google streaming: Got function call: %s", fc.get("name"))
+                                    tool_calls.append({
+                                        "name": fc.get("name"),
+                                        "arguments": fc.get("args", {}),
+                                    })
 
                 # Process tool calls if any
                 if tool_calls:
@@ -1024,13 +1056,17 @@ class PureLLMConversationEntity(ConversationEntity):
                         continue
 
                 # No tool calls - we're done
+                _LOGGER.debug("Google streaming: Finished iteration %d, accumulated %d chars, %d tool calls",
+                             iteration, len(accumulated_content), len(tool_calls))
                 if accumulated_content:
+                    _LOGGER.debug("Google streaming: Returning with content: %s", accumulated_content[:200])
                     return
 
+                _LOGGER.warning("Google streaming: No content accumulated, breaking loop")
                 break
 
             except Exception as e:
-                _LOGGER.error("Google API error: %s", e)
+                _LOGGER.error("Google API error: %s", e, exc_info=True)
                 yield {"content": "Sorry, there was an error processing your request."}
                 return
 
