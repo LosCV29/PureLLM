@@ -550,7 +550,10 @@ class PureLLMConversationEntity(ConversationEntity):
                 stream,
             ):
                 # Collect the final response text
-                if hasattr(content, 'content') and content.content:
+                # Handle both dict (from our generators) and object (from HA API) formats
+                if isinstance(content, dict) and content.get('content'):
+                    final_response += content['content']
+                elif hasattr(content, 'content') and content.content:
                     final_response += content.content
 
         except Exception as err:
