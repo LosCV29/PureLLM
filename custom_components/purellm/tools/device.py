@@ -519,12 +519,28 @@ async def control_device(
                 else:
                     return {"error": f"Could not find a device matching '{device_name}'."}
         else:
-            found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
-
-            if found_entity_id:
-                entities_to_control.append((found_entity_id, friendly_name))
+            # For mute/unmute, check if there's a {device}_mute_toggle script first
+            if action in ("mute", "unmute"):
+                toggle_script_id = f"script.{device_lower.replace(' ', '_')}_mute_toggle"
+                toggle_state = hass.states.get(toggle_script_id)
+                if toggle_state:
+                    friendly_name = toggle_state.attributes.get("friendly_name", device_name)
+                    entities_to_control.append((toggle_script_id, friendly_name))
+                    _LOGGER.info("Using mute toggle script: %s for %s", toggle_script_id, action)
+                else:
+                    # Fall back to regular entity lookup
+                    found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
+                    if found_entity_id:
+                        entities_to_control.append((found_entity_id, friendly_name))
+                    else:
+                        return {"error": f"Could not find a device matching '{device_name}'."}
             else:
-                return {"error": f"Could not find a device matching '{device_name}'."}
+                found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
+
+                if found_entity_id:
+                    entities_to_control.append((found_entity_id, friendly_name))
+                else:
+                    return {"error": f"Could not find a device matching '{device_name}'."}
 
     else:
         return {"error": "No device specified. Provide entity_id, entity_ids, area, or device name."}
@@ -593,8 +609,8 @@ async def control_device(
                 elif is_currently_muted is False and action == "unmute":
                     return {"success": True, "response_text": f"The {friendly_name} is already unmuted."}
 
-                # Just toggle - don't set is_volume_muted explicitly
-                # This avoids issues with devices that don't handle explicit mute state well
+                # Set the mute state explicitly
+                service_data["is_volume_muted"] = (action == "mute")
 
         # Climate controls
         if domain == "climate":
