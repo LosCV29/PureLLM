@@ -248,12 +248,14 @@ def _find_entity_by_query(
 ) -> tuple[str | None, str | None]:
     """Internal entity search - direct matching only, no fuzzy logic."""
     query_lower = query.lower().strip()
+    _LOGGER.info("Fuzzy search for: '%s'", query_lower)
 
     # PRIORITY 1: Exact match in configured device aliases
     if query_lower in device_aliases:
         entity_id = device_aliases[query_lower]
         state = hass.states.get(entity_id)
         friendly_name = state.attributes.get("friendly_name", query) if state else query
+        _LOGGER.info("Found via device alias: %s -> %s", query_lower, entity_id)
         return (entity_id, friendly_name)
 
     # PRIORITY 2: Partial match in device aliases (all words present)
@@ -261,6 +263,7 @@ def _find_entity_by_query(
         if _words_match(query_lower, alias) or _words_match(alias, query_lower):
             state = hass.states.get(entity_id)
             friendly_name = state.attributes.get("friendly_name", alias) if state else alias
+            _LOGGER.info("Found via partial alias: %s -> %s", alias, entity_id)
             return (entity_id, friendly_name)
 
     # Single pass through entity registry
@@ -285,8 +288,10 @@ def _find_entity_by_query(
             for alias in entity_entry.aliases:
                 if alias.lower() == query_lower:
                     # For exact matches, still consider domain priority
+                    _LOGGER.info("Exact alias match: '%s' -> %s", alias, entity_entry.entity_id)
                     partial_matches.append((3, domain_pri, entity_entry.entity_id, friendly_name or alias))
                 elif _words_match(query_lower, alias.lower()):
+                    _LOGGER.info("Partial alias match: '%s' contains '%s' -> %s", alias, query_lower, entity_entry.entity_id)
                     partial_matches.append((4, domain_pri, entity_entry.entity_id, friendly_name or alias))
 
         # PRIORITY 5: Exact match on friendly name
@@ -312,6 +317,8 @@ def _find_entity_by_query(
     # Return best match - sort by match priority first, then domain priority
     if partial_matches:
         partial_matches.sort(key=lambda x: (x[0], x[1]))
+        _LOGGER.info("Best match for '%s': %s (%s)", query_lower, partial_matches[0][2], partial_matches[0][3])
         return (partial_matches[0][2], partial_matches[0][3])
 
+    _LOGGER.warning("No entity found for query: '%s'", query_lower)
     return (None, None)
