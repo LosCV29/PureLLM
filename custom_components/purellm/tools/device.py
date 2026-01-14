@@ -383,7 +383,7 @@ async def control_device(
         },
         "vacuum": {"turn_on": "start", "start": "start", "turn_off": "return_to_base", "stop": "stop", "dock": "return_to_base", "locate": "locate"},
         "scene": {"turn_on": "turn_on"},
-        "script": {"turn_on": "turn_on", "turn_off": "turn_off", "open": "turn_on", "close": "turn_on", "run": "turn_on", "execute": "turn_on"},
+        "script": {"turn_on": "turn_on", "turn_off": "turn_off", "open": "turn_on", "close": "turn_on", "run": "turn_on", "execute": "turn_on", "mute": "turn_on", "unmute": "turn_on", "toggle": "turn_on"},
         "input_boolean": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"},
         "automation": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"},
         "button": {"turn_on": "press", "press": "press"},
