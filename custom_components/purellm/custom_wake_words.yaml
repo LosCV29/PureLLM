@@ -1,0 +1,68 @@
+# Custom Wake Words Configuration for PureLLM
+# =============================================================================
+# Configure custom wake word models hosted on Git or local paths.
+# These wake words will be loaded by Home Assistant's voice pipeline.
+#
+# Supported model types:
+#   - openwakeword: TensorFlow Lite models (.tflite) with JSON metadata
+#   - porcupine: Picovoice Porcupine models (.ppn)
+#   - onnx: ONNX Runtime models (.onnx)
+#
+# Git URL formats supported:
+#   - Raw GitHub: https://raw.githubusercontent.com/user/repo/branch/path/model.tflite
+#   - GitHub Releases: https://github.com/user/repo/releases/download/v1.0/model.tflite
+#   - GitLab Raw: https://gitlab.com/user/repo/-/raw/main/path/model.tflite
+#
+# =============================================================================
+
+# Enable custom wake word loading (set to true to activate)
+enabled: false
+
+# Custom wake word models
+# Each entry defines a wake word that can trigger the voice assistant
+wake_words:
+  # Example: OpenWakeWord custom model from GitHub
+  # - name: "hey_jarvis"
+  #   phrase: "Hey Jarvis"
+  #   model_type: "openwakeword"
+  #   model_url: "https://raw.githubusercontent.com/your-username/wake-word-models/main/hey_jarvis.tflite"
+  #   # Optional: JSON metadata URL (for OpenWakeWord models)
+  #   metadata_url: "https://raw.githubusercontent.com/your-username/wake-word-models/main/hey_jarvis.json"
+  #   sensitivity: 0.5
+  #   # Optional: Minimum detection score (0.0 to 1.0)
+  #   threshold: 0.5
+
+  # Example: Porcupine custom wake word
+  # - name: "computer"
+  #   phrase: "Computer"
+  #   model_type: "porcupine"
+  #   model_url: "https://github.com/your-username/wake-words/releases/download/v1.0/computer_en_raspberry-pi.ppn"
+  #   sensitivity: 0.5
+  #   # Optional: Porcupine access key (if required)
+  #   access_key: ""
+
+  # Example: Local file path (for models already downloaded)
+  # - name: "hey_home"
+  #   phrase: "Hey Home"
+  #   model_type: "openwakeword"
+  #   model_path: "/config/custom_components/purellm/models/hey_home.tflite"
+  #   sensitivity: 0.6
+
+# Default wake word to use (matches 'name' field above)
+default_wake_word: ""
+
+# Cache settings for downloaded models
+cache:
+  # Directory to store downloaded models (relative to HA config directory)
+  directory: "custom_components/purellm/wake_word_models"
+  # How often to check for model updates (in hours, 0 = never)
+  update_interval: 24
+
+# Advanced settings
+advanced:
+  # Audio sample rate for wake word detection (Hz)
+  sample_rate: 16000
+  # Frame size for audio processing (samples)
+  frame_size: 512
+  # Enable debug logging for wake word detection
+  debug: false

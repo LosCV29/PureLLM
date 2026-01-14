@@ -280,6 +280,37 @@ CONF_SOFABATON_ACTIVITIES: Final = "sofabaton_activities"
 DEFAULT_SOFABATON_ACTIVITIES: Final = "[]"
 
 # =============================================================================
+# CUSTOM WAKE WORDS - Git-hosted custom wake word models
+# =============================================================================
+CONF_CUSTOM_WAKE_WORDS: Final = "custom_wake_words"
+CONF_WAKE_WORD_ENABLED: Final = "wake_word_enabled"
+CONF_WAKE_WORD_MODEL_URL: Final = "wake_word_model_url"
+CONF_WAKE_WORD_NAME: Final = "wake_word_name"
+CONF_WAKE_WORD_PHRASE: Final = "wake_word_phrase"
+CONF_WAKE_WORD_SENSITIVITY: Final = "wake_word_sensitivity"
+CONF_WAKE_WORD_MODEL_TYPE: Final = "wake_word_model_type"
+
+# Wake word model types
+WAKE_WORD_TYPE_OPENWAKEWORD: Final = "openwakeword"
+WAKE_WORD_TYPE_PORCUPINE: Final = "porcupine"
+WAKE_WORD_TYPE_ONNX: Final = "onnx"
+
+ALL_WAKE_WORD_TYPES: Final = [
+    WAKE_WORD_TYPE_OPENWAKEWORD,
+    WAKE_WORD_TYPE_PORCUPINE,
+    WAKE_WORD_TYPE_ONNX,
+]
+
+# Default wake word settings
+DEFAULT_WAKE_WORD_ENABLED: Final = False
+DEFAULT_WAKE_WORD_MODEL_URL: Final = ""
+DEFAULT_WAKE_WORD_NAME: Final = ""
+DEFAULT_WAKE_WORD_PHRASE: Final = ""
+DEFAULT_WAKE_WORD_SENSITIVITY: Final = 0.5
+DEFAULT_WAKE_WORD_MODEL_TYPE: Final = WAKE_WORD_TYPE_OPENWAKEWORD
+DEFAULT_CUSTOM_WAKE_WORDS: Final = "[]"
+
+# =============================================================================
 # API TIMEOUT - Shared timeout for external API calls
 # =============================================================================
 API_TIMEOUT: Final = 15  # seconds
