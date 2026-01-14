@@ -529,32 +529,44 @@ class PureLLMConversationEntity(ConversationEntity):
         max_tokens = self._calculate_max_tokens(user_text)
 
         final_response = ""
+        collected_content: list[str] = []
 
         try:
             # Create the streaming generator based on provider
             if self.provider in OPENAI_COMPATIBLE_PROVIDERS or self.provider == PROVIDER_AZURE:
-                stream = self._stream_openai_compatible(user_text, tools, system_prompt, max_tokens)
+                base_stream = self._stream_openai_compatible(user_text, tools, system_prompt, max_tokens)
             elif self.provider == PROVIDER_ANTHROPIC:
-                stream = self._stream_anthropic(user_text, tools, system_prompt, max_tokens)
+                base_stream = self._stream_anthropic(user_text, tools, system_prompt, max_tokens)
             elif self.provider == PROVIDER_GOOGLE:
-                stream = self._stream_google(user_text, tools, system_prompt, max_tokens)
+                base_stream = self._stream_google(user_text, tools, system_prompt, max_tokens)
             else:
                 # Fallback for unknown providers
                 async def error_stream() -> AsyncGenerator[ContentDelta, None]:
                     yield {"content": "Unknown provider configured."}
-                stream = error_stream()
+                base_stream = error_stream()
+
+            # Wrapper to capture content before it goes to HA's chat_log API
+            async def capturing_stream() -> AsyncGenerator[ContentDelta, None]:
+                async for delta in base_stream:
+                    if isinstance(delta, dict) and delta.get('content'):
+                        collected_content.append(delta['content'])
+                    yield delta
 
             # Stream deltas to the chat log - this enables streaming TTS!
             async for content in chat_log.async_add_delta_content_stream(
                 self.entity_id,
-                stream,
+                capturing_stream(),
             ):
-                # Collect the final response text
-                # Handle both dict (from our generators) and object (from HA API) formats
+                # Also try to collect from what HA yields back (as backup)
                 if isinstance(content, dict) and content.get('content'):
-                    final_response += content['content']
+                    pass  # Already captured in collecting_stream
                 elif hasattr(content, 'content') and content.content:
-                    final_response += content.content
+                    # HA may transform to objects - capture those too
+                    if content.content not in collected_content:
+                        collected_content.append(content.content)
+
+            # Join all collected content
+            final_response = "".join(collected_content)
 
         except Exception as err:
             _LOGGER.error("Error processing request: %s", err, exc_info=True)
