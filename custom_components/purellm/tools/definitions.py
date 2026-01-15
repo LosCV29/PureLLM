@@ -293,29 +293,24 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== MUSIC =====
     if config.enable_music and config.room_player_mapping:
         rooms_list = ", ".join(config.room_player_mapping.keys())
-        music_desc = f"""Control music via Music Assistant. TWO PATTERNS:
-1. PLAY = "play [SONG] by [ARTIST] in the [ROOM]" → query=song, artist=artist, room=room, media_type='track'
-2. SHUFFLE = "shuffle [ARTIST/GENRE] in the [ROOM]" → query=artist/genre, room=room (NO artist param)
-CRITICAL: "in the [room]" is ALWAYS the target room - NEVER part of the music query!
-Available rooms: {rooms_list}"""
         tools.append(_tool(
             "control_music",
-            music_desc,
+            f"Control ALL music playback via Music Assistant. Available rooms: {rooms_list}. For pause/stop/resume/skip - NO room needed. For play/shuffle - specify room.",
             {
                 "action": {
                     "type": "string",
                     "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"],
-                    "description": "PLAY = specific song by artist. SHUFFLE = playlist by artist/genre."
+                    "description": "'play' for songs/albums/artists. 'shuffle' for shuffled playlists by artist/genre."
                 },
-                "query": {"type": "string", "description": "For PLAY: the SONG name only. For SHUFFLE: the ARTIST or GENRE name. NEVER include room phrases like 'in the living room'!"},
-                "artist": {"type": "string", "description": "ONLY for PLAY action: the artist name from 'by [ARTIST]'. NOT used for shuffle!"},
+                "query": {"type": "string", "description": "Song title, album name, or smart modifier. For albums: can include 'latest', 'last', 'newest', 'first', 'debut'. Example: 'bad bunny's latest album' → query='latest', artist='Bad Bunny', media_type='album'."},
+                "artist": {"type": "string", "description": "Artist name. REQUIRED for tracks and albums."},
                 "album": {"type": "string", "description": "Album name. Use when playing a specific track FROM an album."},
-                "song_on_album": {"type": "string", "description": "Use when user wants an album that contains a specific song. Example: 'play the Jay-Z album with Big Pimpin' → song_on_album='Big Pimpin', artist='Jay-Z', media_type='album'. The system finds which album contains that song."},
-                "room": {"type": "string", "description": f"REQUIRED. The room from 'in the [ROOM]'. Extract: 'in the living room'→'living room'. Available: {rooms_list}"},
+                "song_on_album": {"type": "string", "description": "Use when user wants an album that contains a specific song. Example: 'play the jay-z album with big pimpin' → song_on_album='Big Pimpin', artist='Jay-Z', media_type='album'. The system will find which album contains that song and play it."},
+                "room": {"type": "string", "description": f"Target room: {rooms_list}"},
                 "media_type": {
                     "type": "string",
                     "enum": ["artist", "album", "track"],
-                    "description": "For PLAY with song+artist: use 'track'. For SHUFFLE: not needed."
+                    "description": "'track' = specific song, 'album' = album, 'artist' = play all music by artist."
                 }
             },
             ["action"]
