@@ -96,29 +96,20 @@ class MusicController:
         album = arguments.get("album", "")
         song_on_album = arguments.get("song_on_album", "")
 
-        # DEFENSIVE: Strip room phrases from query if LLM mistakenly included them
-        # This handles cases like query="Young Dolph in the living room" instead of
-        # query="Young Dolph" + room="living room"
-        if query and not room:
-            room_extraction_patterns = [
-                (r'\s+in\s+the\s+(living\s*room)\s*$', 'living room'),
-                (r'\s+in\s+the\s+(kitchen)\s*$', 'kitchen'),
-                (r'\s+in\s+the\s+(bedroom)\s*$', 'bedroom'),
-                (r'\s+in\s+the\s+(master\s*bedroom)\s*$', 'master bedroom'),
-                (r'\s+in\s+the\s+(office)\s*$', 'office'),
-                (r'\s+in\s+the\s+(bathroom)\s*$', 'bathroom'),
-                (r'\s+in\s+the\s+(garage)\s*$', 'garage'),
-                (r'\s+in\s+the\s+(basement)\s*$', 'basement'),
-                (r'\s+in\s+the\s+(\w+)\s*$', None),  # Generic pattern - capture room name
-            ]
-            for pattern, room_name in room_extraction_patterns:
-                match = re.search(pattern, query, flags=re.IGNORECASE)
-                if match:
-                    extracted_room = room_name if room_name else match.group(1).lower()
-                    query = re.sub(pattern, '', query, flags=re.IGNORECASE).strip()
+        # DEFENSIVE: ALWAYS strip room phrases from query - LLM often includes them
+        # This handles cases like query="Young Dolph in the living room"
+        # Strip regardless of whether room param is set or not
+        if query:
+            room_strip_pattern = r'\s+in\s+the\s+(living\s*room|kitchen|bedroom|master\s*bedroom|office|bathroom|garage|basement|\w+)\s*$'
+            match = re.search(room_strip_pattern, query, flags=re.IGNORECASE)
+            if match:
+                extracted_room = match.group(1).lower().strip()
+                original_query = query
+                query = re.sub(room_strip_pattern, '', query, flags=re.IGNORECASE).strip()
+                # Only use extracted room if room param wasn't already set
+                if not room:
                     room = extracted_room
-                    _LOGGER.info("Extracted room from query: query='%s', room='%s'", query, room)
-                    break
+                _LOGGER.info("Stripped room from query: '%s' → '%s' (room='%s')", original_query, query, room)
 
         _LOGGER.debug("Music control: action=%s, room=%s, query=%s", action, room, query)
 
