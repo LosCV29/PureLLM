@@ -166,12 +166,19 @@ class MusicController:
             return {"error": f"Music control failed: {str(err)}"}
 
     def _find_target_players(self, room: str) -> list[str]:
-        """Find target players for a room."""
-        if room in self._players:
-            return [self._players[room]]
-        elif room:
+        """Find target players for a room (case-insensitive)."""
+        room_lower = room.lower()
+
+        # First try exact match (case-insensitive)
+        for rname, pid in self._players.items():
+            if room_lower == rname.lower():
+                return [pid]
+
+        # Then try partial match (case-insensitive)
+        if room:
             for rname, pid in self._players.items():
-                if room in rname or rname in room:
+                rname_lower = rname.lower()
+                if room_lower in rname_lower or rname_lower in room_lower:
                     return [pid]
         return []
 
