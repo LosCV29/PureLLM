@@ -167,7 +167,11 @@ GENERAL GUIDELINES:
   MUSIC PARSING: When user says "play [song] by [artist]" you MUST set: query=[song], artist=[artist], media_type='track'
   When user says "play [album] by [artist]" for an album, set: query=[album], artist=[artist], media_type='album'
   ALWAYS extract the artist name separately - do NOT put "song by artist" in the query field alone.
-  ROOM EXTRACTION: When user says "in the [room]", "in [room]", or similar, extract the room name into the 'room' parameter. Do NOT include room phrases in the 'query' parameter. Example: "shuffle Young Dolph in the living room" → query="Young Dolph", room="living room" (NOT query="Young Dolph in the living room").
+  CRITICAL ROOM EXTRACTION: User ALWAYS ends music requests with "in the [room]" (e.g., "in the living room", "in the kitchen", "in the master bedroom", "in the office"). This is the TARGET ROOM for playback - it is NOT part of the artist/song name! You MUST extract it to the 'room' parameter. Examples:
+  - "shuffle Young Dolph in the living room" → query="Young Dolph", room="living room"
+  - "play Drake in the kitchen" → query="Drake", room="kitchen"
+  - "shuffle Beyoncé in the master bedroom" → query="Beyoncé", room="master bedroom"
+  WRONG: query="Young Dolph in the living room" ← NEVER do this!
 - For ALL device control (lights, locks, switches, fans, etc.), use control_device - ALL commands go through the LLM pipeline
 """
 

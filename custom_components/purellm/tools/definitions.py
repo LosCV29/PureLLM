@@ -295,18 +295,18 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control ALL music playback via Music Assistant. Available rooms: {rooms_list}. For pause/stop/resume/skip - NO room needed. For play/shuffle - specify room.",
+            f"Control ALL music playback via Music Assistant. CRITICAL: User ALWAYS says 'in the [room]' at the end - this is the target room, NOT part of the song/artist name! Extract it to 'room' parameter. Available rooms: {rooms_list}. For pause/stop/resume/skip - NO room needed. For play/shuffle - specify room.",
             {
                 "action": {
                     "type": "string",
                     "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"],
                     "description": "'play' for songs/albums/artists. 'shuffle' for shuffled playlists by artist/genre."
                 },
-                "query": {"type": "string", "description": "ONLY the song/album/artist name to search for. Do NOT include room/location phrases like 'in the living room' - those go in 'room' parameter. For albums: can include 'latest', 'last', 'newest', 'first', 'debut'. Example: 'shuffle Young Dolph in the living room' → query='Young Dolph', room='living room'."},
+                "query": {"type": "string", "description": "ONLY the song/album/artist name. NEVER include 'in the living room', 'in the kitchen', 'in the bedroom', 'in the office', 'in the master bedroom' - those are ROOMS, not music! Example: 'shuffle Young Dolph in the living room' → query='Young Dolph' (NOT 'Young Dolph in the living room')."},
                 "artist": {"type": "string", "description": "Artist name. REQUIRED for tracks and albums."},
                 "album": {"type": "string", "description": "Album name. Use when playing a specific track FROM an album."},
                 "song_on_album": {"type": "string", "description": "Use when user wants an album that contains a specific song. Example: 'play the jay-z album with big pimpin' → song_on_album='Big Pimpin', artist='Jay-Z', media_type='album'. The system will find which album contains that song and play it."},
-                "room": {"type": "string", "description": f"Target room for playback. Extract from phrases like 'in the living room', 'in the bedroom'. Available: {rooms_list}"},
+                "room": {"type": "string", "description": f"REQUIRED for play/shuffle. Extract from 'in the living room', 'in the kitchen', 'in the bedroom', 'in the office', 'in the master bedroom'. Just use the room name without 'in the'. Available: {rooms_list}"},
                 "media_type": {
                     "type": "string",
                     "enum": ["artist", "album", "track"],
