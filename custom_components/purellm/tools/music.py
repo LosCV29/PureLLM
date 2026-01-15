@@ -172,6 +172,32 @@ class MusicController:
             _LOGGER.warning("Player %s is off - attempting playback anyway", entity_id)
         return True, ""
 
+    async def _call_with_retry(
+        self, domain: str, service: str, data: dict, target: dict,
+        max_retries: int = 3, delay: float = 1.5, context_msg: str = ""
+    ) -> bool:
+        """Call a service with retry logic for flaky DLNA/MA players.
+
+        Returns:
+            True if successful, False if all retries failed
+        """
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                if attempt > 0:
+                    _LOGGER.info("Retry %d for %s.%s %s", attempt + 1, domain, service, context_msg)
+                    await asyncio.sleep(delay)
+                await self._hass.services.async_call(
+                    domain, service, data, target=target, blocking=True
+                )
+                return True  # Success
+            except Exception as err:
+                last_error = err
+                _LOGGER.warning("Attempt %d failed for %s.%s: %s", attempt + 1, domain, service, err)
+
+        _LOGGER.error("All %d attempts failed for %s.%s: %s", max_retries, domain, service, last_error)
+        return False
+
     def _get_area_id(self, entity_id: str) -> str | None:
         """Get area_id for an entity (checks entity, then device)."""
         ent_reg = er.async_get(self._hass)
@@ -258,26 +284,19 @@ class MusicController:
 
                 # Get area_id for area-based targeting (like HA native intents)
                 area_id = self._get_area_id(pid)
-                if area_id:
-                    _LOGGER.info("Pausing via area: %s", area_id)
-                    await self._hass.services.async_call(
-                        "media_player", "media_pause",
-                        {},
-                        target={"area_id": area_id},
-                        blocking=True
-                    )
-                else:
-                    # Fallback to entity targeting if no area
-                    _LOGGER.info("No area found, pausing via entity: %s", pid)
-                    await self._hass.services.async_call(
-                        "media_player", "media_pause",
-                        {},
-                        target={"entity_id": pid},
-                        blocking=True
-                    )
+                target = {"area_id": area_id} if area_id else {"entity_id": pid}
+                context = f"on {pid}"
 
-                self._last_paused_player = pid
-                return {"status": "paused", "message": f"Paused in {self._get_room_name(pid)}"}
+                _LOGGER.info("Pausing via %s", "area" if area_id else "entity")
+                success = await self._call_with_retry(
+                    "media_player", "media_pause", {}, target, context_msg=context
+                )
+
+                if success:
+                    self._last_paused_player = pid
+                    return {"status": "paused", "message": f"Paused in {self._get_room_name(pid)}"}
+                else:
+                    return {"error": f"Failed to pause in {self._get_room_name(pid)} after retries"}
 
         return {"error": "No music is currently playing"}
 
@@ -289,43 +308,34 @@ class MusicController:
         if self._last_paused_player and self._last_paused_player in all_players:
             _LOGGER.info("Resuming last paused player: %s", self._last_paused_player)
             area_id = self._get_area_id(self._last_paused_player)
-            if area_id:
-                await self._hass.services.async_call(
-                    "media_player", "media_play",
-                    {},
-                    target={"area_id": area_id},
-                    blocking=True
-                )
+            target = {"area_id": area_id} if area_id else {"entity_id": self._last_paused_player}
+
+            success = await self._call_with_retry(
+                "media_player", "media_play", {}, target,
+                context_msg=f"on {self._last_paused_player}"
+            )
+
+            if success:
+                room_name = self._get_room_name(self._last_paused_player)
+                self._last_paused_player = None
+                return {"status": "resumed", "message": f"Resumed in {room_name}"}
             else:
-                await self._hass.services.async_call(
-                    "media_player", "media_play",
-                    {},
-                    target={"entity_id": self._last_paused_player},
-                    blocking=True
-                )
-            room_name = self._get_room_name(self._last_paused_player)
-            self._last_paused_player = None
-            return {"status": "resumed", "message": f"Resumed in {room_name}"}
+                return {"error": f"Failed to resume in {self._get_room_name(self._last_paused_player)} after retries"}
 
         # Find any paused player
         paused = self._find_player_by_state("paused", all_players)
         if paused:
             area_id = self._get_area_id(paused)
-            if area_id:
-                await self._hass.services.async_call(
-                    "media_player", "media_play",
-                    {},
-                    target={"area_id": area_id},
-                    blocking=True
-                )
+            target = {"area_id": area_id} if area_id else {"entity_id": paused}
+
+            success = await self._call_with_retry(
+                "media_player", "media_play", {}, target, context_msg=f"on {paused}"
+            )
+
+            if success:
+                return {"status": "resumed", "message": f"Resumed in {self._get_room_name(paused)}"}
             else:
-                await self._hass.services.async_call(
-                    "media_player", "media_play",
-                    {},
-                    target={"entity_id": paused},
-                    blocking=True
-                )
-            return {"status": "resumed", "message": f"Resumed in {self._get_room_name(paused)}"}
+                return {"error": f"Failed to resume in {self._get_room_name(paused)} after retries"}
 
         return {"error": "No paused music to resume"}
 
@@ -338,26 +348,18 @@ class MusicController:
             if state and state.state in ("playing", "paused"):
                 _LOGGER.info("  %s → %s", pid, state.state)
 
-                # Get area_id for area-based targeting
                 area_id = self._get_area_id(pid)
-                if area_id:
-                    _LOGGER.info("Stopping via area: %s", area_id)
-                    await self._hass.services.async_call(
-                        "media_player", "media_stop",
-                        {},
-                        target={"area_id": area_id},
-                        blocking=True
-                    )
-                else:
-                    _LOGGER.info("No area found, stopping via entity: %s", pid)
-                    await self._hass.services.async_call(
-                        "media_player", "media_stop",
-                        {},
-                        target={"entity_id": pid},
-                        blocking=True
-                    )
+                target = {"area_id": area_id} if area_id else {"entity_id": pid}
 
-                return {"status": "stopped", "message": f"Stopped in {self._get_room_name(pid)}"}
+                _LOGGER.info("Stopping via %s", "area" if area_id else "entity")
+                success = await self._call_with_retry(
+                    "media_player", "media_stop", {}, target, context_msg=f"on {pid}"
+                )
+
+                if success:
+                    return {"status": "stopped", "message": f"Stopped in {self._get_room_name(pid)}"}
+                else:
+                    return {"error": f"Failed to stop in {self._get_room_name(pid)} after retries"}
 
         return {"message": "No music is playing"}
 
