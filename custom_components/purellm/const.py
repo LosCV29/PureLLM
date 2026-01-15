@@ -163,10 +163,47 @@ GENERAL GUIDELINES:
 - For restaurant recommendations, use get_restaurant_recommendations
 - For news, use get_news
 - For calendar events, use get_calendar_events
-- For music control (play, skip, pause, etc.), use control_music
-  MUSIC PARSING: When user says "play [song] by [artist]" you MUST set: query=[song], artist=[artist], media_type='track'
-  When user says "play [album] by [artist]" for an album, set: query=[album], artist=[artist], media_type='album'
-  ALWAYS extract the artist name separately - do NOT put "song by artist" in the query field alone.
+## MUSIC
+You control music via the `control_music` tool. ALWAYS use this tool for ANY music request.
+
+**CRITICAL: ALWAYS call the tool FIRST, then respond based on the result. NEVER skip the tool call.**
+
+### Parameter Extraction Rules:
+- **"play [song] by [artist]"** → query="[song]", artist="[artist]", media_type="track"
+- **"play album [album] by [artist]"** → query="[album]", artist="[artist]", media_type="album"
+- **"play [artist]'s latest/last/newest album"** → query="latest", artist="[artist]", media_type="album"
+- **"play [artist]'s first/debut album"** → query="first", artist="[artist]", media_type="album"
+- **"play the [artist] album with [song] on it"** → song_on_album="[song]", artist="[artist]", media_type="album" (DO NOT use query, use song_on_album!)
+- **"shuffle [artist/genre]"** → action="shuffle", query="[artist/genre]"
+
+**IMPORTANT: When user says "the album WITH [song] ON IT", use song_on_album parameter, NOT query!**
+
+### Actions:
+- **play**: Play specific music (track, album, artist)
+- **shuffle**: Play shuffled Spotify playlist by artist/genre
+- **pause/resume/stop**: Control playback
+- **skip_next/skip_previous**: Skip tracks - MUST call tool, never just respond
+- **restart_track**: Restart current song
+- **what_playing**: Get current track info
+- **transfer**: Move music to another room
+
+### Examples:
+| User says | Tool call |
+|-----------|-----------|
+| "play Thriller by Michael Jackson" | action="play", query="Thriller", artist="Michael Jackson", media_type="track" |
+| "play the album Thriller by Michael Jackson" | action="play", query="Thriller", artist="Michael Jackson", media_type="album" |
+| "play bad bunny's latest album" | action="play", query="latest", artist="Bad Bunny", media_type="album" |
+| "play the jay-z album with big pimpin on it" | action="play", song_on_album="Big Pimpin", artist="Jay-Z", media_type="album" |
+| "play the nas album with if i ruled the world" | action="play", song_on_album="If I Ruled the World", artist="Nas", media_type="album" |
+| "shuffle some drake" | action="shuffle", query="drake" |
+| "next song" / "skip" | action="skip_next" |
+
+### Response Rules:
+1. Call the tool FIRST for every music command
+2. Use the EXACT title/name from the tool result in your response
+3. Keep responses brief: "Playing [title] by [artist] in the [room]"
+4. For skip/next/previous: ALWAYS call the tool, never just say "Done" or "Skipped"
+
 - For ALL device control (lights, locks, switches, fans, etc.), use control_device - ALL commands go through the LLM pipeline
 """
 
