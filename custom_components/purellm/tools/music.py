@@ -1,6 +1,7 @@
 """Music control tool handler."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
@@ -207,19 +208,33 @@ class MusicController:
                 return {"error": reason}
 
             _LOGGER.info("Playing '%s' (%s) on %s", query, media_type, player)
-            try:
-                await self._hass.services.async_call(
-                    "music_assistant", "play_media",
-                    {"media_id": query, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
-                    target={"entity_id": player},
-                    blocking=True
-                )
-            except Exception as play_err:
-                _LOGGER.error("Failed to play '%s' on %s: %s", query, player, play_err)
+
+            # Retry logic for DLNA/MA players that can be flaky
+            max_retries = 3
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    if attempt > 0:
+                        _LOGGER.info("Retry attempt %d for play_media on %s", attempt + 1, player)
+                        await asyncio.sleep(1.5)  # Wait before retry
+                    await self._hass.services.async_call(
+                        "music_assistant", "play_media",
+                        {"media_id": query, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
+                        target={"entity_id": player},
+                        blocking=True
+                    )
+                    last_error = None
+                    break  # Success!
+                except Exception as play_err:
+                    last_error = play_err
+                    _LOGGER.warning("Attempt %d failed to play '%s' on %s: %s", attempt + 1, query, player, play_err)
+
+            if last_error:
+                _LOGGER.error("All %d attempts failed to play '%s' on %s: %s", max_retries, query, player, last_error)
                 state = self._hass.states.get(player)
                 player_state = state.state if state else "unknown"
                 return {
-                    "error": f"Could not play on {self._get_room_name(player)} (player state: {player_state}). "
+                    "error": f"Could not play on {self._get_room_name(player)} after {max_retries} attempts (player state: {player_state}). "
                              f"Check if the speaker is powered on and connected."
                 }
 
@@ -497,23 +512,38 @@ class MusicController:
 
             _LOGGER.info("Playing %s (%s) shuffled on %s (uri: %s)", playlist_name, media_type_to_use, player, playlist_uri)
 
-            try:
-                await self._hass.services.async_call(
-                    "music_assistant", "play_media",
-                    {"media_id": playlist_uri, "media_type": media_type_to_use, "enqueue": "replace", "radio_mode": False},
-                    target={"entity_id": player},
-                    blocking=True
-                )
-            except Exception as play_err:
+            # Retry logic for DLNA/MA players that can be flaky
+            max_retries = 3
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    if attempt > 0:
+                        _LOGGER.info("Retry attempt %d for play_media on %s", attempt + 1, player)
+                        await asyncio.sleep(1.5)  # Wait before retry
+                    await self._hass.services.async_call(
+                        "music_assistant", "play_media",
+                        {"media_id": playlist_uri, "media_type": media_type_to_use, "enqueue": "replace", "radio_mode": False},
+                        target={"entity_id": player},
+                        blocking=True
+                    )
+                    last_error = None
+                    break  # Success!
+                except Exception as play_err:
+                    last_error = play_err
+                    _LOGGER.warning(
+                        "Attempt %d failed to play media on %s: %s",
+                        attempt + 1, player, play_err
+                    )
+
+            if last_error:
                 _LOGGER.error(
-                    "Failed to play media on %s: %s (media_id=%s, media_type=%s)",
-                    player, play_err, playlist_uri, media_type_to_use
+                    "All %d attempts failed to play media on %s: %s (media_id=%s, media_type=%s)",
+                    max_retries, player, last_error, playlist_uri, media_type_to_use
                 )
-                # Check if player became unavailable
                 state = self._hass.states.get(player)
                 player_state = state.state if state else "unknown"
                 return {
-                    "error": f"Could not play on {self._get_room_name(player)} (player state: {player_state}). "
+                    "error": f"Could not play on {self._get_room_name(player)} after {max_retries} attempts (player state: {player_state}). "
                              f"Check if the speaker is powered on and connected."
                 }
 
