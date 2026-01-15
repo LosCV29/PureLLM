@@ -22,7 +22,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from openai import AsyncOpenAI, AsyncAzureOpenAI
+from openai import AsyncOpenAI
 
 from .const import (
     DOMAIN,
@@ -99,12 +99,9 @@ from .const import (
     DEFAULT_THERMOSTAT_TEMP_STEP_CELSIUS,
     DEFAULT_THERMOSTAT_USE_CELSIUS,
     OPENAI_COMPATIBLE_PROVIDERS,
-    PROVIDER_ANTHROPIC,
-    PROVIDER_AZURE,
     PROVIDER_BASE_URLS,
     PROVIDER_GOOGLE,
     PROVIDER_LM_STUDIO,
-    PROVIDER_OLLAMA,
     get_version,
 )
 
@@ -371,20 +368,10 @@ class PureLLMConversationEntity(ConversationEntity):
 
     def _create_openai_client(self):
         """Create OpenAI client (runs in executor to avoid blocking SSL)."""
-        if self.provider == PROVIDER_AZURE:
-            azure_endpoint = self.base_url
-            if "/openai/deployments/" in azure_endpoint:
-                azure_endpoint = azure_endpoint.split("/openai/deployments/")[0]
-            return AsyncAzureOpenAI(
-                azure_endpoint=azure_endpoint,
-                api_key=self.api_key,
-                api_version="2024-02-01",
-                timeout=180.0,  # 3 minutes - VLM operations need more time
-            )
-        elif self.provider in OPENAI_COMPATIBLE_PROVIDERS:
+        if self.provider in OPENAI_COMPATIBLE_PROVIDERS:
             return AsyncOpenAI(
                 base_url=self.base_url,
-                api_key=self.api_key if self.api_key else "ollama",
+                api_key=self.api_key if self.api_key else "lm-studio",
                 timeout=180.0,  # 3 minutes - VLM operations need more time
                 max_retries=2,
             )
@@ -433,34 +420,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 except Exception:
                     # Fallback: just establish TCP/SSL connection
                     pass
-
-            elif self.provider == PROVIDER_AZURE and self.client:
-                # Azure: similar approach
-                try:
-                    async with asyncio.timeout(5):
-                        await self.client.models.list()
-                    _LOGGER.debug("Warmed up Azure OpenAI connection")
-                except Exception:
-                    pass
-
-            elif self.provider == PROVIDER_ANTHROPIC:
-                # Anthropic: lightweight models endpoint
-                if self._session:
-                    headers = {
-                        "x-api-key": self.api_key,
-                        "anthropic-version": "2023-06-01",
-                    }
-                    try:
-                        async with asyncio.timeout(5):
-                            async with self._session.get(
-                                f"{self.base_url}/v1/models",
-                                headers=headers,
-                                timeout=aiohttp.ClientTimeout(total=5),
-                            ) as resp:
-                                await resp.read()
-                        _LOGGER.debug("Warmed up Anthropic connection")
-                    except Exception:
-                        pass
 
             elif self.provider == PROVIDER_GOOGLE:
                 # Google: lightweight models list
@@ -516,25 +475,22 @@ class PureLLMConversationEntity(ConversationEntity):
     ) -> conversation.ConversationResult:
         """Handle an incoming chat message.
 
-        Uses streaming for local models (LM Studio, Ollama) for faster first-token response.
+        Uses streaming for local models (LM Studio/vLLM) for faster first-token response.
         Uses simple non-streaming calls for cloud providers (more reliable).
         """
         user_text = user_input.text.strip()
         self._current_user_query = user_text
         self._current_user_input = user_input
 
-        # Local providers that benefit from streaming (faster first-token)
-        LOCAL_STREAMING_PROVIDERS = {PROVIDER_LM_STUDIO, PROVIDER_OLLAMA}
-
         _LOGGER.info("PureLLM processing: '%s' provider=%s streaming=%s",
-                     user_text, self.provider, self.provider in LOCAL_STREAMING_PROVIDERS)
+                     user_text, self.provider, self.provider == PROVIDER_LM_STUDIO)
 
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
         max_tokens = self._calculate_max_tokens(user_text)
 
         try:
-            if self.provider in LOCAL_STREAMING_PROVIDERS:
+            if self.provider == PROVIDER_LM_STUDIO:
                 # Use streaming for local models - faster first-token response
                 _LOGGER.debug("Using streaming for local provider: %s", self.provider)
                 stream = self._stream_openai_compatible(user_text, tools, system_prompt, max_tokens)
@@ -547,10 +503,8 @@ class PureLLMConversationEntity(ConversationEntity):
 
             elif self.provider == PROVIDER_GOOGLE:
                 final_response = await self._call_google(user_text, tools, system_prompt, max_tokens)
-            elif self.provider in OPENAI_COMPATIBLE_PROVIDERS or self.provider == PROVIDER_AZURE:
+            elif self.provider in OPENAI_COMPATIBLE_PROVIDERS:
                 final_response = await self._call_openai(user_text, tools, system_prompt, max_tokens)
-            elif self.provider == PROVIDER_ANTHROPIC:
-                final_response = await self._call_anthropic(user_text, tools, system_prompt, max_tokens)
             else:
                 final_response = "Unknown provider."
 
@@ -688,72 +642,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
             if message.content:
                 return message.content
-
-        return "Could not get response."
-
-    async def _call_anthropic(self, user_text: str, tools: list, system_prompt: str, max_tokens: int) -> str:
-        """Simple non-streaming Anthropic call."""
-        anthropic_tools = []
-        for tool in tools:
-            func = tool.get("function", {})
-            anthropic_tools.append({
-                "name": func.get("name"),
-                "description": func.get("description"),
-                "input_schema": func.get("parameters", {"type": "object", "properties": {}})
-            })
-
-        messages = [{"role": "user", "content": user_text}]
-
-        for iteration in range(5):
-            payload = {
-                "model": self.model,
-                "max_tokens": max_tokens,
-                "system": system_prompt,
-                "messages": messages,
-            }
-            if anthropic_tools:
-                payload["tools"] = anthropic_tools
-
-            headers = {
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            }
-
-            self._track_api_call("llm")
-
-            async with self._session.post(f"{self.base_url}/v1/messages", json=payload, headers=headers, timeout=120) as resp:
-                if resp.status != 200:
-                    return "Error calling Anthropic API."
-                data = await resp.json()
-
-            content_blocks = data.get("content", [])
-            text_content = ""
-            tool_uses = []
-
-            for block in content_blocks:
-                if block.get("type") == "text":
-                    text_content += block.get("text", "")
-                elif block.get("type") == "tool_use":
-                    tool_uses.append(block)
-
-            if tool_uses:
-                messages.append({"role": "assistant", "content": content_blocks})
-                tool_results = []
-
-                for tu in tool_uses:
-                    result = await self._execute_tool(tu["name"], tu.get("input", {}))
-                    if isinstance(result, dict) and "response_text" in result:
-                        content = result["response_text"]
-                    else:
-                        content = json.dumps(result, ensure_ascii=False)
-                    tool_results.append({"type": "tool_result", "tool_use_id": tu["id"], "content": content})
-
-                messages.append({"role": "user", "content": tool_results})
-                continue
-
-            if text_content:
-                return text_content
 
         return "Could not get response."
 
@@ -911,171 +799,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 return
 
         # If we get here with no content, yield a fallback
-        yield {"content": "I apologize, but I couldn't complete that request."}
-
-    async def _stream_anthropic(
-        self,
-        user_text: str,
-        tools: list[dict],
-        system_prompt: str,
-        max_tokens: int,
-    ) -> AsyncGenerator[ContentDelta, None]:
-        """Stream from Anthropic Claude API with SSE support."""
-        # Convert tools to Anthropic format
-        anthropic_tools = []
-        for tool in tools:
-            func = tool.get("function", {})
-            anthropic_tools.append({
-                "name": func.get("name"),
-                "description": func.get("description"),
-                "input_schema": func.get("parameters", {"type": "object", "properties": {}})
-            })
-
-        messages = [{"role": "user", "content": user_text}]
-        called_tools: set[str] = set()
-
-        for iteration in range(5):
-            payload = {
-                "model": self.model,
-                "max_tokens": max_tokens,
-                "system": system_prompt,
-                "messages": messages,
-                "stream": True,  # Enable streaming!
-            }
-            if anthropic_tools:
-                payload["tools"] = anthropic_tools
-
-            headers = {
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json",
-            }
-
-            self._track_api_call("llm")
-
-            try:
-                async with self._session.post(
-                    f"{self.base_url}/v1/messages",
-                    json=payload,
-                    headers=headers,
-                    timeout=180,  # 3 minutes - VLM operations need more time
-                ) as response:
-                    if response.status != 200:
-                        error = await response.text()
-                        _LOGGER.error("Anthropic API error: %s", error)
-                        yield {"content": "Sorry, there was an error with the AI service."}
-                        return
-
-                    # Process SSE stream
-                    accumulated_content = ""
-                    tool_calls = []
-                    current_tool: dict | None = None
-
-                    async for line in response.content:
-                        line = line.decode("utf-8").strip()
-                        if not line or not line.startswith("data: "):
-                            continue
-
-                        data_str = line[6:]  # Remove "data: " prefix
-                        if data_str == "[DONE]":
-                            break
-
-                        try:
-                            event = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-
-                        event_type = event.get("type")
-
-                        if event_type == "content_block_start":
-                            block = event.get("content_block", {})
-                            if block.get("type") == "tool_use":
-                                current_tool = {
-                                    "id": block.get("id"),
-                                    "name": block.get("name"),
-                                    "arguments": "",
-                                }
-
-                        elif event_type == "content_block_delta":
-                            delta = event.get("delta", {})
-                            if delta.get("type") == "text_delta":
-                                text = delta.get("text", "")
-                                accumulated_content += text
-                                yield {"content": text}
-                            elif delta.get("type") == "input_json_delta":
-                                if current_tool:
-                                    current_tool["arguments"] += delta.get("partial_json", "")
-
-                        elif event_type == "content_block_stop":
-                            if current_tool:
-                                try:
-                                    current_tool["arguments"] = json.loads(current_tool["arguments"])
-                                except json.JSONDecodeError:
-                                    current_tool["arguments"] = {}
-                                tool_calls.append(current_tool)
-                                current_tool = None
-
-                # Process tool calls if any
-                if tool_calls:
-                    unique_tool_calls = []
-                    for tc in tool_calls:
-                        tool_key = f"{tc['name']}:{tc.get('arguments', '')}"
-                        if tool_key not in called_tools:
-                            called_tools.add(tool_key)
-                            unique_tool_calls.append(tc)
-                            _LOGGER.info("Tool call: %s(%s)", tc["name"], tc["arguments"])
-
-                    if unique_tool_calls:
-                        # Build assistant content for Anthropic format
-                        assistant_content = []
-                        if accumulated_content:
-                            assistant_content.append({"type": "text", "text": accumulated_content})
-                        for tc in unique_tool_calls:
-                            assistant_content.append({
-                                "type": "tool_use",
-                                "id": tc["id"],
-                                "name": tc["name"],
-                                "input": tc["arguments"],
-                            })
-
-                        messages.append({"role": "assistant", "content": assistant_content})
-
-                        # Execute tools in parallel
-                        tool_tasks = [
-                            self._execute_tool(tc["name"], tc["arguments"])
-                            for tc in unique_tool_calls
-                        ]
-                        results = await asyncio.gather(*tool_tasks, return_exceptions=True)
-
-                        # Add tool results
-                        tool_results = []
-                        for tc, result in zip(unique_tool_calls, results):
-                            if isinstance(result, Exception):
-                                content = json.dumps({"error": str(result)}, ensure_ascii=False)
-                            elif isinstance(result, dict) and "response_text" in result:
-                                content = result["response_text"]
-                            else:
-                                content = json.dumps(result, ensure_ascii=False)
-                            tool_results.append({
-                                "type": "tool_result",
-                                "tool_use_id": tc["id"],
-                                "content": content
-                            })
-
-                        messages.append({"role": "user", "content": tool_results})
-                        continue
-
-                # No tool calls - we're done
-                if accumulated_content:
-                    return
-
-                break
-
-            except Exception as e:
-                _LOGGER.error("Anthropic API error: %s", e)
-                yield {"content": "Sorry, there was an error processing your request."}
-                return
-
         yield {"content": "I apologize, but I couldn't complete that request."}
 
     async def _stream_google(
