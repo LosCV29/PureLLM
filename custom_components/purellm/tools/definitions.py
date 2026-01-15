@@ -302,11 +302,11 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"],
                     "description": "'play' for songs/albums/artists. 'shuffle' for shuffled playlists by artist/genre."
                 },
-                "query": {"type": "string", "description": "Song title, album name, or smart modifier. For albums: can include 'latest', 'last', 'newest', 'first', 'debut'. Example: 'bad bunny's latest album' → query='latest', artist='Bad Bunny', media_type='album'."},
+                "query": {"type": "string", "description": "ONLY the song/album/artist name to search for. Do NOT include room/location phrases like 'in the living room' - those go in 'room' parameter. For albums: can include 'latest', 'last', 'newest', 'first', 'debut'. Example: 'shuffle Young Dolph in the living room' → query='Young Dolph', room='living room'."},
                 "artist": {"type": "string", "description": "Artist name. REQUIRED for tracks and albums."},
                 "album": {"type": "string", "description": "Album name. Use when playing a specific track FROM an album."},
                 "song_on_album": {"type": "string", "description": "Use when user wants an album that contains a specific song. Example: 'play the jay-z album with big pimpin' → song_on_album='Big Pimpin', artist='Jay-Z', media_type='album'. The system will find which album contains that song and play it."},
-                "room": {"type": "string", "description": f"Target room: {rooms_list}"},
+                "room": {"type": "string", "description": f"Target room for playback. Extract from phrases like 'in the living room', 'in the bedroom'. Available: {rooms_list}"},
                 "media_type": {
                     "type": "string",
                     "enum": ["artist", "album", "track"],
