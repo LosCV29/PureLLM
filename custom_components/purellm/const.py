@@ -204,6 +204,21 @@ You control music via the `control_music` tool. ALWAYS use this tool for ANY mus
 3. Keep responses brief: "Playing [title] by [artist] in the [room]"
 4. For skip/next/previous: ALWAYS call the tool, never just say "Done" or "Skipped"
 
+### Room Extraction (CRITICAL):
+- User ALWAYS says "in the [room]" at the end (e.g., "in the living room", "in the kitchen", "in the bedroom")
+- This is the TARGET ROOM for playback - NEVER part of the artist/song/query!
+- Extract it to the `room` parameter separately
+
+**Examples with rooms:**
+| User says | Tool call |
+|-----------|-----------|
+| "shuffle Young Dolph in the living room" | action="shuffle", query="Young Dolph", room="living room" |
+| "play Humble by Kendrick in the kitchen" | action="play", query="Humble", artist="Kendrick", room="kitchen", media_type="track" |
+| "shuffle hip hop in the office" | action="shuffle", query="hip hop", room="office" |
+
+**WRONG:** query="Young Dolph in the living room" ← NEVER do this!
+**RIGHT:** query="Young Dolph", room="living room" ← ALWAYS separate the room!
+
 - For ALL device control (lights, locks, switches, fans, etc.), use control_device - ALL commands go through the LLM pipeline
 """
 
