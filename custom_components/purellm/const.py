@@ -65,11 +65,6 @@ PROVIDER_MODELS: Final = {
     PROVIDER_GOOGLE: ["gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"],
 }
 
-# Providers that use OpenAI-compatible API
-OPENAI_COMPATIBLE_PROVIDERS: Final = [
-    PROVIDER_LM_STUDIO,
-]
-
 DEFAULT_PROVIDER: Final = PROVIDER_LM_STUDIO
 DEFAULT_BASE_URL: Final = "http://localhost:1234/v1"
 DEFAULT_API_KEY: Final = "lm-studio"

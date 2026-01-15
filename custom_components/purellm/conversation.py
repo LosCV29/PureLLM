@@ -98,7 +98,6 @@ from .const import (
     DEFAULT_THERMOSTAT_TEMP_STEP,
     DEFAULT_THERMOSTAT_TEMP_STEP_CELSIUS,
     DEFAULT_THERMOSTAT_USE_CELSIUS,
-    OPENAI_COMPATIBLE_PROVIDERS,
     PROVIDER_BASE_URLS,
     PROVIDER_GOOGLE,
     PROVIDER_LM_STUDIO,
@@ -368,7 +367,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
     def _create_openai_client(self):
         """Create OpenAI client (runs in executor to avoid blocking SSL)."""
-        if self.provider in OPENAI_COMPATIBLE_PROVIDERS:
+        if self.provider == PROVIDER_LM_STUDIO:
             return AsyncOpenAI(
                 base_url=self.base_url,
                 api_key=self.api_key if self.api_key else "lm-studio",
@@ -411,7 +410,7 @@ class PureLLMConversationEntity(ConversationEntity):
         import aiohttp
 
         try:
-            if self.provider in OPENAI_COMPATIBLE_PROVIDERS and self.client:
+            if self.provider == PROVIDER_LM_STUDIO and self.client:
                 # For OpenAI SDK clients, list models to warm up connection
                 try:
                     async with asyncio.timeout(5):
@@ -503,8 +502,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
             elif self.provider == PROVIDER_GOOGLE:
                 final_response = await self._call_google(user_text, tools, system_prompt, max_tokens)
-            elif self.provider in OPENAI_COMPATIBLE_PROVIDERS:
-                final_response = await self._call_openai(user_text, tools, system_prompt, max_tokens)
             else:
                 final_response = "Unknown provider."
 
@@ -595,53 +592,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
             if text_response:
                 return text_response
-
-        return "Could not get response."
-
-    async def _call_openai(self, user_text: str, tools: list, system_prompt: str, max_tokens: int) -> str:
-        """Simple non-streaming OpenAI call."""
-        messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
-        ]
-
-        for iteration in range(5):
-            kwargs = {
-                "model": self.model,
-                "messages": messages,
-                "temperature": self.temperature,
-                "max_tokens": max_tokens,
-            }
-            if tools:
-                kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
-
-            self._track_api_call("llm")
-            response = await self.client.chat.completions.create(**kwargs)
-            message = response.choices[0].message
-
-            if message.tool_calls:
-                messages.append({
-                    "role": "assistant",
-                    "content": message.content,
-                    "tool_calls": [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}} for tc in message.tool_calls]
-                })
-
-                for tc in message.tool_calls:
-                    try:
-                        args = json.loads(tc.function.arguments)
-                    except:
-                        args = {}
-                    result = await self._execute_tool(tc.function.name, args)
-                    if isinstance(result, dict) and "response_text" in result:
-                        content = result["response_text"]
-                    else:
-                        content = json.dumps(result, ensure_ascii=False)
-                    messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
-                continue
-
-            if message.content:
-                return message.content
 
         return "Could not get response."
 
@@ -799,139 +749,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 return
 
         # If we get here with no content, yield a fallback
-        yield {"content": "I apologize, but I couldn't complete that request."}
-
-    async def _stream_google(
-        self,
-        user_text: str,
-        tools: list[dict],
-        system_prompt: str,
-        max_tokens: int,
-    ) -> AsyncGenerator[ContentDelta, None]:
-        """Stream from Google Gemini API."""
-        # Convert tools to Gemini format
-        function_declarations = []
-        for tool in tools:
-            func = tool.get("function", {})
-            function_declarations.append({
-                "name": func.get("name"),
-                "description": func.get("description"),
-                "parameters": func.get("parameters", {"type": "object", "properties": {}})
-            })
-
-        contents = [
-            {"role": "user", "parts": [{"text": f"System: {system_prompt}"}]},
-            {"role": "model", "parts": [{"text": "Understood."}]},
-            {"role": "user", "parts": [{"text": user_text}]},
-        ]
-
-        called_tools: set[str] = set()
-
-        for iteration in range(5):
-            payload = {
-                "contents": contents,
-                "generationConfig": {"maxOutputTokens": max_tokens, "temperature": self.temperature},
-            }
-
-            if function_declarations:
-                payload["tools"] = [{"functionDeclarations": function_declarations}]
-
-            # Use streaming endpoint
-            url = f"{self.base_url}/models/{self.model}:streamGenerateContent?alt=sse"
-            headers = {"x-goog-api-key": self.api_key}
-
-            self._track_api_call("llm")
-
-            try:
-                async with self._session.post(url, json=payload, headers=headers, timeout=180) as response:  # 3 minutes - VLM operations need more time
-                    if response.status != 200:
-                        error = await response.text()
-                        _LOGGER.error("Google API error: %s", error)
-                        yield {"content": "Sorry, there was an error with the AI service."}
-                        return
-
-                    accumulated_content = ""
-                    tool_calls = []
-                    model_parts = []
-
-                    async for line in response.content:
-                        line = line.decode("utf-8").strip()
-                        if not line or not line.startswith("data: "):
-                            continue
-
-                        data_str = line[6:]
-                        try:
-                            data = json.loads(data_str)
-                        except json.JSONDecodeError:
-                            continue
-
-                        candidates = data.get("candidates", [])
-                        if not candidates:
-                            continue
-
-                        content = candidates[0].get("content", {})
-                        parts = content.get("parts", [])
-
-                        for part in parts:
-                            model_parts.append(part)
-                            if "text" in part:
-                                text = part["text"]
-                                accumulated_content += text
-                                yield {"content": text}
-                            elif "functionCall" in part:
-                                fc = part["functionCall"]
-                                tool_calls.append({
-                                    "name": fc.get("name"),
-                                    "arguments": fc.get("args", {}),
-                                })
-
-                # Process tool calls if any
-                if tool_calls:
-                    unique_tool_calls = []
-                    for tc in tool_calls:
-                        tool_key = f"{tc['name']}:{tc.get('arguments', '')}"
-                        if tool_key not in called_tools:
-                            called_tools.add(tool_key)
-                            unique_tool_calls.append(tc)
-                            _LOGGER.info("Tool call: %s(%s)", tc["name"], tc["arguments"])
-
-                    if unique_tool_calls:
-                        contents.append({"role": "model", "parts": model_parts})
-
-                        # Execute tools in parallel
-                        tool_tasks = [
-                            self._execute_tool(tc["name"], tc["arguments"])
-                            for tc in unique_tool_calls
-                        ]
-                        results = await asyncio.gather(*tool_tasks, return_exceptions=True)
-
-                        # Add function responses
-                        function_responses = []
-                        for tc, result in zip(unique_tool_calls, results):
-                            if isinstance(result, Exception):
-                                response_content = {"error": str(result)}
-                            elif isinstance(result, dict) and "response_text" in result:
-                                response_content = {"text": result["response_text"]}
-                            else:
-                                response_content = result
-                            function_responses.append({
-                                "functionResponse": {"name": tc["name"], "response": response_content}
-                            })
-
-                        contents.append({"role": "user", "parts": function_responses})
-                        continue
-
-                # No tool calls - we're done
-                if accumulated_content:
-                    return
-
-                break
-
-            except Exception as e:
-                _LOGGER.error("Google API error: %s", e)
-                yield {"content": "Sorry, there was an error processing your request."}
-                return
-
         yield {"content": "I apologize, but I couldn't complete that request."}
 
     # =========================================================================
