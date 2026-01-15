@@ -96,6 +96,10 @@ class MusicController:
         album = arguments.get("album", "")
         song_on_album = arguments.get("song_on_album", "")
 
+        # DEBUG: Log raw arguments received from LLM
+        _LOGGER.warning("MUSIC DEBUG: Raw arguments from LLM: %s", arguments)
+        _LOGGER.warning("MUSIC DEBUG: Extracted - action='%s', query='%s', room='%s'", action, query, room)
+
         # DEFENSIVE: ALWAYS strip room phrases from query - LLM often includes them
         # This handles cases like query="Young Dolph in the living room"
         # Strip regardless of whether room param is set or not
@@ -104,8 +108,10 @@ class MusicController:
             # Use word boundary matching for multi-word rooms
             room_strip_pattern = r'\s+in\s+the\s+(.+?)\s*$'
             match = re.search(room_strip_pattern, query, flags=re.IGNORECASE)
+            _LOGGER.warning("MUSIC DEBUG: Regex match on query='%s': %s", query, match)
             if match:
                 potential_room = match.group(1).lower().strip()
+                _LOGGER.warning("MUSIC DEBUG: Potential room extracted: '%s'", potential_room)
                 # Check if it looks like a room name (matches any configured room or common room names)
                 common_rooms = {'living room', 'kitchen', 'bedroom', 'master bedroom', 'office',
                                'bathroom', 'garage', 'basement', 'den', 'studio', 'nursery',
@@ -113,15 +119,17 @@ class MusicController:
                 # Also check against configured rooms
                 configured_rooms = {r.lower() for r in self._players.keys()}
                 all_known_rooms = common_rooms | configured_rooms
+                _LOGGER.warning("MUSIC DEBUG: Configured rooms: %s", configured_rooms)
+                _LOGGER.warning("MUSIC DEBUG: Is '%s' in known rooms? %s", potential_room, potential_room in all_known_rooms)
 
                 if potential_room in all_known_rooms or any(potential_room in r or r in potential_room for r in all_known_rooms):
                     original_query = query
                     query = re.sub(room_strip_pattern, '', query, flags=re.IGNORECASE).strip()
                     if not room:
                         room = potential_room
-                    _LOGGER.info("Stripped room from query: '%s' → '%s' (room='%s')", original_query, query, room)
+                    _LOGGER.warning("MUSIC DEBUG: Stripped room - query='%s' → '%s', room='%s'", original_query, query, room)
 
-        _LOGGER.debug("Music control: action=%s, room=%s, query=%s", action, room, query)
+        _LOGGER.warning("MUSIC DEBUG: Final - action='%s', query='%s', room='%s'", action, query, room)
 
         all_players = list(self._players.values())
 
