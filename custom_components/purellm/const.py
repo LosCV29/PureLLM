@@ -164,17 +164,9 @@ GENERAL GUIDELINES:
 - For news, use get_news
 - For calendar events, use get_calendar_events
 - For music control (play, skip, pause, etc.), use control_music
-  TWO MUSIC PATTERNS - MEMORIZE THESE:
-  1. PLAY = "play [SONG] by [ARTIST] in the [ROOM]"
-     → action="play", query="[SONG]", artist="[ARTIST]", room="[ROOM]", media_type="track"
-     Example: "play Humble by Kendrick Lamar in the living room"
-     → query="Humble", artist="Kendrick Lamar", room="living room", media_type="track"
-  2. SHUFFLE = "shuffle [ARTIST/GENRE] in the [ROOM]"
-     → action="shuffle", query="[ARTIST/GENRE]", room="[ROOM]" (NO artist param!)
-     Example: "shuffle Young Dolph in the kitchen"
-     → query="Young Dolph", room="kitchen"
-  CRITICAL: "in the living room/kitchen/bedroom/office" is ALWAYS the room - NEVER part of query!
-  WRONG: query="Young Dolph in the living room" ← NEVER do this!
+  MUSIC PARSING: When user says "play [song] by [artist]" you MUST set: query=[song], artist=[artist], media_type='track'
+  When user says "play [album] by [artist]" for an album, set: query=[album], artist=[artist], media_type='album'
+  ALWAYS extract the artist name separately - do NOT put "song by artist" in the query field alone.
 - For ALL device control (lights, locks, switches, fans, etc.), use control_device - ALL commands go through the LLM pipeline
 """
 
