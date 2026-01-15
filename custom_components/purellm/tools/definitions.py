@@ -310,7 +310,7 @@ Available rooms: {rooms_list}"""
                 "query": {"type": "string", "description": "For PLAY: the SONG name only. For SHUFFLE: the ARTIST or GENRE name. NEVER include room phrases like 'in the living room'!"},
                 "artist": {"type": "string", "description": "ONLY for PLAY action: the artist name from 'by [ARTIST]'. NOT used for shuffle!"},
                 "album": {"type": "string", "description": "Album name. Use when playing a specific track FROM an album."},
-                "song_on_album": {"type": "string", "description": "Use when user wants an album that contains a specific song."},
+                "song_on_album": {"type": "string", "description": "Use when user wants an album that contains a specific song. Example: 'play the Jay-Z album with Big Pimpin' → song_on_album='Big Pimpin', artist='Jay-Z', media_type='album'. The system finds which album contains that song."},
                 "room": {"type": "string", "description": f"REQUIRED. The room from 'in the [ROOM]'. Extract: 'in the living room'→'living room'. Available: {rooms_list}"},
                 "media_type": {
                     "type": "string",
