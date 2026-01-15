@@ -30,13 +30,7 @@ from .const import (
     PROVIDER_DEFAULT_MODELS,
     PROVIDER_MODELS,
     PROVIDER_LM_STUDIO,
-    PROVIDER_OPENAI,
-    PROVIDER_ANTHROPIC,
     PROVIDER_GOOGLE,
-    PROVIDER_GROQ,
-    PROVIDER_OPENROUTER,
-    PROVIDER_AZURE,
-    PROVIDER_OLLAMA,
     DEFAULT_PROVIDER,
     DEFAULT_BASE_URL,
     DEFAULT_API_KEY,
@@ -129,13 +123,9 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Providers that support dynamic model fetching via OpenAI-compatible /models endpoint
+# Providers that support dynamic model fetching via /models endpoint
 DYNAMIC_MODEL_PROVIDERS = [
-    PROVIDER_OPENAI,
-    PROVIDER_GROQ,
-    PROVIDER_OPENROUTER,
     PROVIDER_LM_STUDIO,
-    PROVIDER_OLLAMA,
     PROVIDER_GOOGLE,
 ]
 
@@ -304,22 +294,16 @@ class PureLLMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         default_model = PROVIDER_DEFAULT_MODELS.get(provider, DEFAULT_MODEL)
 
         # Show different fields based on provider
-        # Show URL for local providers (LM Studio, Ollama) and Azure (requires custom endpoint)
-        show_base_url = provider in [PROVIDER_LM_STUDIO, PROVIDER_OLLAMA, PROVIDER_AZURE]
+        # Show URL for local providers (LM Studio/vLLM)
+        show_base_url = provider == PROVIDER_LM_STUDIO
 
         schema_dict = {}
 
         if show_base_url:
-            # Azure needs a placeholder hint since URL is required
-            if provider == PROVIDER_AZURE:
-                schema_dict[vol.Required(CONF_BASE_URL, default="")] = str
-            else:
-                schema_dict[vol.Required(CONF_BASE_URL, default=default_url)] = str
+            schema_dict[vol.Required(CONF_BASE_URL, default=default_url)] = str
 
-        # API key: optional for Ollama, required for others
-        if provider == PROVIDER_OLLAMA:
-            schema_dict[vol.Optional(CONF_API_KEY, default="")] = str
-        elif provider == PROVIDER_LM_STUDIO:
+        # API key: placeholder for LM Studio, required for others
+        if provider == PROVIDER_LM_STUDIO:
             schema_dict[vol.Required(CONF_API_KEY, default="lm-studio")] = str
         else:
             schema_dict[vol.Required(CONF_API_KEY, default="")] = str
@@ -352,57 +336,15 @@ class PureLLMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Test connection to the LLM provider."""
         try:
             async with aiohttp.ClientSession() as session:
-                if provider == PROVIDER_ANTHROPIC:
-                    # Anthropic uses different endpoint
-                    headers = {
-                        "x-api-key": api_key,
-                        "anthropic-version": "2023-06-01",
-                    }
-                    async with session.get(
-                        f"{base_url}/v1/models",
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as response:
-                        return response.status in (200, 401)  # 401 means API is reachable but key invalid
-                elif provider == PROVIDER_GOOGLE:
+                if provider == PROVIDER_GOOGLE:
                     # Google Gemini
                     async with session.get(
                         f"{base_url}/models?key={api_key}",
                         timeout=aiohttp.ClientTimeout(total=10),
                     ) as response:
                         return response.status in (200, 400, 403)
-                elif provider == PROVIDER_AZURE:
-                    # Azure OpenAI uses api-key header
-                    if not base_url:
-                        return False  # Azure requires a base URL
-                    headers = {"api-key": api_key} if api_key else {}
-                    # Azure endpoint format: https://{resource}.openai.azure.com/openai/deployments/{deployment}
-                    # Test with models endpoint at the resource level
-                    # Extract resource URL from deployment URL
-                    try:
-                        # Try to extract base resource URL for testing
-                        if "/openai/deployments/" in base_url:
-                            resource_url = base_url.split("/openai/deployments/")[0]
-                            test_url = f"{resource_url}/openai/models?api-version=2024-02-01"
-                        else:
-                            test_url = f"{base_url}/openai/models?api-version=2024-02-01"
-                        async with session.get(
-                            test_url,
-                            headers=headers,
-                            timeout=aiohttp.ClientTimeout(total=10),
-                        ) as response:
-                            return response.status in (200, 401, 403)
-                    except Exception:
-                        return True  # Allow setup if URL parsing fails
-                elif provider == PROVIDER_OLLAMA:
-                    # Ollama - no auth required, just check if server is responding
-                    async with session.get(
-                        f"{base_url}/models",
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as response:
-                        return response.status in (200, 401)
                 else:
-                    # OpenAI-compatible (LM Studio, OpenAI, Groq, OpenRouter)
+                    # OpenAI-compatible (LM Studio / vLLM)
                     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
                     async with session.get(
                         f"{base_url}/models",
@@ -413,7 +355,7 @@ class PureLLMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         except Exception as e:
             _LOGGER.warning("Connection test exception: %s", e)
             # For local providers, connection refused is expected if server isn't running
-            if provider in [PROVIDER_LM_STUDIO, PROVIDER_OLLAMA]:
+            if provider == PROVIDER_LM_STUDIO:
                 return True  # Allow setup even if server isn't running
             return False
 

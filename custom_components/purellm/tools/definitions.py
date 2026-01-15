@@ -279,6 +279,17 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             ["device"]
         ))
 
+        tools.append(_tool(
+            "get_device_history",
+            "Get historical state changes for a device. Use for: 'when was the front door last opened', 'how many times was the garage opened today', 'history of the back door'. Returns state change timestamps and counts.",
+            {
+                "device": {"type": "string", "description": "The device name to get history for (e.g., 'front door', 'garage', 'mailbox')"},
+                "days_back": {"type": "integer", "description": "Number of days of history to retrieve (default: 1, max: 10). Use 1 for 'today', 7 for 'this week'."},
+                "date": {"type": "string", "description": "Specific date in YYYY-MM-DD format (e.g., '2024-01-15'). Use this for 'on January 15th' queries."}
+            },
+            ["device"]
+        ))
+
     # ===== MUSIC =====
     if config.enable_music and config.room_player_mapping:
         rooms_list = ", ".join(config.room_player_mapping.keys())
