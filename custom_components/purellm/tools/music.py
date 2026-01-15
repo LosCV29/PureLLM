@@ -96,6 +96,30 @@ class MusicController:
         album = arguments.get("album", "")
         song_on_album = arguments.get("song_on_album", "")
 
+        # DEFENSIVE: Strip room phrases from query if LLM mistakenly included them
+        # This handles cases like query="Young Dolph in the living room" instead of
+        # query="Young Dolph" + room="living room"
+        if query and not room:
+            room_extraction_patterns = [
+                (r'\s+in\s+the\s+(living\s*room)\s*$', 'living room'),
+                (r'\s+in\s+the\s+(kitchen)\s*$', 'kitchen'),
+                (r'\s+in\s+the\s+(bedroom)\s*$', 'bedroom'),
+                (r'\s+in\s+the\s+(master\s*bedroom)\s*$', 'master bedroom'),
+                (r'\s+in\s+the\s+(office)\s*$', 'office'),
+                (r'\s+in\s+the\s+(bathroom)\s*$', 'bathroom'),
+                (r'\s+in\s+the\s+(garage)\s*$', 'garage'),
+                (r'\s+in\s+the\s+(basement)\s*$', 'basement'),
+                (r'\s+in\s+the\s+(\w+)\s*$', None),  # Generic pattern - capture room name
+            ]
+            for pattern, room_name in room_extraction_patterns:
+                match = re.search(pattern, query, flags=re.IGNORECASE)
+                if match:
+                    extracted_room = room_name if room_name else match.group(1).lower()
+                    query = re.sub(pattern, '', query, flags=re.IGNORECASE).strip()
+                    room = extracted_room
+                    _LOGGER.info("Extracted room from query: query='%s', room='%s'", query, room)
+                    break
+
         _LOGGER.debug("Music control: action=%s, room=%s, query=%s", action, room, query)
 
         all_players = list(self._players.values())
