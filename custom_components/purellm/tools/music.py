@@ -155,6 +155,22 @@ class MusicController:
                 return rname
         return "unknown"
 
+    def _is_player_available(self, entity_id: str) -> tuple[bool, str]:
+        """Check if a player is available for playback.
+
+        Returns:
+            Tuple of (is_available, reason_if_not)
+        """
+        state = self._hass.states.get(entity_id)
+        if state is None:
+            return False, f"Player {entity_id} not found"
+        if state.state == "unavailable":
+            return False, f"Player {entity_id} is unavailable"
+        if state.state == "off":
+            # Some players can still receive commands when off, but log a warning
+            _LOGGER.warning("Player %s is off - attempting playback anyway", entity_id)
+        return True, ""
+
     def _get_area_id(self, entity_id: str) -> str | None:
         """Get area_id for an entity (checks entity, then device)."""
         ent_reg = er.async_get(self._hass)
@@ -184,13 +200,29 @@ class MusicController:
             return {"error": f"Unknown room: {room}. Available: {', '.join(self._players.keys())}"}
 
         for player in target_players:
+            # Check player availability before attempting playback
+            available, reason = self._is_player_available(player)
+            if not available:
+                _LOGGER.error("Player not available for play: %s", reason)
+                return {"error": reason}
+
             _LOGGER.info("Playing '%s' (%s) on %s", query, media_type, player)
-            await self._hass.services.async_call(
-                "music_assistant", "play_media",
-                {"media_id": query, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
-                target={"entity_id": player},
-                blocking=True
-            )
+            try:
+                await self._hass.services.async_call(
+                    "music_assistant", "play_media",
+                    {"media_id": query, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
+                    target={"entity_id": player},
+                    blocking=True
+                )
+            except Exception as play_err:
+                _LOGGER.error("Failed to play '%s' on %s: %s", query, player, play_err)
+                state = self._hass.states.get(player)
+                player_state = state.state if state else "unknown"
+                return {
+                    "error": f"Could not play on {self._get_room_name(player)} (player state: {player_state}). "
+                             f"Check if the speaker is powered on and connected."
+                }
+
             if shuffle or media_type == "genre":
                 await self._hass.services.async_call(
                     "media_player", "shuffle_set",
@@ -456,14 +488,34 @@ class MusicController:
                 return {"error": f"Could not find playlist or artist matching '{query}'"}
 
             player = target_players[0]
-            _LOGGER.info("Playing %s (%s) shuffled on %s", playlist_name, media_type_to_use, player)
 
-            await self._hass.services.async_call(
-                "music_assistant", "play_media",
-                {"media_id": playlist_uri, "media_type": media_type_to_use, "enqueue": "replace", "radio_mode": False},
-                target={"entity_id": player},
-                blocking=True
-            )
+            # Check player availability before attempting playback
+            available, reason = self._is_player_available(player)
+            if not available:
+                _LOGGER.error("Player not available for shuffle: %s", reason)
+                return {"error": reason}
+
+            _LOGGER.info("Playing %s (%s) shuffled on %s (uri: %s)", playlist_name, media_type_to_use, player, playlist_uri)
+
+            try:
+                await self._hass.services.async_call(
+                    "music_assistant", "play_media",
+                    {"media_id": playlist_uri, "media_type": media_type_to_use, "enqueue": "replace", "radio_mode": False},
+                    target={"entity_id": player},
+                    blocking=True
+                )
+            except Exception as play_err:
+                _LOGGER.error(
+                    "Failed to play media on %s: %s (media_id=%s, media_type=%s)",
+                    player, play_err, playlist_uri, media_type_to_use
+                )
+                # Check if player became unavailable
+                state = self._hass.states.get(player)
+                player_state = state.state if state else "unknown"
+                return {
+                    "error": f"Could not play on {self._get_room_name(player)} (player state: {player_state}). "
+                             f"Check if the speaker is powered on and connected."
+                }
 
             await self._hass.services.async_call(
                 "media_player", "shuffle_set",
@@ -479,5 +531,5 @@ class MusicController:
             }
 
         except Exception as search_err:
-            _LOGGER.error("Shuffle search/play error: %s", search_err, exc_info=True)
-            return {"error": f"Failed to find or play playlist: {str(search_err)}"}
+            _LOGGER.error("Shuffle search error: %s", search_err, exc_info=True)
+            return {"error": f"Failed to search for playlist: {str(search_err)}"}
