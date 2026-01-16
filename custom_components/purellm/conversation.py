@@ -48,7 +48,6 @@ from .const import (
     CONF_GOOGLE_PLACES_API_KEY,
     CONF_MAX_TOKENS,
     CONF_MODEL,
-    CONF_MODEL_CONTEXT_LENGTH,
     CONF_NEWSAPI_KEY,
     CONF_OPENWEATHERMAP_API_KEY,
     CONF_PROVIDER,
@@ -211,7 +210,6 @@ class PureLLMConversationEntity(ConversationEntity):
         self.model = config.get(CONF_MODEL, "")
         self.temperature = config.get(CONF_TEMPERATURE, 0.7)
         self.max_tokens = config.get(CONF_MAX_TOKENS, 2000)
-        self.model_context_length = config.get(CONF_MODEL_CONTEXT_LENGTH, 0)
         self.top_p = config.get(CONF_TOP_P, 0.95)
 
         # Base URL
@@ -488,7 +486,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
-        max_tokens = self._calculate_max_tokens(user_text, self.model_context_length)
+        max_tokens = self._calculate_max_tokens(user_text)
 
         try:
             if self.provider == PROVIDER_LM_STUDIO:
@@ -597,41 +595,9 @@ class PureLLMConversationEntity(ConversationEntity):
 
         return "Could not get response."
 
-    def _calculate_max_tokens(self, user_text: str, model_context_length: int = 0) -> int:
-        """Calculate max tokens respecting model context limits.
-
-        For local models with known context limits, dynamically adjust max_tokens
-        to avoid 'max_tokens too large' errors when input is large.
-
-        Args:
-            user_text: The user's query text
-            model_context_length: Model's total context window (0 = no limit/unknown)
-
-        Returns:
-            Safe max_tokens value that fits within context window
-        """
-        if model_context_length <= 0:
-            return self.max_tokens
-
-        # Rough token estimation: ~4 chars per token for English
-        # System prompt + tools add ~6000-8000 tokens typically
-        estimated_overhead = 7000  # Conservative estimate for system prompt + tools
-        estimated_query_tokens = len(user_text) // 3  # ~3 chars/token for mixed content
-        estimated_input = estimated_overhead + estimated_query_tokens
-
-        # Leave 10% buffer for safety
-        available = int((model_context_length - estimated_input) * 0.9)
-
-        # Use configured max_tokens but cap at available context
-        result = min(self.max_tokens, max(available, 512))  # Minimum 512 for any response
-
-        if result < self.max_tokens:
-            _LOGGER.debug(
-                "Adjusted max_tokens from %d to %d (context=%d, est_input=%d)",
-                self.max_tokens, result, model_context_length, estimated_input
-            )
-
-        return result
+    def _calculate_max_tokens(self, user_text: str) -> int:
+        """Return configured max_tokens - no caps for local GPU."""
+        return self.max_tokens
 
     # =========================================================================
     # Streaming LLM Provider Methods
