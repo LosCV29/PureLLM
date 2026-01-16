@@ -119,172 +119,111 @@ async def get_weather_forecast(
         track_api_call("weather")
 
         async with asyncio.timeout(API_TIMEOUT):
-            # PARALLEL fetch: current weather AND forecast simultaneously
-            current_url = f"https://api.openweathermap.org/data/2.5/weather?lat={latitude}&lon={longitude}&appid={api_key}&units=imperial"
-            forecast_url = f"https://api.openweathermap.org/data/2.5/forecast?lat={latitude}&lon={longitude}&appid={api_key}&units=imperial"
+            # Use One Call API 3.0 for accurate daily min/max temps
+            onecall_url = f"https://api.openweathermap.org/data/3.0/onecall?lat={latitude}&lon={longitude}&appid={api_key}&units=imperial&exclude=minutely,alerts"
 
-            # Fire both requests at once
-            current_task = session.get(current_url)
-            forecast_task = session.get(forecast_url)
+            async with session.get(onecall_url) as response:
+                if response.status != 200:
+                    _LOGGER.error("One Call API error: %s", response.status)
+                    return {"error": f"Weather API error: {response.status}"}
 
-            async with current_task as current_response, forecast_task as forecast_response:
-                # Process current weather
-                if current_response.status == 200:
-                    data = await current_response.json()
+                data = await response.json()
+                now = datetime.now()
 
-                    result["current"] = {
-                        "temperature": round(data["main"]["temp"]),
-                        "feels_like": round(data["main"]["feels_like"]),
-                        "humidity": data["main"]["humidity"],
-                        "conditions": data["weather"][0]["description"].title(),
-                        "wind_speed": round(data["wind"]["speed"]),
-                        "location": location_name or data["name"]
-                    }
+                # Process current weather from One Call API
+                current = data.get("current", {})
+                result["current"] = {
+                    "temperature": round(current.get("temp", 0)),
+                    "feels_like": round(current.get("feels_like", 0)),
+                    "humidity": current.get("humidity", 0),
+                    "conditions": current.get("weather", [{}])[0].get("description", "Unknown").title(),
+                    "wind_speed": round(current.get("wind_speed", 0)),
+                    "location": location_name or "Current Location"
+                }
 
-                    # Add rain if present
-                    if "rain" in data:
-                        result["current"]["rain_1h"] = data["rain"].get("1h", 0)
+                # Add rain if present
+                if "rain" in current:
+                    result["current"]["rain_1h"] = current["rain"].get("1h", 0)
 
-                    # Add sunrise/sunset times
-                    if "sys" in data:
-                        now = datetime.now()
+                # Add sunrise/sunset times from current data
+                if "sunrise" in current:
+                    sunrise_dt = datetime.fromtimestamp(current["sunrise"])
+                    result["current"]["sunrise"] = sunrise_dt.strftime("%-I:%M %p")
 
-                        # Extract and format sunrise
-                        if "sunrise" in data["sys"]:
-                            sunrise_ts = data["sys"]["sunrise"]
-                            sunrise_dt = datetime.fromtimestamp(sunrise_ts)
-                            result["current"]["sunrise"] = sunrise_dt.strftime("%-I:%M %p")
+                    if sunrise_dt > now:
+                        time_until = sunrise_dt - now
+                        hours, remainder = divmod(int(time_until.total_seconds()), 3600)
+                        minutes = remainder // 60
+                        if hours > 0:
+                            result["current"]["time_until_sunrise"] = f"{hours}h {minutes}m"
+                        else:
+                            result["current"]["time_until_sunrise"] = f"{minutes}m"
+                    else:
+                        result["current"]["sunrise_passed"] = True
 
-                            # Calculate time until sunrise (if it hasn't happened yet today)
-                            if sunrise_dt > now:
-                                time_until = sunrise_dt - now
-                                hours, remainder = divmod(int(time_until.total_seconds()), 3600)
-                                minutes = remainder // 60
-                                if hours > 0:
-                                    result["current"]["time_until_sunrise"] = f"{hours}h {minutes}m"
-                                else:
-                                    result["current"]["time_until_sunrise"] = f"{minutes}m"
-                            else:
-                                # Sunrise already passed today
-                                result["current"]["sunrise_passed"] = True
+                if "sunset" in current:
+                    sunset_dt = datetime.fromtimestamp(current["sunset"])
+                    result["current"]["sunset"] = sunset_dt.strftime("%-I:%M %p")
 
-                        # Extract and format sunset
-                        if "sunset" in data["sys"]:
-                            sunset_ts = data["sys"]["sunset"]
-                            sunset_dt = datetime.fromtimestamp(sunset_ts)
-                            result["current"]["sunset"] = sunset_dt.strftime("%-I:%M %p")
+                    if sunset_dt > now:
+                        time_until = sunset_dt - now
+                        hours, remainder = divmod(int(time_until.total_seconds()), 3600)
+                        minutes = remainder // 60
+                        if hours > 0:
+                            result["current"]["time_until_sunset"] = f"{hours}h {minutes}m"
+                        else:
+                            result["current"]["time_until_sunset"] = f"{minutes}m"
+                    else:
+                        result["current"]["sunset_passed"] = True
 
-                            # Calculate time until sunset (if it hasn't happened yet today)
-                            if sunset_dt > now:
-                                time_until = sunset_dt - now
-                                hours, remainder = divmod(int(time_until.total_seconds()), 3600)
-                                minutes = remainder // 60
-                                if hours > 0:
-                                    result["current"]["time_until_sunset"] = f"{hours}h {minutes}m"
-                                else:
-                                    result["current"]["time_until_sunset"] = f"{minutes}m"
-                            else:
-                                # Sunset already passed today
-                                result["current"]["sunset_passed"] = True
+                # Calculate daylight hours
+                if "sunrise" in current and "sunset" in current:
+                    daylight_seconds = current["sunset"] - current["sunrise"]
+                    daylight_hours = daylight_seconds / 3600
+                    result["current"]["daylight_hours"] = round(daylight_hours, 1)
 
-                        # Calculate daylight hours
-                        if "sunrise" in data["sys"] and "sunset" in data["sys"]:
-                            daylight_seconds = data["sys"]["sunset"] - data["sys"]["sunrise"]
-                            daylight_hours = daylight_seconds / 3600
-                            result["current"]["daylight_hours"] = round(daylight_hours, 1)
+                # Process hourly data for rain chances
+                hourly = data.get("hourly", [])
+                if hourly:
+                    # Next hour rain chance
+                    result["current"]["rain_chance_next_hour"] = round(hourly[0].get("pop", 0) * 100)
 
-                    _LOGGER.info("Current weather: %s", result["current"])
-                else:
-                    _LOGGER.error("Weather API error: %s", current_response.status)
-                    return {"error": "Could not get current weather"}
-
-                # Process forecast data
-                if forecast_response.status == 200:
-                    data = await forecast_response.json()
-
-                    # Get NEXT HOUR rain chance from first forecast entry
-                    next_hour_rain = 0
-                    if data["list"] and len(data["list"]) > 0:
-                        next_hour_rain = round(data["list"][0].get("pop", 0) * 100)
-                    result["current"]["rain_chance_next_hour"] = next_hour_rain
-
-                    # Calculate AVERAGE rain chance for next 8 hours
-                    rain_chances_8hr = []
-                    for i, item in enumerate(data["list"][:3]):
-                        rain_chances_8hr.append(item.get("pop", 0) * 100)
+                    # Average rain chance for next 8 hours
+                    rain_chances_8hr = [h.get("pop", 0) * 100 for h in hourly[:8]]
                     if rain_chances_8hr:
                         result["current"]["avg_rain_chance_8hr"] = round(sum(rain_chances_8hr) / len(rain_chances_8hr))
                     else:
                         result["current"]["avg_rain_chance_8hr"] = 0
 
-                    # Get TODAY's date for extracting today's high/low
-                    today_str = datetime.now().strftime("%Y-%m-%d")
-                    today_temps = []
+                # Process daily data for proper high/low temps
+                daily = data.get("daily", [])
+                if daily:
+                    # Today's high/low from daily[0] - this is the REAL daily min/max
+                    today = daily[0]
+                    result["current"]["todays_high"] = round(today.get("temp", {}).get("max", 0))
+                    result["current"]["todays_low"] = round(today.get("temp", {}).get("min", 0))
 
-                    # Group by day for weekly forecast
-                    daily_forecasts = {}
-                    for item in data["list"]:
-                        dt = datetime.strptime(item["dt_txt"], "%Y-%m-%d %H:%M:%S")
-                        day_key = dt.strftime("%A")
-                        item_date = dt.strftime("%Y-%m-%d")
-
-                        # Collect today's temps
-                        if item_date == today_str:
-                            today_temps.append(item["main"]["temp_max"])
-                            today_temps.append(item["main"]["temp_min"])
-
-                        if day_key not in daily_forecasts:
-                            daily_forecasts[day_key] = {
-                                "date": dt.strftime("%B %d"),
-                                "high": item["main"]["temp_max"],
-                                "low": item["main"]["temp_min"],
-                                "conditions": item["weather"][0]["description"].title(),
-                                "rain_chance": item.get("pop", 0) * 100
-                            }
-                        else:
-                            daily_forecasts[day_key]["high"] = max(
-                                daily_forecasts[day_key]["high"],
-                                item["main"]["temp_max"]
-                            )
-                            daily_forecasts[day_key]["low"] = min(
-                                daily_forecasts[day_key]["low"],
-                                item["main"]["temp_min"]
-                            )
-                            # Take noon conditions if available
-                            if dt.hour == 12:
-                                daily_forecasts[day_key]["conditions"] = item["weather"][0]["description"].title()
-                                daily_forecasts[day_key]["rain_chance"] = item.get("pop", 0) * 100
-
-                    # ADD TODAY'S HIGH/LOW TO CURRENT
-                    current_day = datetime.now().strftime("%A")
-
-                    if current_day in daily_forecasts:
-                        result["current"]["todays_high"] = round(daily_forecasts[current_day]["high"])
-                        result["current"]["todays_low"] = round(daily_forecasts[current_day]["low"])
-                    elif today_temps:
-                        result["current"]["todays_high"] = round(max(today_temps))
-                        result["current"]["todays_low"] = round(min(today_temps))
-                    else:
-                        first_day = list(daily_forecasts.values())[0] if daily_forecasts else None
-                        if first_day:
-                            result["current"]["todays_high"] = round(first_day["high"])
-                            result["current"]["todays_low"] = round(first_day["low"])
+                    _LOGGER.info("Today's high/low from One Call API: %s/%s",
+                                result["current"]["todays_high"], result["current"]["todays_low"])
 
                     # Format weekly forecast (only if requested)
                     if forecast_type in ["weekly", "both"]:
                         forecast_list = []
-                        for day, forecast in list(daily_forecasts.items())[:5]:
+                        for day_data in daily[:7]:  # Up to 7 days
+                            dt = datetime.fromtimestamp(day_data.get("dt", 0))
                             forecast_list.append({
-                                "day": day,
-                                "date": forecast["date"],
-                                "high": round(forecast["high"]),
-                                "low": round(forecast["low"]),
-                                "conditions": forecast["conditions"],
-                                "rain_chance": round(forecast["rain_chance"])
+                                "day": dt.strftime("%A"),
+                                "date": dt.strftime("%B %d"),
+                                "high": round(day_data.get("temp", {}).get("max", 0)),
+                                "low": round(day_data.get("temp", {}).get("min", 0)),
+                                "conditions": day_data.get("weather", [{}])[0].get("description", "Unknown").title(),
+                                "rain_chance": round(day_data.get("pop", 0) * 100)
                             })
 
                         result["forecast"] = forecast_list
                         _LOGGER.info("Weather forecast: %d days", len(forecast_list))
+
+                _LOGGER.info("Current weather: %s", result["current"])
 
         if not result:
             return {"error": "No weather data retrieved"}
