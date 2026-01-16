@@ -74,9 +74,9 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_places and config.google_places_api_key:
         tools.append(_tool(
             "find_nearby_places",
-            "Find nearby places for DIRECTIONS. Use for 'nearest', 'closest', 'where is', 'find a', 'directions to'. NOT for food recommendations (use get_restaurant_recommendations instead).",
+            "Find nearby places using Google. Use for ALL searches EXCEPT restaurants/food. This includes: 'nearest X', 'closest X', 'where is X', 'find a X', 'best rated X', 'top rated X near me'. Examples: nail salons, hair salons, spas, gas stations, pharmacies, grocery stores, banks, gyms, doctors, dentists, mechanics, dry cleaners, etc. ONLY use get_restaurant_recommendations for RESTAURANTS and FOOD.",
             {
-                "query": {"type": "string", "description": "What to search for (e.g., 'Publix', 'gas station', 'pharmacy')"},
+                "query": {"type": "string", "description": "What to search for (e.g., 'nail salon', 'gas station', 'pharmacy', 'best rated hair salon')"},
                 "max_results": {"type": "integer", "description": "Max results (default: 5, max: 20)"}
             },
             ["query"]
@@ -221,7 +221,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_restaurants and config.yelp_api_key:
         tools.append(_tool(
             "get_restaurant_recommendations",
-            "Get restaurant RECOMMENDATIONS from Yelp. Use when user wants SUGGESTIONS like 'find me sushi', 'best Italian nearby', 'top rated Mexican'. SORTING: 'best'/'top rated' = rating, 'popular'/'most reviewed' = review_count, 'fancy'/'expensive' = price $$$$, 'cheap'/'budget' = price $. DO NOT use this for booking - use book_restaurant instead.",
+            "Get RESTAURANT recommendations from Yelp. ONLY use for RESTAURANTS, FOOD, and DINING - nothing else! Examples: 'find me sushi', 'best Italian restaurant', 'top rated Mexican food', 'good steakhouse'. Do NOT use for non-food businesses like nail salons, hair salons, spas, gyms, etc. - use find_nearby_places for those. SORTING: 'best'/'top rated' = rating, 'popular'/'most reviewed' = review_count. DO NOT use for booking - use book_restaurant instead.",
             {
                 "query": {"type": "string", "description": "What type of food or restaurant to search for"},
                 "sort_by": {
