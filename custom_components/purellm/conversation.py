@@ -576,8 +576,15 @@ class PureLLMConversationEntity(ConversationEntity):
                 contents.append({"role": "model", "parts": parts})
                 function_responses = []
 
-                for fc in function_calls:
-                    result = await self._execute_tool(fc["name"], fc.get("args", {}))
+                # Execute tools in parallel for better performance
+                tool_tasks = [self._execute_tool(fc["name"], fc.get("args", {})) for fc in function_calls]
+                tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
+
+                for fc, result in zip(function_calls, tool_results):
+                    if isinstance(result, Exception):
+                        _LOGGER.error("Tool %s failed: %s", fc["name"], result)
+                        result = {"error": str(result)}
+
                     if isinstance(result, dict) and "response_text" in result:
                         resp_content = result["response_text"]
                     else:
