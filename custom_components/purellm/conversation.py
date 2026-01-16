@@ -596,13 +596,8 @@ class PureLLMConversationEntity(ConversationEntity):
         return "Could not get response."
 
     def _calculate_max_tokens(self, user_text: str) -> int:
-        """Calculate max tokens based on query complexity."""
-        base = self.max_tokens
-        if len(user_text) < 30:
-            return min(base, 1500)
-        elif len(user_text) < 100:
-            return min(base, 2000)
-        return base
+        """Return configured max_tokens - no caps for local GPU."""
+        return self.max_tokens
 
     # =========================================================================
     # Streaming LLM Provider Methods
