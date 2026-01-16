@@ -23,6 +23,7 @@ from .const import (
     CONF_MODEL,
     CONF_TEMPERATURE,
     CONF_MAX_TOKENS,
+    CONF_MODEL_CONTEXT_LENGTH,
     CONF_TOP_P,
     ALL_PROVIDERS,
     PROVIDER_NAMES,
@@ -37,6 +38,7 @@ from .const import (
     DEFAULT_MODEL,
     DEFAULT_TEMPERATURE,
     DEFAULT_MAX_TOKENS,
+    DEFAULT_MODEL_CONTEXT_LENGTH,
     DEFAULT_TOP_P,
     # System settings
     CONF_SYSTEM_PROMPT,
@@ -504,6 +506,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_MAX_TOKENS,
                         default=current.get(CONF_MAX_TOKENS, DEFAULT_MAX_TOKENS),
                     ): cv.positive_int,
+                    vol.Optional(
+                        CONF_MODEL_CONTEXT_LENGTH,
+                        default=current.get(CONF_MODEL_CONTEXT_LENGTH, DEFAULT_MODEL_CONTEXT_LENGTH),
+                    ): vol.Coerce(int),
                     vol.Optional(
                         CONF_TOP_P,
                         default=current.get(CONF_TOP_P, DEFAULT_TOP_P),

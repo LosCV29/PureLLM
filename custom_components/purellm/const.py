@@ -31,6 +31,7 @@ CONF_API_KEY: Final = "api_key"
 CONF_MODEL: Final = "model"
 CONF_TEMPERATURE: Final = "temperature"
 CONF_MAX_TOKENS: Final = "max_tokens"
+CONF_MODEL_CONTEXT_LENGTH: Final = "model_context_length"
 CONF_TOP_P: Final = "top_p"
 
 # Provider choices
@@ -71,6 +72,7 @@ DEFAULT_API_KEY: Final = "lm-studio"
 DEFAULT_MODEL: Final = "local-model"
 DEFAULT_TEMPERATURE: Final = 0.7
 DEFAULT_MAX_TOKENS: Final = 2000
+DEFAULT_MODEL_CONTEXT_LENGTH: Final = 0  # 0 = no limit (use configured max_tokens as-is)
 DEFAULT_TOP_P: Final = 0.95
 
 # =============================================================================
