@@ -599,9 +599,9 @@ class PureLLMConversationEntity(ConversationEntity):
         """Calculate max tokens based on query complexity."""
         base = self.max_tokens
         if len(user_text) < 30:
-            return min(base, 500)
+            return min(base, 1500)
         elif len(user_text) < 100:
-            return min(base, 1000)
+            return min(base, 2000)
         return base
 
     # =========================================================================
