@@ -113,6 +113,15 @@ async def get_weather_forecast(
             _LOGGER.info("Geocoded '%s' to %s (%s, %s)", location_query, location_name, latitude, longitude)
         else:
             return {"error": f"Could not find location: {location_query}"}
+    else:
+        # No location specified - reverse geocode the default coordinates to get city name
+        reverse_geo_url = f"http://api.openweathermap.org/geo/1.0/reverse?lat={latitude}&lon={longitude}&limit=1&appid={api_key}"
+        geo_data, status = await fetch_json(session, reverse_geo_url)
+        if geo_data and len(geo_data) > 0:
+            location_name = geo_data[0].get("name", "Current Location")
+            if geo_data[0].get("state"):
+                location_name += f", {geo_data[0]['state']}"
+            _LOGGER.info("Reverse geocoded to: %s", location_name)
 
     try:
         result = {}
