@@ -9,7 +9,39 @@ from __future__ import annotations
 from typing import Any
 
 
-def _tool(name: str, description: str, properties: dict = None, required: list = None) -> dict:
+# Lite (condensed) descriptions for faster local LLM inference
+# These reduce token count by ~60% while maintaining functionality
+LITE_DESCRIPTIONS: dict[str, str] = {
+    "get_current_datetime": "Get current date/time.",
+    "get_weather_forecast": "Get weather. Pass location only if user specifies a city (include state for US, country for international).",
+    "find_nearby_places": "Find nearby places (NOT restaurants). For salons, gas, pharmacy, etc.",
+    "control_thermostat": "Control/check thermostat. Actions: raise, lower, set, check.",
+    "calculate_age": "Look up person's age from Wikipedia.",
+    "get_wikipedia_summary": "Get Wikipedia info about a topic.",
+    "get_sports_info": "Get team schedule/results. Pass team_name.",
+    "get_ufc_info": "Get UFC event info.",
+    "check_league_games": "Check if league has games today/tomorrow.",
+    "list_league_games": "List all games in a league.",
+    "get_stock_price": "Get stock price. Pass symbol or company name.",
+    "get_news": "Get news headlines. Optional: category, topic.",
+    "get_calendar_events": "Get calendar events.",
+    "get_restaurant_recommendations": "Find restaurants via Yelp. Only for food/dining.",
+    "book_restaurant": "Get reservation link for a specific restaurant.",
+    "check_camera": "Check camera with AI vision analysis.",
+    "quick_camera_check": "Fast camera check - is anyone present?",
+    "check_device_status": "Check device/sensor status.",
+    "get_device_history": "Get device state history.",
+    "control_music": "Control music playback. Actions: play, pause, resume, stop, skip_next, shuffle, what_playing.",
+    "control_timer": "Control timers. Actions: start, cancel, pause, resume, status, add, restart.",
+    "manage_list": "Manage lists. Actions: add, complete, remove, show, clear, sort.",
+    "create_reminder": "Create a reminder.",
+    "get_reminders": "Get upcoming reminders.",
+    "control_device": "Control smart home devices. Pass device name and action.",
+    "control_sofabaton": "Control SofaBaton activities.",
+}
+
+
+def _tool(name: str, description: str, properties: dict = None, required: list = None, lite: bool = False) -> dict:
     """Create a tool definition in OpenAI format.
 
     Args:
@@ -17,10 +49,15 @@ def _tool(name: str, description: str, properties: dict = None, required: list =
         description: Tool description for the LLM
         properties: Parameter properties dict
         required: List of required parameter names
+        lite: If True, use condensed description for faster inference
 
     Returns:
         Tool definition dict
     """
+    # Use lite description if available and lite mode is enabled
+    if lite and name in LITE_DESCRIPTIONS:
+        description = LITE_DESCRIPTIONS[name]
+
     params = {"type": "object", "properties": properties or {}}
     if required:
         params["required"] = required
@@ -45,11 +82,13 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         List of tool definitions in OpenAI format
     """
     tools = []
+    lite = getattr(config, 'lite_tool_descriptions', False)
 
     # ===== CORE TOOLS (always enabled) =====
     tools.append(_tool(
         "get_current_datetime",
         "Get the current date and time. Use for 'what day is it', 'what's the date', 'what time is it', or any time/date questions.",
+        lite=lite,
     ))
 
     # ===== WEATHER =====
@@ -67,7 +106,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "enum": ["current", "weekly"],
                     "description": "Use 'current' for today's weather (default). Use 'weekly' ONLY when user asks for 'weekly forecast', 'this week', or '5-day forecast'."
                 }
-            }
+            },
+            lite=lite,
         ))
 
     # ===== PLACES =====
@@ -79,7 +119,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 "query": {"type": "string", "description": "What to search for (e.g., 'nail salon', 'gas station', 'pharmacy', 'best rated hair salon')"},
                 "max_results": {"type": "integer", "description": "Max results (default: 5, max: 20)"}
             },
-            ["query"]
+            ["query"],
+            lite=lite,
         ))
 
     # ===== THERMOSTAT =====
@@ -100,7 +141,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "description": f"Target temperature in {temp_unit} (only for 'set' action)"
                 }
             },
-            ["action"]
+            ["action"],
+            lite=lite,
         ))
 
     # ===== WIKIPEDIA/AGE =====
@@ -109,14 +151,16 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             "calculate_age",
             "REQUIRED for 'how old is [person]' questions. Looks up birthdate from Wikidata and calculates current age. NEVER guess ages - ALWAYS use this tool.",
             {"person_name": {"type": "string", "description": "The person's name (e.g., 'LeBron James', 'Taylor Swift')"}},
-            ["person_name"]
+            ["person_name"],
+            lite=lite,
         ))
 
         tools.append(_tool(
             "get_wikipedia_summary",
             "Get information from Wikipedia. Use for 'who is', 'what is', 'tell me about' questions.",
             {"topic": {"type": "string", "description": "The topic to look up (e.g., 'Albert Einstein', 'World War II')"}},
-            ["topic"]
+            ["topic"],
+            lite=lite,
         ))
 
     # ===== SPORTS =====
@@ -135,7 +179,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "description": "What info to get: 'last_game' for recent result, 'next_game' for upcoming, 'standings' for league position, 'both' for last and next games (default)"
                 }
             },
-            ["team_name"]
+            ["team_name"],
+            lite=lite,
         ))
 
         tools.append(_tool(
@@ -147,7 +192,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "enum": ["next_event", "upcoming"],
                     "description": "What info to get: 'next_event' for the next UFC event, 'upcoming' for list of upcoming events"
                 }
-            }
+            },
+            lite=lite,
         ))
 
         tools.append(_tool(
@@ -164,7 +210,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "description": "Which day (default: today)"
                 }
             },
-            ["league"]
+            ["league"],
+            lite=lite,
         ))
 
         tools.append(_tool(
@@ -181,7 +228,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "description": "Which day (default: today)"
                 }
             },
-            ["league"]
+            ["league"],
+            lite=lite,
         ))
 
     # ===== STOCKS =====
@@ -190,7 +238,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             "get_stock_price",
             "Get current stock price and daily change. Use for: 'Apple stock', 'what's Tesla at', 'AAPL price'. Works with symbols (AAPL, TSLA) or company names.",
             {"symbol": {"type": "string", "description": "Stock symbol (e.g., 'AAPL', 'TSLA') or company name"}},
-            ["symbol"]
+            ["symbol"],
+            lite=lite,
         ))
 
     # ===== NEWS =====
@@ -206,7 +255,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 },
                 "topic": {"type": "string", "description": "Specific topic to search for (e.g., 'Tesla', 'AI')"},
                 "max_results": {"type": "integer", "description": "Number of articles to return (default: 5, max: 10)"}
-            }
+            },
+            lite=lite,
         ))
 
     # ===== CALENDAR =====
@@ -214,7 +264,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         tools.append(_tool(
             "get_calendar_events",
             "Get upcoming calendar events. Use for 'what's on my calendar', 'any events today', 'my schedule'.",
-            {"days_ahead": {"type": "integer", "description": "Number of days to look ahead (default: 7, max: 30)"}}
+            {"days_ahead": {"type": "integer", "description": "Number of days to look ahead (default: 7, max: 30)"}},
+            lite=lite,
         ))
 
     # ===== RESTAURANTS =====
@@ -235,7 +286,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 },
                 "max_results": {"type": "integer", "description": "Number of results to return (default: 3, max: 10)"}
             },
-            ["query"]
+            ["query"],
+            lite=lite,
         ))
 
         tools.append(_tool(
@@ -248,7 +300,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 "date": {"type": "string", "description": "Reservation date in YYYY-MM-DD format (e.g., '2024-01-20')"},
                 "time": {"type": "string", "description": "Reservation time - can be natural ('7pm', '7:30 PM') or 24hr ('19:00')"}
             },
-            ["restaurant_name"]
+            ["restaurant_name"],
+            lite=lite,
         ))
 
     # ===== CAMERAS =====
@@ -260,14 +313,16 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 "location": {"type": "string", "description": "The camera location to check (e.g., 'garage', 'kitchen', 'driveway')"},
                 "query": {"type": "string", "description": "Optional specific question about what to look for"}
             },
-            ["location"]
+            ["location"],
+            lite=lite,
         ))
 
         tools.append(_tool(
             "quick_camera_check",
             "FAST camera check - quickly confirms if anyone is present + one sentence description. Use for: 'is there anyone in [location]'.",
             {"location": {"type": "string", "description": "The camera location to check"}},
-            ["location"]
+            ["location"],
+            lite=lite,
         ))
 
     # ===== DEVICE STATUS =====
@@ -276,7 +331,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             "check_device_status",
             "Check the current status of any device, sensor, door, lock, light, switch, or cover. IMPORTANT: Pass the COMPLETE device name exactly as the user said it.",
             {"device": {"type": "string", "description": "The COMPLETE device name exactly as spoken by the user"}},
-            ["device"]
+            ["device"],
+            lite=lite,
         ))
 
         tools.append(_tool(
@@ -287,7 +343,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 "days_back": {"type": "integer", "description": "Number of days of history to retrieve (default: 1, max: 10). Use 1 for 'today', 7 for 'this week'."},
                 "date": {"type": "string", "description": "Specific date in YYYY-MM-DD format (e.g., '2024-01-15'). Use this for 'on January 15th' queries."}
             },
-            ["device"]
+            ["device"],
+            lite=lite,
         ))
 
     # ===== MUSIC =====
@@ -313,7 +370,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "description": "'track' = specific song, 'album' = album, 'artist' = play all music by artist."
                 }
             },
-            ["action"]
+            ["action"],
+            lite=lite,
         ))
 
     # ===== TIMERS (always enabled) =====
@@ -339,7 +397,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 "description": "Time to add when action='add' (e.g., '5 minutes', 'another 10')"
             }
         },
-        ["action"]
+        ["action"],
+        lite=lite,
     ))
 
     # ===== LISTS (always enabled) =====
@@ -366,7 +425,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 "description": "For 'show' or 'sort': 'active' (default) or 'completed' to view/sort checked-off items"
             }
         },
-        ["action"]
+        ["action"],
+        lite=lite,
     ))
 
     # ===== REMINDERS (always enabled) =====
@@ -383,12 +443,14 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 "description": "When to remind (e.g., 'in 30 minutes', 'at 5pm', 'tomorrow at noon')"
             }
         },
-        ["reminder"]
+        ["reminder"],
+        lite=lite,
     ))
 
     tools.append(_tool(
         "get_reminders",
         "Get upcoming reminders. Use for: 'what reminders do I have', 'show my reminders'.",
+        lite=lite,
     ))
 
     # ===== DEVICE CONTROL (always enabled - LLM fallback) =====
@@ -419,7 +481,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             "hvac_mode": {"type": "string", "enum": ["heat", "cool", "auto", "off", "fan_only", "dry"], "description": "HVAC mode for climate"},
             "fan_speed": {"type": "string", "enum": ["low", "medium", "high", "auto"], "description": "Fan speed"}
         },
-        ["action"]
+        ["action"],
+        lite=lite,
     ))
 
     # ===== SOFABATON ACTIVITIES =====
@@ -439,7 +502,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                     "description": "'start' to begin the activity, 'stop' to end it"
                 }
             },
-            ["activity", "action"]
+            ["activity", "action"],
+            lite=lite,
         ))
 
     return tools
@@ -479,3 +543,4 @@ class ToolConfig:
         self.calendar_entities = entity.calendar_entities
         self.room_player_mapping = entity.room_player_mapping
         self.sofabaton_activities = getattr(entity, 'sofabaton_activities', [])
+        self.lite_tool_descriptions = getattr(entity, 'lite_tool_descriptions', False)

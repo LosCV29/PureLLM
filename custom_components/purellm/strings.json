@@ -75,7 +75,8 @@
           "enable_thermostat": "Thermostat Control",
           "enable_device_status": "Device Status Checks",
           "enable_wikipedia": "Wikipedia & Age Lookup",
-          "enable_music": "Music Control (Music Assistant)"
+          "enable_music": "Music Control (Music Assistant)",
+          "lite_tool_descriptions": "Lite Tool Descriptions (faster local LLM)"
         }
       },
       "entities": {

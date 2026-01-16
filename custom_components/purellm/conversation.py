@@ -45,6 +45,7 @@ from .const import (
     CONF_ENABLE_THERMOSTAT,
     CONF_ENABLE_WEATHER,
     CONF_ENABLE_WIKIPEDIA,
+    CONF_LITE_TOOL_DESCRIPTIONS,
     CONF_GOOGLE_PLACES_API_KEY,
     CONF_MAX_TOKENS,
     CONF_MODEL,
@@ -258,6 +259,7 @@ class PureLLMConversationEntity(ConversationEntity):
         self.enable_device_status = config.get(CONF_ENABLE_DEVICE_STATUS, DEFAULT_ENABLE_DEVICE_STATUS)
         self.enable_wikipedia = config.get(CONF_ENABLE_WIKIPEDIA, DEFAULT_ENABLE_WIKIPEDIA)
         self.enable_music = config.get(CONF_ENABLE_MUSIC, DEFAULT_ENABLE_MUSIC)
+        self.lite_tool_descriptions = config.get(CONF_LITE_TOOL_DESCRIPTIONS, False)
 
         # Entity configuration
         self.room_player_mapping = parse_entity_config(config.get(CONF_ROOM_PLAYER_MAPPING, DEFAULT_ROOM_PLAYER_MAPPING))

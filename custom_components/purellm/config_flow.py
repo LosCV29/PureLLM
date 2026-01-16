@@ -59,6 +59,7 @@ from .const import (
     CONF_ENABLE_DEVICE_STATUS,
     CONF_ENABLE_WIKIPEDIA,
     CONF_ENABLE_MUSIC,
+    CONF_LITE_TOOL_DESCRIPTIONS,
     # Entity config
     CONF_THERMOSTAT_ENTITY,
     CONF_CALENDAR_ENTITIES,
@@ -573,6 +574,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_ENABLE_MUSIC,
                         default=current.get(CONF_ENABLE_MUSIC, DEFAULT_ENABLE_MUSIC),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_LITE_TOOL_DESCRIPTIONS,
+                        default=current.get(CONF_LITE_TOOL_DESCRIPTIONS, False),
                     ): cv.boolean,
                 }
             ),
