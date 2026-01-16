@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
@@ -257,14 +257,10 @@ async def get_weather_forecast(
 
                     # ADD TODAY'S HIGH/LOW TO CURRENT
                     current_day = datetime.now().strftime("%A")
-                    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%A")
 
                     if current_day in daily_forecasts:
                         result["current"]["todays_high"] = round(daily_forecasts[current_day]["high"])
-                        if tomorrow in daily_forecasts:
-                            result["current"]["todays_low"] = round(daily_forecasts[tomorrow]["low"])
-                        else:
-                            result["current"]["todays_low"] = round(daily_forecasts[current_day]["low"])
+                        result["current"]["todays_low"] = round(daily_forecasts[current_day]["low"])
                     elif today_temps:
                         result["current"]["todays_high"] = round(max(today_temps))
                         result["current"]["todays_low"] = round(min(today_temps))
