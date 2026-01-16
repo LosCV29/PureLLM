@@ -80,6 +80,7 @@
         "data": {
           "thermostat_entity": "Thermostat",
           "thermostat_use_celsius": "Use Celsius (instead of Fahrenheit)",
+          "weather_entity": "Weather Entity (for accurate high/low)",
           "calendar_entities": "Calendars",
           "camera_entities": "Cameras",
           "thermostat_min_temp": "Thermostat Minimum Temperature",
