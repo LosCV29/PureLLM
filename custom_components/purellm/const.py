@@ -239,12 +239,10 @@ DEFAULT_CUSTOM_LONGITUDE: Final = 0.0
 # =============================================================================
 CONF_OPENWEATHERMAP_API_KEY: Final = "openweathermap_api_key"
 CONF_GOOGLE_PLACES_API_KEY: Final = "google_places_api_key"
-CONF_YELP_API_KEY: Final = "yelp_api_key"
 CONF_NEWSAPI_KEY: Final = "newsapi_key"
 
 DEFAULT_OPENWEATHERMAP_API_KEY: Final = ""
 DEFAULT_GOOGLE_PLACES_API_KEY: Final = ""
-DEFAULT_YELP_API_KEY: Final = ""
 DEFAULT_NEWSAPI_KEY: Final = ""
 
 # =============================================================================
