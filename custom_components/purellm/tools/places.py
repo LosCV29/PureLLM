@@ -355,12 +355,12 @@ async def get_restaurant_recommendations(
     longitude: float,
     track_api_call: callable,
 ) -> dict[str, Any]:
-    """Get restaurant recommendations from Yelp API.
+    """Get restaurant recommendations from Google Places API.
 
     Args:
         arguments: Tool arguments (query, sort_by, price, max_results)
         session: aiohttp session
-        api_key: Yelp API key
+        api_key: Google Places API key
         latitude: Search center latitude
         longitude: Search center longitude
         track_api_call: Callback to track API usage
@@ -369,7 +369,7 @@ async def get_restaurant_recommendations(
         Restaurant data dict
     """
     query = arguments.get("query", "")
-    sort_by = arguments.get("sort_by", "rating")  # rating, review_count, distance, best_match
+    sort_by = arguments.get("sort_by", "rating")  # rating, review_count, distance
     price = arguments.get("price", "")  # 1,2,3,4 or combinations like "1,2"
     max_results = min(arguments.get("max_results", 3), 10)
 
@@ -377,91 +377,158 @@ async def get_restaurant_recommendations(
         return {"error": "No restaurant/food type specified"}
 
     if not api_key:
-        return {"error": "Yelp API key not configured. Add it in Settings → PolyVoice → API Keys."}
+        return {"error": "Google Places API key not configured. Add it in Settings → PureLLM → API Keys."}
 
     # Validate sort_by
-    valid_sorts = ["rating", "review_count", "distance", "best_match"]
+    valid_sorts = ["rating", "review_count", "distance"]
     if sort_by not in valid_sorts:
         sort_by = "rating"
 
     try:
-        encoded_query = urllib.parse.quote(query)
-        url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&latitude={latitude}&longitude={longitude}&limit={max_results}&sort_by={sort_by}"
+        url = "https://places.googleapis.com/v1/places:searchText"
 
-        # Add price filter if specified
-        if price:
-            # Clean and validate price (should be like "1", "2", "1,2", "3,4", etc.)
-            price_clean = ",".join([p.strip() for p in price.split(",") if p.strip() in ["1", "2", "3", "4"]])
-            if price_clean:
-                url += f"&price={price_clean}"
+        # Request comprehensive field mask for rich place data
+        field_mask = ",".join([
+            "places.displayName",
+            "places.formattedAddress",
+            "places.shortFormattedAddress",
+            "places.location",
+            "places.rating",
+            "places.userRatingCount",
+            "places.priceLevel",
+            "places.currentOpeningHours",
+            "places.regularOpeningHours",
+            "places.businessStatus",
+            "places.internationalPhoneNumber",
+            "places.websiteUri",
+            "places.googleMapsUri",
+            "places.primaryType",
+            "places.types",
+        ])
 
         headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json"
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": api_key,
+            "X-Goog-FieldMask": field_mask,
         }
 
-        _LOGGER.info("Searching Yelp for: %s (sort=%s, price=%s)", query, sort_by, price or "any")
+        # Build search query with restaurant context
+        search_query = f"{query} restaurant"
+
+        # Map sort_by to Google's rankPreference
+        rank_preference = "RELEVANCE"
+        if sort_by == "distance":
+            rank_preference = "DISTANCE"
+
+        body = {
+            "textQuery": search_query,
+            "includedType": "restaurant",
+            "locationBias": {
+                "circle": {
+                    "center": {"latitude": latitude, "longitude": longitude},
+                    "radius": 10000.0
+                }
+            },
+            "maxResultCount": max_results,
+            "rankPreference": rank_preference
+        }
+
+        # Add price level filter if specified
+        if price:
+            price_levels = []
+            for p in price.split(","):
+                p = p.strip()
+                if p == "1":
+                    price_levels.append("PRICE_LEVEL_INEXPENSIVE")
+                elif p == "2":
+                    price_levels.append("PRICE_LEVEL_MODERATE")
+                elif p == "3":
+                    price_levels.append("PRICE_LEVEL_EXPENSIVE")
+                elif p == "4":
+                    price_levels.append("PRICE_LEVEL_VERY_EXPENSIVE")
+            if price_levels:
+                body["priceLevels"] = price_levels
+
+        _LOGGER.info("Searching Google Places for restaurants: %s (sort=%s, price=%s)", query, sort_by, price or "any")
 
         track_api_call("restaurants")
 
-        data, status = await fetch_json(session, url, headers=headers)
+        data, status = await post_json(session, url, body, headers=headers)
         if data is None:
-            _LOGGER.error("Yelp API error: %s", status)
-            return {"error": f"Yelp API returned status {status}"}
+            _LOGGER.error("Google Places API error: %s", status)
+            return {"error": f"Google Places API returned status {status}"}
 
-        businesses = data.get("businesses", [])
+        places = data.get("places", [])
 
-        if not businesses:
+        if not places:
             return {"message": f"No restaurants found for '{query}'"}
 
+        # Sort by rating or review count if requested (Google doesn't support this natively)
+        if sort_by == "rating":
+            places.sort(key=lambda x: x.get("rating", 0), reverse=True)
+        elif sort_by == "review_count":
+            places.sort(key=lambda x: x.get("userRatingCount", 0), reverse=True)
+
         results = []
-        for biz in businesses:
+        for place in places[:max_results]:
+            place_name = place.get("displayName", {}).get("text", "Unknown")
+            address = place.get("formattedAddress", "Address not available")
+            short_address = place.get("shortFormattedAddress", address)
+            rating = place.get("rating")
+            review_count = place.get("userRatingCount", 0)
+            price_level = PRICE_LEVELS.get(place.get("priceLevel"), "")
+            phone = place.get("internationalPhoneNumber", "")
+            website = place.get("websiteUri", "")
+            maps_url = place.get("googleMapsUri", "")
+
+            # Parse opening hours
+            hours_info = {"status": "Hours unknown"}
+            if "currentOpeningHours" in place:
+                hours_info = _parse_opening_hours(place["currentOpeningHours"])
+            elif "regularOpeningHours" in place:
+                hours_info = _parse_opening_hours(place["regularOpeningHours"])
+
+            # Calculate distance
+            place_lat = place.get("location", {}).get("latitude")
+            place_lng = place.get("location", {}).get("longitude")
+            distance_str = ""
+
+            if place_lat and place_lng:
+                distance_miles = calculate_distance_miles(latitude, longitude, place_lat, place_lng)
+                distance_str = f"{distance_miles:.1f} miles"
+
+            # Get cuisine from types
+            cuisine = ""
+            place_types = place.get("types", [])
+            cuisine_types = [t.replace("_", " ").title() for t in place_types
+                           if t not in ["restaurant", "food", "point_of_interest", "establishment"]]
+            if cuisine_types:
+                cuisine = ", ".join(cuisine_types[:2])
+
             result = {
-                "name": biz.get("name"),
-                "rating": biz.get("rating"),
-                "review_count": biz.get("review_count"),
-                "price": biz.get("price", "N/A"),
-                "address": ", ".join(biz.get("location", {}).get("display_address", [])),
-                "yelp_url": biz.get("url", ""),
-                "phone": biz.get("display_phone", ""),
-                "image_url": biz.get("image_url", ""),
+                "name": place_name,
+                "rating": rating,
+                "review_count": review_count,
+                "price": price_level,
+                "address": address,
+                "short_address": short_address,
+                "phone": phone,
+                "website": website,
+                "directions_url": maps_url,
+                "distance": distance_str,
+                "status": hours_info.get("status", ""),
+                "is_open": hours_info.get("is_open"),
             }
 
-            # Get coordinates for maps links
-            coordinates = biz.get("coordinates", {})
-            if coordinates:
-                result["coordinates"] = {
-                    "lat": coordinates.get("latitude"),
-                    "lng": coordinates.get("longitude"),
-                }
+            if cuisine:
+                result["cuisine"] = cuisine
 
-            categories = [cat.get("title") for cat in biz.get("categories", [])]
-            if categories:
-                result["cuisine"] = ", ".join(categories[:2])
-
-            distance_meters = biz.get("distance", 0)
-            distance_miles = distance_meters / 1609.34
-            result["distance"] = f"{distance_miles:.1f} miles"
-
-            if not biz.get("is_closed", True):
-                result["status"] = "Open now"
-
-            # Capture reservation availability from transactions
-            transactions = biz.get("transactions", [])
-            result["supports_reservation"] = "restaurant_reservation" in transactions
-            result["supports_delivery"] = "delivery" in transactions
-            result["supports_pickup"] = "pickup" in transactions
-
-            # Build Yelp reservation URL if supported
-            if result["supports_reservation"]:
-                # Yelp reservation URL pattern
-                biz_alias = biz.get("alias", "")
-                if biz_alias:
-                    result["yelp_reservation_url"] = f"https://www.yelp.com/reservations/{biz_alias}"
+            if place_lat and place_lng:
+                result["coordinates"] = {"lat": place_lat, "lng": place_lng}
 
             results.append(result)
 
-        _LOGGER.info("Yelp found %d restaurants", len(results))
+        _LOGGER.info("Google Places found %d restaurants", len(results))
         return {
             "query": query,
             "count": len(results),
@@ -482,13 +549,13 @@ async def book_restaurant(
 ) -> dict[str, Any]:
     """Get reservation link for a restaurant.
 
-    Searches Yelp for the restaurant and returns reservation URL if available,
-    otherwise falls back to Google search.
+    Searches Google Places for the restaurant and returns a Google search link
+    for reservation options.
 
     Args:
         arguments: Tool arguments (restaurant_name, party_size, date, time)
         session: aiohttp session
-        api_key: Yelp API key
+        api_key: Google Places API key
         latitude: Search center latitude
         longitude: Search center longitude
         track_api_call: Callback to track API usage
@@ -506,7 +573,7 @@ async def book_restaurant(
         return {"error": "No restaurant name provided"}
 
     if not api_key:
-        return {"error": "Yelp API key not configured. Add it in Settings → PolyVoice → API Keys."}
+        return {"error": "Google Places API key not configured. Add it in Settings → PureLLM → API Keys."}
 
     # Extract location from restaurant_name if it contains "in [city]"
     # e.g., "Sunny's Steak House in Miami" -> name="Sunny's Steak House", location="Miami"
@@ -517,173 +584,130 @@ async def book_restaurant(
         _LOGGER.info("Extracted location '%s' from restaurant name, searching for '%s'", location, restaurant_name)
 
     try:
-        # Include location in search term for better Yelp results
-        search_term = f"{restaurant_name} {location}" if location else restaurant_name
-        encoded_query = urllib.parse.quote(search_term)
+        url = "https://places.googleapis.com/v1/places:searchText"
 
-        # Use location text if provided, otherwise fall back to lat/long
-        if location:
-            encoded_location = urllib.parse.quote(location)
-            url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&location={encoded_location}&limit=10&categories=restaurants,food"
-            _LOGGER.info("Searching Yelp in location '%s' for: %s", location, restaurant_name)
-        else:
-            url = f"https://api.yelp.com/v3/businesses/search?term={encoded_query}&latitude={latitude}&longitude={longitude}&limit=10&categories=restaurants,food"
-            _LOGGER.info("Searching Yelp near coordinates for: %s", restaurant_name)
+        # Request fields for restaurant details
+        field_mask = ",".join([
+            "places.displayName",
+            "places.formattedAddress",
+            "places.shortFormattedAddress",
+            "places.location",
+            "places.internationalPhoneNumber",
+            "places.websiteUri",
+            "places.googleMapsUri",
+        ])
 
         headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json"
+            "Content-Type": "application/json",
+            "X-Goog-Api-Key": api_key,
+            "X-Goog-FieldMask": field_mask,
         }
 
-        _LOGGER.info("Searching Yelp for reservation: %s", restaurant_name)
+        # Build search query
+        search_query = f"{restaurant_name} restaurant"
+        if location:
+            search_query += f" {location}"
+            _LOGGER.info("Searching Google Places in location '%s' for: %s", location, restaurant_name)
+        else:
+            _LOGGER.info("Searching Google Places near coordinates for: %s", restaurant_name)
+
+        body = {
+            "textQuery": search_query,
+            "includedType": "restaurant",
+            "locationBias": {
+                "circle": {
+                    "center": {"latitude": latitude, "longitude": longitude},
+                    "radius": 50000.0  # Larger radius for specific restaurant search
+                }
+            },
+            "maxResultCount": 5
+        }
+
+        _LOGGER.info("Searching Google Places for reservation: %s", restaurant_name)
         track_api_call("book_restaurant")
 
-        data, status = await fetch_json(session, url, headers=headers)
+        data, status = await post_json(session, url, body, headers=headers)
         if data is None:
-            _LOGGER.error("Yelp API error: %s", status)
+            _LOGGER.error("Google Places API error: %s", status)
             return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
 
-        businesses = data.get("businesses", [])
+        places = data.get("places", [])
 
-        if not businesses:
+        if not places:
             return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
 
-        # Find best match by name similarity - strict matching for specific restaurant bookings
+        # Find best match by name similarity
         search_name = restaurant_name.lower().strip()
         search_words = search_name.replace("'s", "s").replace("'", "").split()
         first_word = search_words[0] if search_words else ""
         best_match = None
         best_score = 0
 
-        for b in businesses:
-            biz_name_lower = b.get("name", "").lower()
-            biz_name_normalized = biz_name_lower.replace("'s", "s").replace("'", "")
-            biz_words = biz_name_normalized.split()
-            biz_first_word = biz_words[0] if biz_words else ""
+        for p in places:
+            place_name = p.get("displayName", {}).get("text", "")
+            place_name_lower = place_name.lower()
+            place_name_normalized = place_name_lower.replace("'s", "s").replace("'", "")
+            place_words = place_name_normalized.split()
+            place_first_word = place_words[0] if place_words else ""
 
-            # First word must match exactly (sunny != sonny)
-            if first_word and biz_first_word and first_word != biz_first_word:
-                # Skip if first words don't match
+            # First word must match exactly
+            if first_word and place_first_word and first_word != place_first_word:
                 continue
 
-            # Score based on how much of the search term appears in the business name
-            if search_name in biz_name_lower or search_name.replace("'s", "s") in biz_name_normalized:
+            # Score based on how much of the search term appears in the place name
+            if search_name in place_name_lower or search_name.replace("'s", "s") in place_name_normalized:
                 score = 100  # Exact substring match
-            elif biz_name_lower in search_name or biz_name_normalized in search_name.replace("'s", "s"):
-                score = 90  # Business name is part of search
+            elif place_name_lower in search_name or place_name_normalized in search_name.replace("'s", "s"):
+                score = 90  # Place name is part of search
             else:
                 # Count matching words
-                matching = len(set(search_words) & set(biz_words))
+                matching = len(set(search_words) & set(place_words))
                 score = matching * 20
 
             if score > best_score:
                 best_score = score
-                best_match = b
+                best_match = p
 
         # Fall back to first result only if we found no match at all
-        biz = best_match if best_match else businesses[0]
-        _LOGGER.info("Best match for '%s': %s (score: %d)", restaurant_name, biz.get("name"), best_score)
-        biz_name = biz.get("name", restaurant_name)
-        biz_alias = biz.get("alias", "")
-        transactions = biz.get("transactions", [])
-        yelp_url = biz.get("url", "")
-        phone = biz.get("display_phone", "")
-        address = ", ".join(biz.get("location", {}).get("display_address", []))
+        place = best_match if best_match else places[0]
+        place_name = place.get("displayName", {}).get("text", restaurant_name)
+        _LOGGER.info("Best match for '%s': %s (score: %d)", restaurant_name, place_name, best_score)
+
+        phone = place.get("internationalPhoneNumber", "")
+        address = place.get("formattedAddress", "")
+        maps_url = place.get("googleMapsUri", "")
+
+        # Build Google search URL for reservations
+        search_query = f"{place_name} reservations"
+        encoded_query = urllib.parse.quote(search_query)
+        reservation_url = f"https://www.google.com/search?q={encoded_query}"
 
         result = {
-            "restaurant_name": biz_name,
+            "restaurant_name": place_name,
             "address": address,
             "phone": phone,
             "party_size": party_size,
             "date": date,
             "time": time,
-            "yelp_url": yelp_url,
+            "directions_url": maps_url,
+            "reservation_url": reservation_url,
+            "reservation_source": "Google Search",
         }
 
-        # Check if Yelp reservations are supported
-        if "restaurant_reservation" in transactions and biz_alias:
-            # Build Yelp reservation URL with parameters
-            yelp_resy_url = f"https://www.yelp.com/reservations/{biz_alias}"
-
-            # Add query params if we have date/time/covers
-            params = []
-            if party_size:
-                params.append(f"covers={party_size}")
-            if date:
-                params.append(f"date={date}")
-            if time:
-                # Normalize time to HH:MM format
-                params.append(f"time={_normalize_time(time)}")
-
-            if params:
-                yelp_resy_url += "?" + "&".join(params)
-
-            result["reservation_url"] = yelp_resy_url
-            result["reservation_source"] = "Yelp"
-            result["supports_reservation"] = True
-            result["message"] = f"Reservation available at {biz_name} via Yelp!"
-            result["response_text"] = f"I found {biz_name} and sent a reservation link to your phone."
-
-            _LOGGER.info("Found Yelp reservation for %s: %s", biz_name, yelp_resy_url)
+        if phone:
+            result["message"] = f"Found {place_name}! Use the search link to find reservation options, or call them directly at {phone}."
+            result["response_text"] = f"I found {place_name}. I sent a reservation search link to your phone, or you can call them at {phone}."
         else:
-            # No Yelp reservation - fall back to Google
-            result["supports_reservation"] = False
-            fallback = _build_fallback_response(biz_name, party_size, date, time, latitude, longitude)
-            result["reservation_url"] = fallback["reservation_url"]
-            result["reservation_source"] = "Google Search"
-            if phone:
-                result["message"] = f"{biz_name} doesn't support online reservations through Yelp. Try searching Google or call them directly at {phone}."
-                result["response_text"] = f"{biz_name} doesn't support online reservations. I sent a link to your phone, or you can call them at {phone}."
-            else:
-                result["message"] = f"{biz_name} doesn't support online reservations through Yelp. Use the Google link to search for booking options."
-                result["response_text"] = f"{biz_name} doesn't support online reservations. I sent a search link to your phone."
+            result["message"] = f"Found {place_name}! Use the Google link to search for booking options."
+            result["response_text"] = f"I found {place_name} and sent a reservation search link to your phone."
 
-            _LOGGER.info("No Yelp reservation for %s, using Google fallback", biz_name)
+        _LOGGER.info("Found restaurant %s, providing Google search for reservations", place_name)
 
         return result
 
     except Exception as err:
         _LOGGER.error("Error booking restaurant: %s", err, exc_info=True)
         return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
-
-
-def _normalize_time(time_str: str) -> str:
-    """Normalize time string to HH:MM format.
-
-    Handles inputs like "7pm", "7:30 PM", "19:00", etc.
-    """
-    if not time_str:
-        return ""
-
-    time_str = time_str.strip().lower().replace(" ", "")
-
-    # Already in HH:MM format
-    if ":" in time_str and len(time_str) <= 5 and time_str.replace(":", "").isdigit():
-        return time_str
-
-    # Handle 12-hour format with am/pm
-    is_pm = "pm" in time_str
-    is_am = "am" in time_str
-    time_str = time_str.replace("pm", "").replace("am", "")
-
-    try:
-        if ":" in time_str:
-            parts = time_str.split(":")
-            hour = int(parts[0])
-            minute = int(parts[1]) if len(parts) > 1 else 0
-        else:
-            hour = int(time_str)
-            minute = 0
-
-        # Convert to 24-hour format
-        if is_pm and hour < 12:
-            hour += 12
-        elif is_am and hour == 12:
-            hour = 0
-
-        return f"{hour:02d}:{minute:02d}"
-    except ValueError:
-        return time_str  # Return as-is if we can't parse
 
 
 def _build_fallback_response(

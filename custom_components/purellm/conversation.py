@@ -60,7 +60,6 @@ from .const import (
     CONF_THERMOSTAT_TEMP_STEP,
     CONF_THERMOSTAT_USE_CELSIUS,
     CONF_TOP_P,
-    CONF_YELP_API_KEY,
     CONF_NOTIFICATION_ENTITIES,
     CONF_NOTIFY_ON_PLACES,
     CONF_NOTIFY_ON_RESTAURANTS,
@@ -242,7 +241,6 @@ class PureLLMConversationEntity(ConversationEntity):
         # API keys
         self.openweathermap_api_key = config.get(CONF_OPENWEATHERMAP_API_KEY, "")
         self.google_places_api_key = config.get(CONF_GOOGLE_PLACES_API_KEY, "")
-        self.yelp_api_key = config.get(CONF_YELP_API_KEY, "")
         self.newsapi_key = config.get(CONF_NEWSAPI_KEY, "")
 
         # Feature toggles
@@ -887,26 +885,23 @@ class PureLLMConversationEntity(ConversationEntity):
             message = "\n".join(message_lines)
 
             top_pick = top_restaurants[0]
-            yelp_url = top_pick.get("yelp_url", "")
+            maps_url = top_pick.get("directions_url", "")
             coordinates = top_pick.get("coordinates", {})
 
-            google_maps_url = ""
-            if coordinates and coordinates.get("lat") and coordinates.get("lng"):
+            if not maps_url and coordinates and coordinates.get("lat") and coordinates.get("lng"):
                 lat, lng = coordinates["lat"], coordinates["lng"]
-                google_maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lng}"
+                maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lng}"
 
             actions = []
-            if yelp_url:
-                actions.append({"action": "URI", "title": "⭐ #1 Yelp", "uri": yelp_url})
-            if len(top_restaurants) > 1 and top_restaurants[1].get("yelp_url"):
-                actions.append({"action": "URI", "title": "⭐ #2 Yelp", "uri": top_restaurants[1]["yelp_url"]})
-            if len(top_restaurants) > 2 and top_restaurants[2].get("yelp_url"):
-                actions.append({"action": "URI", "title": "⭐ #3 Yelp", "uri": top_restaurants[2]["yelp_url"]})
-            if google_maps_url:
-                actions.append({"action": "URI", "title": "🗺️ Directions #1", "uri": google_maps_url})
+            if maps_url:
+                actions.append({"action": "URI", "title": "🗺️ #1 Directions", "uri": maps_url})
+            if len(top_restaurants) > 1 and top_restaurants[1].get("directions_url"):
+                actions.append({"action": "URI", "title": "🗺️ #2 Directions", "uri": top_restaurants[1]["directions_url"]})
+            if len(top_restaurants) > 2 and top_restaurants[2].get("directions_url"):
+                actions.append({"action": "URI", "title": "🗺️ #3 Directions", "uri": top_restaurants[2]["directions_url"]})
 
             notification_data = self._build_notification_data(
-                title, message, actions, yelp_url or google_maps_url
+                title, message, actions, maps_url
             )
             await self._send_notification(notification_data, "restaurant")
 
@@ -918,7 +913,6 @@ class PureLLMConversationEntity(ConversationEntity):
         try:
             restaurant_name = reservation_result.get("restaurant_name", "Restaurant")
             reservation_url = reservation_result.get("reservation_url", "")
-            supports_reservation = reservation_result.get("supports_reservation", False)
             party_size = reservation_result.get("party_size", 2)
             date = reservation_result.get("date", "")
             time = reservation_result.get("time", "")
@@ -927,7 +921,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
             _LOGGER.info("Sending reservation notification for: %s", restaurant_name)
 
-            title = f"🍽️ Reserve at {restaurant_name}" if supports_reservation else f"📞 Book {restaurant_name}"
+            title = f"🍽️ Book {restaurant_name}"
 
             message_parts = []
             if date and time:
@@ -940,14 +934,13 @@ class PureLLMConversationEntity(ConversationEntity):
                 message_parts.append(f"👥 Party of {party_size}")
             if address:
                 message_parts.append(f"📍 {address}")
-            if not supports_reservation and phone:
+            if phone:
                 message_parts.append(f"📞 {phone}")
             message = "\n".join(message_parts) if message_parts else f"Book a table at {restaurant_name}"
 
             actions = []
             if reservation_url:
-                button_title = "📅 Reserve Now" if supports_reservation else "🔍 Search Reservations"
-                actions.append({"action": "URI", "title": button_title, "uri": reservation_url})
+                actions.append({"action": "URI", "title": "🔍 Search Reservations", "uri": reservation_url})
             if phone:
                 clean_phone = "".join(c for c in phone if c.isdigit() or c == "+")
                 actions.append({"action": "URI", "title": "📞 Call", "uri": f"tel:{clean_phone}"})
@@ -1080,7 +1073,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
             if tool_name == "get_restaurant_recommendations":
                 result = await places_tool.get_restaurant_recommendations(
-                    arguments, self._session, self.yelp_api_key,
+                    arguments, self._session, self.google_places_api_key,
                     latitude, longitude, self._track_api_call
                 )
                 if self.notify_on_restaurants and self.notification_entities and result.get("restaurants"):
@@ -1089,7 +1082,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
             if tool_name == "book_restaurant":
                 result = await places_tool.book_restaurant(
-                    arguments, self._session, self.yelp_api_key,
+                    arguments, self._session, self.google_places_api_key,
                     latitude, longitude, self._track_api_call
                 )
                 if self.notification_entities and result.get("reservation_url"):

@@ -218,16 +218,16 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         ))
 
     # ===== RESTAURANTS =====
-    if config.enable_restaurants and config.yelp_api_key:
+    if config.enable_restaurants and config.google_places_api_key:
         tools.append(_tool(
             "get_restaurant_recommendations",
-            "Get RESTAURANT recommendations from Yelp. ONLY use for RESTAURANTS, FOOD, and DINING - nothing else! Examples: 'find me sushi', 'best Italian restaurant', 'top rated Mexican food', 'good steakhouse'. Do NOT use for non-food businesses like nail salons, hair salons, spas, gyms, etc. - use find_nearby_places for those. SORTING: 'best'/'top rated' = rating, 'popular'/'most reviewed' = review_count. DO NOT use for booking - use book_restaurant instead.",
+            "Get RESTAURANT recommendations using Google Places. ONLY use for RESTAURANTS, FOOD, and DINING - nothing else! Examples: 'find me sushi', 'best Italian restaurant', 'top rated Mexican food', 'good steakhouse'. Do NOT use for non-food businesses like nail salons, hair salons, spas, gyms, etc. - use find_nearby_places for those. SORTING: 'best'/'top rated' = rating, 'popular'/'most reviewed' = review_count. DO NOT use for booking - use book_restaurant instead.",
             {
                 "query": {"type": "string", "description": "What type of food or restaurant to search for"},
                 "sort_by": {
                     "type": "string",
-                    "enum": ["rating", "review_count", "distance", "best_match"],
-                    "description": "How to sort: 'rating' for highest rated (default), 'review_count' for most popular/reviewed, 'distance' for closest, 'best_match' for Yelp's algorithm"
+                    "enum": ["rating", "review_count", "distance"],
+                    "description": "How to sort: 'rating' for highest rated (default), 'review_count' for most popular/reviewed, 'distance' for closest"
                 },
                 "price": {
                     "type": "string",
@@ -240,7 +240,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "book_restaurant",
-            "Get a reservation link for a SPECIFIC restaurant the user already knows. Use for: 'book Uchi', 'make a reservation at Olive Garden', 'reserve a table at Fleming's in Miami'. This tool searches Yelp directly - do NOT call get_restaurant_recommendations first.",
+            "Get a reservation link for a SPECIFIC restaurant the user already knows. Use for: 'book Uchi', 'make a reservation at Olive Garden', 'reserve a table at Fleming's in Miami'. This searches for the restaurant and provides a Google search link to find reservation options.",
             {
                 "restaurant_name": {"type": "string", "description": "The exact restaurant name to book (e.g., 'Uchi', 'Olive Garden')"},
                 "location": {"type": "string", "description": "City/area to search in if user specifies one (e.g., 'Miami', 'Downtown Austin'). Omit to use user's current location."},
@@ -469,7 +469,6 @@ class ToolConfig:
 
         self.openweathermap_api_key = entity.openweathermap_api_key
         self.google_places_api_key = entity.google_places_api_key
-        self.yelp_api_key = entity.yelp_api_key
         self.newsapi_key = entity.newsapi_key
 
         self.thermostat_entity = entity.thermostat_entity
