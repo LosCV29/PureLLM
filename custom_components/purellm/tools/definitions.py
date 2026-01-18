@@ -88,16 +88,21 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         step = config.thermostat_temp_step
         tools.append(_tool(
             "control_thermostat",
-            f"Control or check the thermostat/AC/air. Use for: 'raise/lower the AC' (±{step}{temp_unit}), 'set AC to 72', 'what is the AC set to', 'what's the temp inside'.",
+            f"Control or check the thermostat/AC/air. Use 'set_mode' to change HVAC mode (heating/cooling/off). Use 'raise/lower/set' for temperature.",
             {
                 "action": {
                     "type": "string",
-                    "enum": ["raise", "lower", "set", "check"],
-                    "description": f"'raise' = +{step}{temp_unit}, 'lower' = -{step}{temp_unit}, 'set' = specific temp, 'check' = get current status"
+                    "enum": ["raise", "lower", "set", "check", "set_mode"],
+                    "description": f"'set_mode' = change HVAC mode (heat/cool/off), 'raise' = +{step}{temp_unit}, 'lower' = -{step}{temp_unit}, 'set' = specific temp, 'check' = status"
                 },
                 "temperature": {
                     "type": "number",
                     "description": f"Target temperature in {temp_unit} (only for 'set' action)"
+                },
+                "hvac_mode": {
+                    "type": "string",
+                    "enum": ["heat", "heating", "cool", "cooling", "heat_cool", "auto", "off"],
+                    "description": "REQUIRED for 'set_mode' action. Mode: heat, cool, heat_cool (auto), or off"
                 }
             },
             ["action"]
