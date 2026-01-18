@@ -416,7 +416,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             "position": {"type": "integer", "description": "Cover position 0-100 (0=closed)"},
             "volume": {"type": "integer", "description": "Volume level 0-100"},
             "temperature": {"type": "number", "description": "Target temperature for climate"},
-            "hvac_mode": {"type": "string", "enum": ["heat", "cool", "auto", "off", "fan_only", "dry"], "description": "HVAC mode for climate"},
+            "hvac_mode": {"type": "string", "enum": ["heat", "heating", "cool", "cooling", "auto", "off", "fan_only", "dry"], "description": "HVAC mode for climate (heat/cool/auto/off)"},
             "fan_speed": {"type": "string", "enum": ["low", "medium", "high", "auto"], "description": "Fan speed"}
         },
         ["action"]
