@@ -339,8 +339,19 @@ async def control_device(
     color_temp = arguments.get("color_temp")
     volume = arguments.get("volume")
     temperature = arguments.get("temperature")
-    hvac_mode = arguments.get("hvac_mode", "").strip().lower()
+    hvac_mode_raw = arguments.get("hvac_mode", "").strip().lower()
     fan_speed = arguments.get("fan_speed", "").strip().lower()
+
+    # Normalize HVAC mode aliases to Home Assistant values
+    hvac_mode_map = {
+        "heating": "heat", "heat": "heat",
+        "cooling": "cool", "cool": "cool",
+        "auto": "auto", "automatic": "auto", "heat_cool": "heat_cool",
+        "off": "off",
+        "fan": "fan_only", "fan_only": "fan_only",
+        "dry": "dry", "dehumidify": "dry",
+    }
+    hvac_mode = hvac_mode_map.get(hvac_mode_raw, hvac_mode_raw) if hvac_mode_raw else ""
 
     direct_entity_id = arguments.get("entity_id", "").strip()
     entity_ids_list = arguments.get("entity_ids", [])
