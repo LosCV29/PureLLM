@@ -346,12 +346,13 @@ async def control_device(
     hvac_mode_map = {
         "heating": "heat", "heat": "heat",
         "cooling": "cool", "cool": "cool",
-        "auto": "auto", "automatic": "auto", "heat_cool": "heat_cool",
+        "auto": "heat_cool", "automatic": "heat_cool", "heat_cool": "heat_cool", "both": "heat_cool",
         "off": "off",
         "fan": "fan_only", "fan_only": "fan_only",
         "dry": "dry", "dehumidify": "dry",
     }
     hvac_mode = hvac_mode_map.get(hvac_mode_raw, hvac_mode_raw) if hvac_mode_raw else ""
+    _LOGGER.debug("HVAC mode: raw=%s, normalized=%s", hvac_mode_raw, hvac_mode)
 
     direct_entity_id = arguments.get("entity_id", "").strip()
     entity_ids_list = arguments.get("entity_ids", [])

@@ -408,7 +408,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             "action": {
                 "type": "string",
                 "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "favorite", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "set_hvac_mode", "start", "dock", "locate", "return_home", "activate"],
-                "description": "Action to perform. MEDIA: 'pause'=pause, 'resume'/'play'=UNPAUSE (use for unpause/resume/continue - NOT unmute!), 'mute'/'unmute'=audio mute only. LIGHTS: 'dim' with brightness. BLINDS: 'open'/'close'/'stop'/'preset'. CLIMATE: 'set_hvac_mode' with hvac_mode param (heat/cool/auto/off), 'set_temperature' with temperature param."
+                "description": "Action to perform. CLIMATE: Use 'set_hvac_mode' when user wants to change MODE (heating mode, cooling mode, heat/cool mode, turn off AC). Use 'set_temperature' only for setting target temperature degrees. MEDIA: 'pause'=pause, 'resume'/'play'=UNPAUSE. LIGHTS: 'dim' with brightness. BLINDS: 'open'/'close'/'stop'/'preset'."
             },
             "brightness": {"type": "integer", "description": "Light brightness 0-100"},
             "color": {"type": "string", "description": "Light color name (red, blue, warm, cool, etc.)"},
@@ -416,7 +416,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             "position": {"type": "integer", "description": "Cover position 0-100 (0=closed)"},
             "volume": {"type": "integer", "description": "Volume level 0-100"},
             "temperature": {"type": "number", "description": "Target temperature for climate"},
-            "hvac_mode": {"type": "string", "enum": ["heat", "heating", "cool", "cooling", "auto", "off", "fan_only", "dry"], "description": "HVAC mode for climate (heat/cool/auto/off)"},
+            "hvac_mode": {"type": "string", "enum": ["heat", "heating", "cool", "cooling", "heat_cool", "auto", "off"], "description": "REQUIRED when action is set_hvac_mode. Use: heat, cool, heat_cool, or off"},
             "fan_speed": {"type": "string", "enum": ["low", "medium", "high", "auto"], "description": "Fan speed"}
         },
         ["action"]
