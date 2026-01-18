@@ -603,10 +603,11 @@ async def control_device(
         if domain == "climate":
             if action == "set_temperature" and temperature is not None:
                 service_data["temperature"] = temperature
+            # Handle HVAC mode changes - if hvac_mode is provided, set it
             if hvac_mode:
-                if action == "set_hvac_mode" or (action == "turn_on" and hvac_mode):
-                    service = "set_hvac_mode"
-                    service_data["hvac_mode"] = hvac_mode
+                service = "set_hvac_mode"
+                service_data["hvac_mode"] = hvac_mode
+                _LOGGER.info("Setting HVAC mode to %s for %s", hvac_mode, entity_id)
 
         # Fan controls
         if domain == "fan" and fan_speed:
@@ -671,6 +672,10 @@ async def control_device(
                 response = f"I've muted the {controlled[0]}."
             elif action == "unmute":
                 response = f"I've unmuted the {controlled[0]}."
+            elif hvac_mode:
+                response = f"I've set the {controlled[0]} to {hvac_mode} mode."
+            elif action == "set_temperature" and temperature is not None:
+                response = f"I've set the {controlled[0]} to {temperature} degrees."
             else:
                 action_word = action_words.get(service, action)
                 response = f"I've {action_word} the {controlled[0]}."
