@@ -407,8 +407,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             },
             "action": {
                 "type": "string",
-                "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "favorite", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "start", "dock", "locate", "return_home", "activate"],
-                "description": "Action to perform. MEDIA: 'pause'=pause, 'resume'/'play'=UNPAUSE (use for unpause/resume/continue - NOT unmute!), 'mute'/'unmute'=audio mute only. LIGHTS: 'dim' with brightness. BLINDS: 'open'/'close'/'stop'/'preset'"
+                "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "favorite", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "set_hvac_mode", "start", "dock", "locate", "return_home", "activate"],
+                "description": "Action to perform. MEDIA: 'pause'=pause, 'resume'/'play'=UNPAUSE (use for unpause/resume/continue - NOT unmute!), 'mute'/'unmute'=audio mute only. LIGHTS: 'dim' with brightness. BLINDS: 'open'/'close'/'stop'/'preset'. CLIMATE: 'set_hvac_mode' with hvac_mode param (heat/cool/auto/off), 'set_temperature' with temperature param."
             },
             "brightness": {"type": "integer", "description": "Light brightness 0-100"},
             "color": {"type": "string", "description": "Light color name (red, blue, warm, cool, etc.)"},
