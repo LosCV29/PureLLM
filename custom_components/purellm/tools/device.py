@@ -613,10 +613,19 @@ async def control_device(
 
         # Climate controls
         if domain == "climate":
-            if action == "set_temperature" and temperature is not None:
+            _LOGGER.info("Climate control: action=%s, hvac_mode=%s, temperature=%s, entity=%s",
+                        action, hvac_mode, temperature, entity_id)
+
+            if action == "set_hvac_mode":
+                if not hvac_mode:
+                    return {"error": "hvac_mode parameter is required for set_hvac_mode action. Use: heat, cool, heat_cool, or off"}
+                service = "set_hvac_mode"
+                service_data["hvac_mode"] = hvac_mode
+                _LOGGER.info("Setting HVAC mode to %s for %s", hvac_mode, entity_id)
+            elif action == "set_temperature" and temperature is not None:
                 service_data["temperature"] = temperature
-            # Handle HVAC mode changes - if hvac_mode is provided, set it
-            if hvac_mode:
+            elif hvac_mode:
+                # If hvac_mode provided with any other action, still set it
                 service = "set_hvac_mode"
                 service_data["hvac_mode"] = hvac_mode
                 _LOGGER.info("Setting HVAC mode to %s for %s", hvac_mode, entity_id)

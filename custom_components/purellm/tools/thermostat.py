@@ -9,6 +9,16 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Normalize HVAC mode aliases to Home Assistant values
+HVAC_MODE_MAP = {
+    "heating": "heat", "heat": "heat",
+    "cooling": "cool", "cool": "cool",
+    "auto": "heat_cool", "automatic": "heat_cool", "heat_cool": "heat_cool", "both": "heat_cool",
+    "off": "off",
+    "fan": "fan_only", "fan_only": "fan_only",
+    "dry": "dry", "dehumidify": "dry",
+}
+
 
 async def control_thermostat(
     arguments: dict[str, Any],
@@ -22,7 +32,7 @@ async def control_thermostat(
     """Control or check the thermostat.
 
     Args:
-        arguments: Tool arguments (action, temperature)
+        arguments: Tool arguments (action, temperature, hvac_mode)
         hass: Home Assistant instance
         thermostat_entity: Climate entity ID
         temp_step: Temperature step for raise/lower
@@ -35,9 +45,10 @@ async def control_thermostat(
     """
     action = arguments.get("action", "").lower()
     temp_arg = arguments.get("temperature")
+    hvac_mode_raw = arguments.get("hvac_mode", "").strip().lower() if arguments.get("hvac_mode") else ""
 
-    if action not in ["raise", "lower", "set", "check"]:
-        return {"error": "Invalid action. Use 'raise', 'lower', 'set', or 'check'"}
+    if action not in ["raise", "lower", "set", "check", "set_mode"]:
+        return {"error": "Invalid action. Use 'raise', 'lower', 'set', 'check', or 'set_mode'"}
 
     try:
         thermostat = hass.states.get(thermostat_entity)
@@ -59,6 +70,27 @@ async def control_thermostat(
                 f"{format_temp_func(current_temp)}."
             )
             return {"response_text": response_text}
+
+        # Handle set_mode action
+        if action == "set_mode":
+            if not hvac_mode_raw:
+                return {"error": "hvac_mode is required for set_mode action. Use: heat, cool, heat_cool, or off"}
+
+            # Normalize the HVAC mode
+            new_mode = HVAC_MODE_MAP.get(hvac_mode_raw, hvac_mode_raw)
+            _LOGGER.info("Setting HVAC mode: raw=%s, normalized=%s, entity=%s", hvac_mode_raw, new_mode, thermostat_entity)
+
+            await hass.services.async_call(
+                "climate",
+                "set_hvac_mode",
+                {"entity_id": thermostat_entity, "hvac_mode": new_mode},
+                blocking=True
+            )
+
+            # Friendly mode name for response
+            mode_names = {"heat": "heating", "cool": "cooling", "heat_cool": "heat/cool", "off": "off"}
+            friendly_mode = mode_names.get(new_mode, new_mode)
+            return {"response_text": f"I've set the thermostat to {friendly_mode} mode."}
 
         # Calculate new temperature
         if action == "set":
