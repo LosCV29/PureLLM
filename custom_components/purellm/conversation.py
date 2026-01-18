@@ -153,7 +153,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
     _attr_has_entity_name = True
     _attr_name = None
-    _attr_supports_streaming = True  # Enable streaming TTS support!
+    _attr_supports_streaming = False  # Disabled: prevents voice pipeline timing issues with micro wake words
 
     @property
     def supported_languages(self) -> list[str] | str:
