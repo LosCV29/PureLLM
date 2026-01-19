@@ -44,14 +44,11 @@ from .const import (
     CONF_CUSTOM_LONGITUDE,
     CONF_OPENWEATHERMAP_API_KEY,
     CONF_GOOGLE_PLACES_API_KEY,
-    CONF_NEWSAPI_KEY,
     # Feature toggles
     CONF_ENABLE_WEATHER,
     CONF_ENABLE_CALENDAR,
     CONF_ENABLE_CAMERAS,
     CONF_ENABLE_SPORTS,
-    CONF_ENABLE_STOCKS,
-    CONF_ENABLE_NEWS,
     CONF_ENABLE_PLACES,
     CONF_ENABLE_RESTAURANTS,
     CONF_ENABLE_THERMOSTAT,
@@ -75,13 +72,10 @@ from .const import (
     DEFAULT_CUSTOM_LONGITUDE,
     DEFAULT_OPENWEATHERMAP_API_KEY,
     DEFAULT_GOOGLE_PLACES_API_KEY,
-    DEFAULT_NEWSAPI_KEY,
     DEFAULT_ENABLE_WEATHER,
     DEFAULT_ENABLE_CALENDAR,
     DEFAULT_ENABLE_CAMERAS,
     DEFAULT_ENABLE_SPORTS,
-    DEFAULT_ENABLE_STOCKS,
-    DEFAULT_ENABLE_NEWS,
     DEFAULT_ENABLE_PLACES,
     DEFAULT_ENABLE_RESTAURANTS,
     DEFAULT_ENABLE_THERMOSTAT,
@@ -539,14 +533,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_ENABLE_SPORTS,
                         default=current.get(CONF_ENABLE_SPORTS, DEFAULT_ENABLE_SPORTS),
-                    ): cv.boolean,
-                    vol.Optional(
-                        CONF_ENABLE_STOCKS,
-                        default=current.get(CONF_ENABLE_STOCKS, DEFAULT_ENABLE_STOCKS),
-                    ): cv.boolean,
-                    vol.Optional(
-                        CONF_ENABLE_NEWS,
-                        default=current.get(CONF_ENABLE_NEWS, DEFAULT_ENABLE_NEWS),
                     ): cv.boolean,
                     vol.Optional(
                         CONF_ENABLE_PLACES,
@@ -1464,10 +1450,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_GOOGLE_PLACES_API_KEY,
                         default=current.get(CONF_GOOGLE_PLACES_API_KEY, DEFAULT_GOOGLE_PLACES_API_KEY),
-                    ): str,
-                    vol.Optional(
-                        CONF_NEWSAPI_KEY,
-                        default=current.get(CONF_NEWSAPI_KEY, DEFAULT_NEWSAPI_KEY),
                     ): str,
                 }
             ),

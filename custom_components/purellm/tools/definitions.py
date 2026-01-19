@@ -189,31 +189,6 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             ["league"]
         ))
 
-    # ===== STOCKS =====
-    if config.enable_stocks:
-        tools.append(_tool(
-            "get_stock_price",
-            "Get current stock price and daily change. Use for: 'Apple stock', 'what's Tesla at', 'AAPL price'. Works with symbols (AAPL, TSLA) or company names.",
-            {"symbol": {"type": "string", "description": "Stock symbol (e.g., 'AAPL', 'TSLA') or company name"}},
-            ["symbol"]
-        ))
-
-    # ===== NEWS =====
-    if config.enable_news and config.newsapi_key:
-        tools.append(_tool(
-            "get_news",
-            "Get latest news headlines. Use for 'what's in the news', 'latest headlines', 'news about X', 'tech news'.",
-            {
-                "category": {
-                    "type": "string",
-                    "enum": ["general", "science", "sports", "business", "health", "entertainment", "tech", "politics", "food", "travel"],
-                    "description": "News category (optional)"
-                },
-                "topic": {"type": "string", "description": "Specific topic to search for (e.g., 'Tesla', 'AI')"},
-                "max_results": {"type": "integer", "description": "Number of articles to return (default: 5, max: 10)"}
-            }
-        ))
-
     # ===== CALENDAR =====
     if config.enable_calendar and config.calendar_entities:
         tools.append(_tool(
@@ -463,8 +438,6 @@ class ToolConfig:
         self.enable_calendar = entity.enable_calendar
         self.enable_cameras = entity.enable_cameras
         self.enable_sports = entity.enable_sports
-        self.enable_stocks = entity.enable_stocks
-        self.enable_news = entity.enable_news
         self.enable_places = entity.enable_places
         self.enable_restaurants = entity.enable_restaurants
         self.enable_thermostat = entity.enable_thermostat
@@ -474,7 +447,6 @@ class ToolConfig:
 
         self.openweathermap_api_key = entity.openweathermap_api_key
         self.google_places_api_key = entity.google_places_api_key
-        self.newsapi_key = entity.newsapi_key
 
         self.thermostat_entity = entity.thermostat_entity
         self.thermostat_temp_step = entity.thermostat_temp_step
