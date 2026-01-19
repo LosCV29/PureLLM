@@ -1019,8 +1019,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 handler = getattr(reminders_tool, tool_name)
                 return await handler(arguments, self.hass, hass_tz)
 
-            # Simple tools with specific handlers
-            simple_handlers = {
+            # Tool handlers - maps tool name to async callable
+            tool_handlers = {
+                # Weather & Info
                 "get_weather_forecast": lambda: weather_tool.get_weather_forecast(
                     arguments, self._session, self.openweathermap_api_key,
                     latitude, longitude, self._track_api_call
@@ -1034,6 +1035,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 "get_calendar_events": lambda: calendar_tool.get_calendar_events(
                     arguments, self.hass, self.calendar_entities, hass_tz
                 ),
+                # Device control
                 "control_thermostat": lambda: thermostat_tool.control_thermostat(
                     arguments, self.hass, self.thermostat_entity,
                     self.thermostat_temp_step, self.thermostat_min_temp,
@@ -1056,45 +1058,43 @@ class PureLLMConversationEntity(ConversationEntity):
                     room_player_mapping=self.room_player_mapping
                 ),
                 "manage_list": lambda: lists_tool.manage_list(arguments, self.hass),
+                # Places (with notification post-processing)
+                "find_nearby_places": lambda: places_tool.find_nearby_places(
+                    arguments, self._session, self.google_places_api_key,
+                    latitude, longitude, self._track_api_call
+                ),
+                "get_restaurant_recommendations": lambda: places_tool.get_restaurant_recommendations(
+                    arguments, self._session, self.google_places_api_key,
+                    latitude, longitude, self._track_api_call
+                ),
+                "book_restaurant": lambda: places_tool.book_restaurant(
+                    arguments, self._session, self.google_places_api_key,
+                    latitude, longitude, self._track_api_call
+                ),
+                # Camera (with notification post-processing)
+                "check_camera": lambda: camera_tool.check_camera(
+                    arguments, self.hass, self.camera_friendly_names or None
+                ),
+                "quick_camera_check": lambda: camera_tool.quick_camera_check(
+                    arguments, self.hass, self.camera_friendly_names or None
+                ),
             }
 
-            if tool_name in simple_handlers:
-                return await simple_handlers[tool_name]()
+            # Execute tool if it's in our handlers
+            if tool_name in tool_handlers:
+                result = await tool_handlers[tool_name]()
 
-            # Tools with notification post-processing
-            if tool_name == "find_nearby_places":
-                result = await places_tool.find_nearby_places(
-                    arguments, self._session, self.google_places_api_key,
-                    latitude, longitude, self._track_api_call
-                )
-                if self.notify_on_places and self.notification_entities and result.get("places"):
-                    await self._send_places_notification(result)
-                return result
+                # Apply notification post-processing if configured
+                if self.notification_entities:
+                    if tool_name == "find_nearby_places" and self.notify_on_places and result.get("places"):
+                        await self._send_places_notification(result)
+                    elif tool_name == "get_restaurant_recommendations" and self.notify_on_restaurants and result.get("restaurants"):
+                        await self._send_restaurant_notification(result)
+                    elif tool_name == "book_restaurant" and result.get("reservation_url"):
+                        await self._send_reservation_notification(result)
+                    elif tool_name in ("check_camera", "quick_camera_check") and self.notify_on_camera and result.get("snapshot_url"):
+                        await self._send_camera_notification(result)
 
-            if tool_name == "get_restaurant_recommendations":
-                result = await places_tool.get_restaurant_recommendations(
-                    arguments, self._session, self.google_places_api_key,
-                    latitude, longitude, self._track_api_call
-                )
-                if self.notify_on_restaurants and self.notification_entities and result.get("restaurants"):
-                    await self._send_restaurant_notification(result)
-                return result
-
-            if tool_name == "book_restaurant":
-                result = await places_tool.book_restaurant(
-                    arguments, self._session, self.google_places_api_key,
-                    latitude, longitude, self._track_api_call
-                )
-                if self.notification_entities and result.get("reservation_url"):
-                    await self._send_reservation_notification(result)
-                return result
-
-            # Camera tools with notification
-            if tool_name in ("check_camera", "quick_camera_check"):
-                handler = getattr(camera_tool, tool_name)
-                result = await handler(arguments, self.hass, self.camera_friendly_names or None)
-                if self.notify_on_camera and self.notification_entities and result.get("snapshot_url"):
-                    await self._send_camera_notification(result)
                 return result
 
             # Conditional tools (require configuration)

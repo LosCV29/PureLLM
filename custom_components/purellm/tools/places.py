@@ -9,13 +9,16 @@ from datetime import datetime, time as dt_time
 from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
-from ..utils.helpers import calculate_distance_miles
+from ..utils.helpers import calculate_distance_miles, format_time_remaining
 from ..utils.http_client import post_json, fetch_json, log_and_error
 
 if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
+
+# Google Places API URL
+PLACES_API_URL = "https://places.googleapis.com/v1/places:searchText"
 
 # Price level mapping
 PRICE_LEVELS = {
@@ -26,8 +29,131 @@ PRICE_LEVELS = {
     "PRICE_LEVEL_VERY_EXPENSIVE": "$$$$",
 }
 
+# Reverse mapping for price filter
+PRICE_LEVEL_FILTERS = {
+    "1": "PRICE_LEVEL_INEXPENSIVE",
+    "2": "PRICE_LEVEL_MODERATE",
+    "3": "PRICE_LEVEL_EXPENSIVE",
+    "4": "PRICE_LEVEL_VERY_EXPENSIVE",
+}
+
 # Day of week mapping (Google uses 0=Sunday)
 DAYS_OF_WEEK = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+# Common field masks for different use cases
+FIELD_MASK_FULL = [
+    "places.displayName",
+    "places.formattedAddress",
+    "places.shortFormattedAddress",
+    "places.location",
+    "places.rating",
+    "places.userRatingCount",
+    "places.priceLevel",
+    "places.currentOpeningHours",
+    "places.regularOpeningHours",
+    "places.businessStatus",
+    "places.internationalPhoneNumber",
+    "places.websiteUri",
+    "places.googleMapsUri",
+]
+
+FIELD_MASK_RESTAURANT = FIELD_MASK_FULL + ["places.primaryType", "places.types"]
+
+FIELD_MASK_BOOKING = [
+    "places.displayName",
+    "places.formattedAddress",
+    "places.shortFormattedAddress",
+    "places.location",
+    "places.internationalPhoneNumber",
+    "places.websiteUri",
+    "places.googleMapsUri",
+]
+
+
+def _build_headers(api_key: str, field_mask: list[str]) -> dict[str, str]:
+    """Build common headers for Google Places API requests."""
+    return {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": api_key,
+        "X-Goog-FieldMask": ",".join(field_mask),
+    }
+
+
+def _build_location_bias(latitude: float, longitude: float, radius: float = 10000.0) -> dict:
+    """Build location bias structure for Google Places API."""
+    return {
+        "circle": {
+            "center": {"latitude": latitude, "longitude": longitude},
+            "radius": radius
+        }
+    }
+
+
+async def _search_places(
+    session: "aiohttp.ClientSession",
+    api_key: str,
+    query: str,
+    latitude: float,
+    longitude: float,
+    field_mask: list[str],
+    max_results: int = 5,
+    rank_preference: str = "DISTANCE",
+    included_type: str | None = None,
+    price_levels: list[str] | None = None,
+    radius: float = 10000.0,
+) -> tuple[list[dict] | None, int | str]:
+    """Execute a Google Places API search.
+
+    Returns:
+        Tuple of (places list, status). places is None on error.
+    """
+    headers = _build_headers(api_key, field_mask)
+
+    body = {
+        "textQuery": query,
+        "locationBias": _build_location_bias(latitude, longitude, radius),
+        "maxResultCount": max_results,
+        "rankPreference": rank_preference,
+    }
+
+    if included_type:
+        body["includedType"] = included_type
+
+    if price_levels:
+        body["priceLevels"] = price_levels
+
+    data, status = await post_json(session, PLACES_API_URL, body, headers=headers)
+
+    if data is None:
+        return None, status
+
+    return data.get("places", []), status
+
+
+def _extract_place_basics(place: dict) -> dict[str, Any]:
+    """Extract common fields from a Google Places result."""
+    return {
+        "name": place.get("displayName", {}).get("text", "Unknown"),
+        "address": place.get("formattedAddress", "Address not available"),
+        "short_address": place.get("shortFormattedAddress", place.get("formattedAddress", "Address not available")),
+        "rating": place.get("rating"),
+        "rating_count": place.get("userRatingCount", 0),
+        "price_level": PRICE_LEVELS.get(place.get("priceLevel"), ""),
+        "phone": place.get("internationalPhoneNumber", ""),
+        "website": place.get("websiteUri", ""),
+        "maps_url": place.get("googleMapsUri", ""),
+        "latitude": place.get("location", {}).get("latitude"),
+        "longitude": place.get("location", {}).get("longitude"),
+    }
+
+
+def _get_hours_info(place: dict) -> dict[str, Any]:
+    """Get parsed opening hours from a place result."""
+    if "currentOpeningHours" in place:
+        return _parse_opening_hours(place["currentOpeningHours"])
+    elif "regularOpeningHours" in place:
+        return _parse_opening_hours(place["regularOpeningHours"])
+    return {"status": "Hours unknown"}
 
 
 def _parse_opening_hours(opening_hours: dict[str, Any], now: datetime | None = None) -> dict[str, Any]:
@@ -120,19 +246,12 @@ def _parse_opening_hours(opening_hours: dict[str, Any], now: datetime | None = N
 
         # Calculate hours remaining
         close_dt = now.replace(hour=close_time.hour, minute=close_time.minute, second=0)
-        remaining = close_dt - now
-        remaining_minutes = remaining.total_seconds() / 60
+        remaining_seconds = (close_dt - now).total_seconds()
 
-        if remaining_minutes > 0:
-            hours = int(remaining_minutes // 60)
-            minutes = int(remaining_minutes % 60)
-
-            if hours > 0:
-                result["hours_remaining"] = f"{hours}h {minutes}m"
-                result["status"] = f"Open · Closes at {current_period['close_str']} ({hours}h {minutes}m remaining)"
-            else:
-                result["hours_remaining"] = f"{minutes}m"
-                result["status"] = f"Open · Closes at {current_period['close_str']} ({minutes}m remaining)"
+        if remaining_seconds > 0:
+            time_remaining = format_time_remaining(remaining_seconds)
+            result["hours_remaining"] = time_remaining
+            result["status"] = f"Open · Closes at {current_period['close_str']} ({time_remaining} remaining)"
         else:
             result["status"] = f"Open · Closes at {current_period['close_str']}"
     elif is_open:
@@ -189,51 +308,18 @@ async def find_nearby_places(
         return {"error": "No search query provided"}
 
     try:
-        url = "https://places.googleapis.com/v1/places:searchText"
-
-        # Request comprehensive field mask for rich place data
-        field_mask = ",".join([
-            "places.displayName",
-            "places.formattedAddress",
-            "places.shortFormattedAddress",
-            "places.location",
-            "places.rating",
-            "places.userRatingCount",
-            "places.priceLevel",
-            "places.currentOpeningHours",
-            "places.regularOpeningHours",
-            "places.businessStatus",
-            "places.internationalPhoneNumber",
-            "places.websiteUri",
-            "places.googleMapsUri",
-        ])
-
-        headers = {
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": api_key,
-            "X-Goog-FieldMask": field_mask,
-        }
-
-        body = {
-            "textQuery": query,
-            "locationBias": {
-                "circle": {
-                    "center": {"latitude": latitude, "longitude": longitude},
-                    "radius": 10000.0
-                }
-            },
-            "maxResultCount": max_results,
-            "rankPreference": "DISTANCE"
-        }
-
         track_api_call("places")
 
-        data, status = await post_json(session, url, body, headers=headers)
-        if data is None:
+        places, status = await _search_places(
+            session, api_key, query, latitude, longitude,
+            field_mask=FIELD_MASK_FULL,
+            max_results=max_results,
+            rank_preference="DISTANCE",
+        )
+
+        if places is None:
             _LOGGER.error("Google Places HTTP error: %s", status)
             return {"error": f"Google Places API error: {status}"}
-
-        places = data.get("places", [])
 
         if not places:
             return {"results": f"No results found for '{query}' near you."}
@@ -242,57 +328,42 @@ async def find_nearby_places(
         detailed_places = []
 
         for idx, place in enumerate(places[:max_results], 1):
-            place_name = place.get("displayName", {}).get("text", "Unknown")
-            address = place.get("formattedAddress", "Address not available")
-            short_address = place.get("shortFormattedAddress", address)
-            rating = place.get("rating")
-            rating_count = place.get("userRatingCount", 0)
-            price_level = PRICE_LEVELS.get(place.get("priceLevel"), "")
-            business_status = place.get("businessStatus", "")
-            phone = place.get("internationalPhoneNumber", "")
-            website = place.get("websiteUri", "")
-            maps_url = place.get("googleMapsUri", "")
-
-            # Parse opening hours smartly
-            hours_info = {"status": "Hours unknown"}
-            if "currentOpeningHours" in place:
-                hours_info = _parse_opening_hours(place["currentOpeningHours"])
-            elif "regularOpeningHours" in place:
-                hours_info = _parse_opening_hours(place["regularOpeningHours"])
+            # Extract common fields using helper
+            basics = _extract_place_basics(place)
+            hours_info = _get_hours_info(place)
 
             # Calculate distance
-            place_lat = place.get("location", {}).get("latitude")
-            place_lng = place.get("location", {}).get("longitude")
             distance_miles = None
             distance_str = ""
-
-            if place_lat and place_lng:
-                distance_miles = calculate_distance_miles(latitude, longitude, place_lat, place_lng)
+            if basics["latitude"] and basics["longitude"]:
+                distance_miles = calculate_distance_miles(
+                    latitude, longitude, basics["latitude"], basics["longitude"]
+                )
                 distance_str = f"{distance_miles:.1f} mi"
 
             # Build rating string
             rating_str = ""
-            if rating:
-                rating_str = f"★ {rating}"
-                if rating_count:
-                    rating_str += f" ({rating_count:,} reviews)"
+            if basics["rating"]:
+                rating_str = f"★ {basics['rating']}"
+                if basics["rating_count"]:
+                    rating_str += f" ({basics['rating_count']:,} reviews)"
 
             # Build concise result text for voice/text response
-            parts = [f"{idx}. {place_name}"]
+            parts = [f"{idx}. {basics['name']}"]
 
             if distance_str:
                 parts.append(f"- {distance_str}")
 
-            if short_address and short_address != place_name:
-                parts.append(f"at {short_address}")
+            if basics["short_address"] and basics["short_address"] != basics["name"]:
+                parts.append(f"at {basics['short_address']}")
 
             status_parts = []
             if hours_info.get("status") and hours_info["status"] != "Unknown":
                 status_parts.append(hours_info["status"])
             if rating_str:
                 status_parts.append(rating_str)
-            if price_level:
-                status_parts.append(price_level)
+            if basics["price_level"]:
+                status_parts.append(basics["price_level"])
 
             if status_parts:
                 parts.append(f"({', '.join(status_parts)})")
@@ -302,23 +373,23 @@ async def find_nearby_places(
 
             # Build detailed place object for structured data
             place_detail = {
-                "name": place_name,
-                "address": address,
-                "short_address": short_address,
+                "name": basics["name"],
+                "address": basics["address"],
+                "short_address": basics["short_address"],
                 "distance_miles": distance_miles,
-                "rating": rating,
-                "rating_count": rating_count,
-                "price_level": price_level,
+                "rating": basics["rating"],
+                "rating_count": basics["rating_count"],
+                "price_level": basics["price_level"],
                 "is_open": hours_info.get("is_open"),
                 "hours_status": hours_info.get("status"),
                 "closing_time": hours_info.get("closing_time"),
                 "opening_time": hours_info.get("opening_time"),
                 "hours_remaining": hours_info.get("hours_remaining"),
                 "today_hours": hours_info.get("today_hours"),
-                "phone": phone,
-                "website": website,
-                "directions_url": maps_url,
-                "coordinates": {"lat": place_lat, "lng": place_lng} if place_lat else None,
+                "phone": basics["phone"],
+                "website": basics["website"],
+                "directions_url": basics["maps_url"],
+                "coordinates": {"lat": basics["latitude"], "lng": basics["longitude"]} if basics["latitude"] else None,
             }
 
             # Add weekly hours if available
@@ -385,80 +456,37 @@ async def get_restaurant_recommendations(
         sort_by = "rating"
 
     try:
-        url = "https://places.googleapis.com/v1/places:searchText"
-
-        # Request comprehensive field mask for rich place data
-        field_mask = ",".join([
-            "places.displayName",
-            "places.formattedAddress",
-            "places.shortFormattedAddress",
-            "places.location",
-            "places.rating",
-            "places.userRatingCount",
-            "places.priceLevel",
-            "places.currentOpeningHours",
-            "places.regularOpeningHours",
-            "places.businessStatus",
-            "places.internationalPhoneNumber",
-            "places.websiteUri",
-            "places.googleMapsUri",
-            "places.primaryType",
-            "places.types",
-        ])
-
-        headers = {
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": api_key,
-            "X-Goog-FieldMask": field_mask,
-        }
-
         # Build search query with restaurant context
         search_query = f"{query} restaurant"
 
         # Map sort_by to Google's rankPreference
-        rank_preference = "RELEVANCE"
-        if sort_by == "distance":
-            rank_preference = "DISTANCE"
+        rank_preference = "DISTANCE" if sort_by == "distance" else "RELEVANCE"
 
-        body = {
-            "textQuery": search_query,
-            "includedType": "restaurant",
-            "locationBias": {
-                "circle": {
-                    "center": {"latitude": latitude, "longitude": longitude},
-                    "radius": 10000.0
-                }
-            },
-            "maxResultCount": max_results,
-            "rankPreference": rank_preference
-        }
-
-        # Add price level filter if specified
+        # Parse price filter using the mapping
+        price_levels = None
         if price:
-            price_levels = []
-            for p in price.split(","):
-                p = p.strip()
-                if p == "1":
-                    price_levels.append("PRICE_LEVEL_INEXPENSIVE")
-                elif p == "2":
-                    price_levels.append("PRICE_LEVEL_MODERATE")
-                elif p == "3":
-                    price_levels.append("PRICE_LEVEL_EXPENSIVE")
-                elif p == "4":
-                    price_levels.append("PRICE_LEVEL_VERY_EXPENSIVE")
-            if price_levels:
-                body["priceLevels"] = price_levels
+            price_levels = [
+                PRICE_LEVEL_FILTERS[p.strip()]
+                for p in price.split(",")
+                if p.strip() in PRICE_LEVEL_FILTERS
+            ]
+            price_levels = price_levels if price_levels else None
 
         _LOGGER.info("Searching Google Places for restaurants: %s (sort=%s, price=%s)", query, sort_by, price or "any")
-
         track_api_call("restaurants")
 
-        data, status = await post_json(session, url, body, headers=headers)
-        if data is None:
+        places, status = await _search_places(
+            session, api_key, search_query, latitude, longitude,
+            field_mask=FIELD_MASK_RESTAURANT,
+            max_results=max_results,
+            rank_preference=rank_preference,
+            included_type="restaurant",
+            price_levels=price_levels,
+        )
+
+        if places is None:
             _LOGGER.error("Google Places API error: %s", status)
             return {"error": f"Google Places API returned status {status}"}
-
-        places = data.get("places", [])
 
         if not places:
             return {"message": f"No restaurants found for '{query}'"}
@@ -471,30 +499,16 @@ async def get_restaurant_recommendations(
 
         results = []
         for place in places[:max_results]:
-            place_name = place.get("displayName", {}).get("text", "Unknown")
-            address = place.get("formattedAddress", "Address not available")
-            short_address = place.get("shortFormattedAddress", address)
-            rating = place.get("rating")
-            review_count = place.get("userRatingCount", 0)
-            price_level = PRICE_LEVELS.get(place.get("priceLevel"), "")
-            phone = place.get("internationalPhoneNumber", "")
-            website = place.get("websiteUri", "")
-            maps_url = place.get("googleMapsUri", "")
-
-            # Parse opening hours
-            hours_info = {"status": "Hours unknown"}
-            if "currentOpeningHours" in place:
-                hours_info = _parse_opening_hours(place["currentOpeningHours"])
-            elif "regularOpeningHours" in place:
-                hours_info = _parse_opening_hours(place["regularOpeningHours"])
+            # Extract common fields using helper
+            basics = _extract_place_basics(place)
+            hours_info = _get_hours_info(place)
 
             # Calculate distance
-            place_lat = place.get("location", {}).get("latitude")
-            place_lng = place.get("location", {}).get("longitude")
             distance_str = ""
-
-            if place_lat and place_lng:
-                distance_miles = calculate_distance_miles(latitude, longitude, place_lat, place_lng)
+            if basics["latitude"] and basics["longitude"]:
+                distance_miles = calculate_distance_miles(
+                    latitude, longitude, basics["latitude"], basics["longitude"]
+                )
                 distance_str = f"{distance_miles:.1f} miles"
 
             # Get cuisine from types
@@ -506,15 +520,15 @@ async def get_restaurant_recommendations(
                 cuisine = ", ".join(cuisine_types[:2])
 
             result = {
-                "name": place_name,
-                "rating": rating,
-                "review_count": review_count,
-                "price": price_level,
-                "address": address,
-                "short_address": short_address,
-                "phone": phone,
-                "website": website,
-                "directions_url": maps_url,
+                "name": basics["name"],
+                "rating": basics["rating"],
+                "review_count": basics["rating_count"],
+                "price": basics["price_level"],
+                "address": basics["address"],
+                "short_address": basics["short_address"],
+                "phone": basics["phone"],
+                "website": basics["website"],
+                "directions_url": basics["maps_url"],
                 "distance": distance_str,
                 "status": hours_info.get("status", ""),
                 "is_open": hours_info.get("is_open"),
@@ -523,8 +537,8 @@ async def get_restaurant_recommendations(
             if cuisine:
                 result["cuisine"] = cuisine
 
-            if place_lat and place_lng:
-                result["coordinates"] = {"lat": place_lat, "lng": place_lng}
+            if basics["latitude"] and basics["longitude"]:
+                result["coordinates"] = {"lat": basics["latitude"], "lng": basics["longitude"]}
 
             results.append(result)
 
@@ -584,25 +598,6 @@ async def book_restaurant(
         _LOGGER.info("Extracted location '%s' from restaurant name, searching for '%s'", location, restaurant_name)
 
     try:
-        url = "https://places.googleapis.com/v1/places:searchText"
-
-        # Request fields for restaurant details
-        field_mask = ",".join([
-            "places.displayName",
-            "places.formattedAddress",
-            "places.shortFormattedAddress",
-            "places.location",
-            "places.internationalPhoneNumber",
-            "places.websiteUri",
-            "places.googleMapsUri",
-        ])
-
-        headers = {
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": api_key,
-            "X-Goog-FieldMask": field_mask,
-        }
-
         # Build search query
         search_query = f"{restaurant_name} restaurant"
         if location:
@@ -611,30 +606,24 @@ async def book_restaurant(
         else:
             _LOGGER.info("Searching Google Places near coordinates for: %s", restaurant_name)
 
-        body = {
-            "textQuery": search_query,
-            "includedType": "restaurant",
-            "locationBias": {
-                "circle": {
-                    "center": {"latitude": latitude, "longitude": longitude},
-                    "radius": 50000.0  # Larger radius for specific restaurant search
-                }
-            },
-            "maxResultCount": 5
-        }
-
         _LOGGER.info("Searching Google Places for reservation: %s", restaurant_name)
         track_api_call("book_restaurant")
 
-        data, status = await post_json(session, url, body, headers=headers)
-        if data is None:
-            _LOGGER.error("Google Places API error: %s", status)
-            return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
+        places, status = await _search_places(
+            session, api_key, search_query, latitude, longitude,
+            field_mask=FIELD_MASK_BOOKING,
+            max_results=5,
+            rank_preference="RELEVANCE",
+            included_type="restaurant",
+            radius=50000.0,  # Larger radius for specific restaurant search
+        )
 
-        places = data.get("places", [])
+        if places is None:
+            _LOGGER.error("Google Places API error: %s", status)
+            return _build_fallback_response(restaurant_name, party_size, date, time)
 
         if not places:
-            return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
+            return _build_fallback_response(restaurant_name, party_size, date, time)
 
         # Find best match by name similarity
         search_name = restaurant_name.lower().strip()
@@ -707,7 +696,7 @@ async def book_restaurant(
 
     except Exception as err:
         _LOGGER.error("Error booking restaurant: %s", err, exc_info=True)
-        return _build_fallback_response(restaurant_name, party_size, date, time, latitude, longitude)
+        return _build_fallback_response(restaurant_name, party_size, date, time)
 
 
 def _build_fallback_response(
@@ -715,8 +704,6 @@ def _build_fallback_response(
     party_size: int,
     date: str,
     time: str,
-    latitude: float,
-    longitude: float,
 ) -> dict[str, Any]:
     """Build a fallback response with Google search URL."""
     # Build Google search query

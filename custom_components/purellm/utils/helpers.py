@@ -64,3 +64,24 @@ def get_nested(obj: Any, *keys: str, default: Any = None) -> Any:
         else:
             return default
     return obj if obj != {} else default
+
+
+def format_time_remaining(total_seconds: float) -> str:
+    """Format seconds into a human-readable time remaining string.
+
+    Args:
+        total_seconds: Total seconds remaining
+
+    Returns:
+        Formatted string like "2h 30m" or "45m"
+
+    Example:
+        format_time_remaining(9000)  # -> "2h 30m"
+        format_time_remaining(1800)  # -> "30m"
+        format_time_remaining(3661)  # -> "1h 1m"
+    """
+    hours, remainder = divmod(int(total_seconds), 3600)
+    minutes = remainder // 60
+    if hours > 0:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"

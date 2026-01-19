@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
+from ..utils.helpers import format_time_remaining
 from ..utils.http_client import fetch_json, log_and_error
 
 if TYPE_CHECKING:
@@ -160,13 +161,9 @@ async def get_weather_forecast(
                     result["current"]["sunrise"] = sunrise_dt.strftime("%-I:%M %p")
 
                     if sunrise_dt > now:
-                        time_until = sunrise_dt - now
-                        hours, remainder = divmod(int(time_until.total_seconds()), 3600)
-                        minutes = remainder // 60
-                        if hours > 0:
-                            result["current"]["time_until_sunrise"] = f"{hours}h {minutes}m"
-                        else:
-                            result["current"]["time_until_sunrise"] = f"{minutes}m"
+                        result["current"]["time_until_sunrise"] = format_time_remaining(
+                            (sunrise_dt - now).total_seconds()
+                        )
                     else:
                         result["current"]["sunrise_passed"] = True
 
@@ -175,13 +172,9 @@ async def get_weather_forecast(
                     result["current"]["sunset"] = sunset_dt.strftime("%-I:%M %p")
 
                     if sunset_dt > now:
-                        time_until = sunset_dt - now
-                        hours, remainder = divmod(int(time_until.total_seconds()), 3600)
-                        minutes = remainder // 60
-                        if hours > 0:
-                            result["current"]["time_until_sunset"] = f"{hours}h {minutes}m"
-                        else:
-                            result["current"]["time_until_sunset"] = f"{minutes}m"
+                        result["current"]["time_until_sunset"] = format_time_remaining(
+                            (sunset_dt - now).total_seconds()
+                        )
                     else:
                         result["current"]["sunset_passed"] = True
 
