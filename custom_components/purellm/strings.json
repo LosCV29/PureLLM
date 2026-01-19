@@ -68,8 +68,6 @@
           "enable_calendar": "Calendar Events",
           "enable_cameras": "Camera Checks (requires HA Video Vision integration)",
           "enable_sports": "Sports Scores & Schedules",
-          "enable_stocks": "Stock Prices",
-          "enable_news": "News Headlines",
           "enable_places": "Find Nearby Places (Google Places)",
           "enable_restaurants": "Restaurant Recommendations (Google Places)",
           "enable_thermostat": "Thermostat Control",
@@ -159,8 +157,7 @@
         "description": "API keys for external services (leave blank to disable that feature)",
         "data": {
           "openweathermap_api_key": "OpenWeatherMap API Key",
-          "google_places_api_key": "Google API Key (Places + Restaurants)",
-          "newsapi_key": "TheNewsAPI Key"
+          "google_places_api_key": "Google API Key (Places + Restaurants)"
         }
       },
       "location": {

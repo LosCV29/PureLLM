@@ -80,8 +80,6 @@ CONF_ENABLE_WEATHER: Final = "enable_weather"
 CONF_ENABLE_CALENDAR: Final = "enable_calendar"
 CONF_ENABLE_CAMERAS: Final = "enable_cameras"
 CONF_ENABLE_SPORTS: Final = "enable_sports"
-CONF_ENABLE_STOCKS: Final = "enable_stocks"
-CONF_ENABLE_NEWS: Final = "enable_news"
 CONF_ENABLE_PLACES: Final = "enable_places"
 CONF_ENABLE_RESTAURANTS: Final = "enable_restaurants"
 CONF_ENABLE_THERMOSTAT: Final = "enable_thermostat"
@@ -93,8 +91,6 @@ DEFAULT_ENABLE_WEATHER: Final = True
 DEFAULT_ENABLE_CALENDAR: Final = True
 DEFAULT_ENABLE_CAMERAS: Final = False  # Requires vllm_video integration
 DEFAULT_ENABLE_SPORTS: Final = True
-DEFAULT_ENABLE_STOCKS: Final = True
-DEFAULT_ENABLE_NEWS: Final = True
 DEFAULT_ENABLE_PLACES: Final = True
 DEFAULT_ENABLE_RESTAURANTS: Final = True
 DEFAULT_ENABLE_THERMOSTAT: Final = True
@@ -163,7 +159,6 @@ GENERAL GUIDELINES:
 - For age questions, use calculate_age (never guess ages)
 - For places/directions, use find_nearby_places
 - For restaurant recommendations, use get_restaurant_recommendations
-- For news, use get_news
 - For calendar events, use get_calendar_events
 ## MUSIC
 You control music via the `control_music` tool. ALWAYS use this tool for ANY music request.
@@ -239,11 +234,9 @@ DEFAULT_CUSTOM_LONGITUDE: Final = 0.0
 # =============================================================================
 CONF_OPENWEATHERMAP_API_KEY: Final = "openweathermap_api_key"
 CONF_GOOGLE_PLACES_API_KEY: Final = "google_places_api_key"
-CONF_NEWSAPI_KEY: Final = "newsapi_key"
 
 DEFAULT_OPENWEATHERMAP_API_KEY: Final = ""
 DEFAULT_GOOGLE_PLACES_API_KEY: Final = ""
-DEFAULT_NEWSAPI_KEY: Final = ""
 
 # =============================================================================
 # NOTIFICATIONS

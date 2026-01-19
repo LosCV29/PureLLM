@@ -37,18 +37,15 @@ from .const import (
     CONF_ENABLE_CAMERAS,
     CONF_ENABLE_DEVICE_STATUS,
     CONF_ENABLE_MUSIC,
-    CONF_ENABLE_NEWS,
     CONF_ENABLE_PLACES,
     CONF_ENABLE_RESTAURANTS,
     CONF_ENABLE_SPORTS,
-    CONF_ENABLE_STOCKS,
     CONF_ENABLE_THERMOSTAT,
     CONF_ENABLE_WEATHER,
     CONF_ENABLE_WIKIPEDIA,
     CONF_GOOGLE_PLACES_API_KEY,
     CONF_MAX_TOKENS,
     CONF_MODEL,
-    CONF_NEWSAPI_KEY,
     CONF_OPENWEATHERMAP_API_KEY,
     CONF_PROVIDER,
     CONF_ROOM_PLAYER_MAPPING,
@@ -79,11 +76,9 @@ from .const import (
     DEFAULT_ENABLE_CAMERAS,
     DEFAULT_ENABLE_DEVICE_STATUS,
     DEFAULT_ENABLE_MUSIC,
-    DEFAULT_ENABLE_NEWS,
     DEFAULT_ENABLE_PLACES,
     DEFAULT_ENABLE_RESTAURANTS,
     DEFAULT_ENABLE_SPORTS,
-    DEFAULT_ENABLE_STOCKS,
     DEFAULT_ENABLE_THERMOSTAT,
     DEFAULT_ENABLE_WEATHER,
     DEFAULT_ENABLE_WIKIPEDIA,
@@ -111,8 +106,6 @@ from .tools.definitions import build_tools, ToolConfig
 # Tool handlers
 from .tools import weather as weather_tool
 from .tools import sports as sports_tool
-from .tools import stocks as stocks_tool
-from .tools import news as news_tool
 from .tools import places as places_tool
 from .tools import wikipedia as wikipedia_tool
 from .tools import calendar as calendar_tool
@@ -168,8 +161,8 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Usage tracking
         self._api_calls = {
-            "weather": 0, "places": 0, "restaurants": 0, "news": 0,
-            "sports": 0, "wikipedia": 0, "llm": 0, "stocks": 0,
+            "weather": 0, "places": 0, "restaurants": 0,
+            "sports": 0, "wikipedia": 0, "llm": 0,
         }
 
         # Caches
@@ -241,15 +234,12 @@ class PureLLMConversationEntity(ConversationEntity):
         # API keys
         self.openweathermap_api_key = config.get(CONF_OPENWEATHERMAP_API_KEY, "")
         self.google_places_api_key = config.get(CONF_GOOGLE_PLACES_API_KEY, "")
-        self.newsapi_key = config.get(CONF_NEWSAPI_KEY, "")
 
         # Feature toggles
         self.enable_weather = config.get(CONF_ENABLE_WEATHER, DEFAULT_ENABLE_WEATHER)
         self.enable_calendar = config.get(CONF_ENABLE_CALENDAR, DEFAULT_ENABLE_CALENDAR)
         self.enable_cameras = config.get(CONF_ENABLE_CAMERAS, DEFAULT_ENABLE_CAMERAS)
         self.enable_sports = config.get(CONF_ENABLE_SPORTS, DEFAULT_ENABLE_SPORTS)
-        self.enable_stocks = config.get(CONF_ENABLE_STOCKS, DEFAULT_ENABLE_STOCKS)
-        self.enable_news = config.get(CONF_ENABLE_NEWS, DEFAULT_ENABLE_NEWS)
         self.enable_places = config.get(CONF_ENABLE_PLACES, DEFAULT_ENABLE_PLACES)
         self.enable_restaurants = config.get(CONF_ENABLE_RESTAURANTS, DEFAULT_ENABLE_RESTAURANTS)
         self.enable_thermostat = config.get(CONF_ENABLE_THERMOSTAT, DEFAULT_ENABLE_THERMOSTAT)
@@ -1025,12 +1015,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 "get_weather_forecast": lambda: weather_tool.get_weather_forecast(
                     arguments, self._session, self.openweathermap_api_key,
                     latitude, longitude, self._track_api_call
-                ),
-                "get_stock_price": lambda: stocks_tool.get_stock_price(
-                    arguments, self._session, self._track_api_call
-                ),
-                "get_news": lambda: news_tool.get_news(
-                    arguments, self._session, self.newsapi_key, hass_tz, self._track_api_call
                 ),
                 "get_calendar_events": lambda: calendar_tool.get_calendar_events(
                     arguments, self.hass, self.calendar_entities, hass_tz
