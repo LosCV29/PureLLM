@@ -115,6 +115,15 @@ from .const import (
     # SofaBaton Activities
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
+    # MCP Memory Server
+    CONF_MCP_ENABLED,
+    CONF_MCP_SERVER_URL,
+    CONF_MCP_USER_ID,
+    CONF_MCP_MAX_MEMORIES,
+    DEFAULT_MCP_ENABLED,
+    DEFAULT_MCP_SERVER_URL,
+    DEFAULT_MCP_USER_ID,
+    DEFAULT_MCP_MAX_MEMORIES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -381,6 +390,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "connection": "Connection Settings",
                 "model": "Model Settings",
                 "features": "Enable/Disable Features",
+                "mcp": "MCP Memory Server",
                 "entities": "PureLLM Default Entities",
                 "device_aliases": "Device Aliases",
                 "voice_scripts": "Voice Scripts",
@@ -569,6 +579,95 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 }
             ),
         )
+
+    async def async_step_mcp(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle MCP memory server configuration.
+
+        Configures connection to self-hosted mcp-mem0 Docker server for
+        persistent conversation memory and context.
+        """
+        errors = {}
+
+        if user_input is not None:
+            # Test MCP connection if enabled
+            if user_input.get(CONF_MCP_ENABLED):
+                server_url = user_input.get(CONF_MCP_SERVER_URL, DEFAULT_MCP_SERVER_URL)
+                try:
+                    valid = await self._test_mcp_connection(server_url)
+                    if not valid:
+                        errors["base"] = "mcp_cannot_connect"
+                except Exception as e:
+                    _LOGGER.error("MCP connection test failed: %s", e)
+                    errors["base"] = "mcp_cannot_connect"
+
+            if not errors:
+                new_options = {**self._entry.options, **user_input}
+                return self.async_create_entry(title="", data=new_options)
+
+        current = {**self._entry.data, **self._entry.options}
+
+        return self.async_show_form(
+            step_id="mcp",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_MCP_ENABLED,
+                        default=current.get(CONF_MCP_ENABLED, DEFAULT_MCP_ENABLED),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_MCP_SERVER_URL,
+                        default=current.get(CONF_MCP_SERVER_URL, DEFAULT_MCP_SERVER_URL),
+                    ): str,
+                    vol.Optional(
+                        CONF_MCP_USER_ID,
+                        default=current.get(CONF_MCP_USER_ID, DEFAULT_MCP_USER_ID),
+                    ): str,
+                    vol.Optional(
+                        CONF_MCP_MAX_MEMORIES,
+                        default=current.get(CONF_MCP_MAX_MEMORIES, DEFAULT_MCP_MAX_MEMORIES),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=1,
+                            max=20,
+                            step=1,
+                            mode=selector.NumberSelectorMode.BOX,
+                        )
+                    ),
+                }
+            ),
+            errors=errors,
+            description_placeholders={
+                "mcp_note": "Connect to a self-hosted mcp-mem0 Docker server for persistent memory. "
+                           "See: https://github.com/coleam00/mcp-mem0"
+            },
+        )
+
+    async def _test_mcp_connection(self, server_url: str) -> bool:
+        """Test connection to MCP server."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                # Try to reach the MCP endpoint
+                async with session.post(
+                    f"{server_url.rstrip('/')}/mcp",
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "ping",
+                        "params": {},
+                    },
+                    timeout=aiohttp.ClientTimeout(total=5),
+                ) as response:
+                    # Accept 200 or even 400-level errors (means server is responding)
+                    return response.status in (200, 400, 404, 405)
+        except aiohttp.ClientConnectorError:
+            # Server not reachable - but allow configuration anyway
+            _LOGGER.warning("MCP server not reachable at %s (may not be running yet)", server_url)
+            return True  # Allow config even if server isn't running
+        except Exception as e:
+            _LOGGER.warning("MCP connection test exception: %s", e)
+            return True  # Allow config
 
     async def async_step_entities(
         self, user_input: dict[str, Any] | None = None
