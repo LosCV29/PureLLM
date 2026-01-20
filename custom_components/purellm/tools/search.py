@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from urllib.parse import urlparse
 from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
@@ -14,6 +15,92 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 TAVILY_API_URL = "https://api.tavily.com/search"
+
+# Map common domains to clean source names
+SOURCE_NAME_MAP = {
+    "cnn.com": "CNN",
+    "bbc.com": "BBC",
+    "bbc.co.uk": "BBC",
+    "nytimes.com": "The New York Times",
+    "washingtonpost.com": "The Washington Post",
+    "theguardian.com": "The Guardian",
+    "reuters.com": "Reuters",
+    "apnews.com": "Associated Press",
+    "foxnews.com": "Fox News",
+    "nbcnews.com": "NBC News",
+    "cbsnews.com": "CBS News",
+    "abcnews.go.com": "ABC News",
+    "usatoday.com": "USA Today",
+    "wsj.com": "Wall Street Journal",
+    "bloomberg.com": "Bloomberg",
+    "forbes.com": "Forbes",
+    "techcrunch.com": "TechCrunch",
+    "theverge.com": "The Verge",
+    "wired.com": "Wired",
+    "arstechnica.com": "Ars Technica",
+    "engadget.com": "Engadget",
+    "cnet.com": "CNET",
+    "zdnet.com": "ZDNet",
+    "wikipedia.org": "Wikipedia",
+    "en.wikipedia.org": "Wikipedia",
+    "reddit.com": "Reddit",
+    "quora.com": "Quora",
+    "stackoverflow.com": "Stack Overflow",
+    "medium.com": "Medium",
+    "healthline.com": "Healthline",
+    "webmd.com": "WebMD",
+    "mayoclinic.org": "Mayo Clinic",
+    "espn.com": "ESPN",
+    "sports.yahoo.com": "Yahoo Sports",
+    "bleacherreport.com": "Bleacher Report",
+    "imdb.com": "IMDb",
+    "rottentomatoes.com": "Rotten Tomatoes",
+    "variety.com": "Variety",
+    "hollywoodreporter.com": "Hollywood Reporter",
+    "allrecipes.com": "Allrecipes",
+    "foodnetwork.com": "Food Network",
+    "epicurious.com": "Epicurious",
+    "yelp.com": "Yelp",
+    "tripadvisor.com": "TripAdvisor",
+}
+
+
+def _extract_source_name(url: str) -> str:
+    """Extract a clean source name from a URL.
+
+    Args:
+        url: The full URL
+
+    Returns:
+        Clean source name (e.g., "CNN", "The New York Times")
+    """
+    try:
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+
+        # Remove www. prefix
+        if domain.startswith("www."):
+            domain = domain[4:]
+
+        # Check our map first
+        if domain in SOURCE_NAME_MAP:
+            return SOURCE_NAME_MAP[domain]
+
+        # For subdomains, try the main domain
+        parts = domain.split(".")
+        if len(parts) > 2:
+            main_domain = ".".join(parts[-2:])
+            if main_domain in SOURCE_NAME_MAP:
+                return SOURCE_NAME_MAP[main_domain]
+
+        # Fall back to capitalizing the domain name
+        # e.g., "example.com" -> "Example"
+        site_name = parts[-2] if len(parts) >= 2 else parts[0]
+        return site_name.capitalize()
+
+    except Exception:
+        return "Web"
+
 
 # Keywords that indicate a news/current events query
 NEWS_KEYWORDS = {
@@ -159,15 +246,24 @@ async def web_search(
 
                 data = await response.json()
 
-        # Extract and format results
+        # Extract and format results with source attribution
         results = []
+        sources_used = []  # Track unique sources for attribution
+
         for item in data.get("results", []):
+            url = item.get("url", "")
+            source_name = _extract_source_name(url)
+
             result = {
+                "source": source_name,  # Clean source name for attribution
                 "title": item.get("title", ""),
-                "url": item.get("url", ""),
+                "url": url,
                 "snippet": item.get("content", ""),  # Tavily calls it "content"
-                "score": round(item.get("score", 0), 3),
             }
+
+            # Track unique sources
+            if source_name not in sources_used:
+                sources_used.append(source_name)
 
             # Include published date if available
             if item.get("published_date"):
@@ -183,9 +279,11 @@ async def web_search(
 
             results.append(result)
 
+        # Build response with attribution instruction
         response_data = {
+            "instruction": "IMPORTANT: Start your response with 'According to [source]...' using one of the sources listed below.",
+            "sources": sources_used,  # List of source names for easy reference
             "query": query,
-            "topic": topic,
             "result_count": len(results),
             "results": results,
         }
@@ -193,16 +291,15 @@ async def web_search(
         # Include AI-generated answer if available (this is the gold!)
         if data.get("answer"):
             response_data["answer"] = data["answer"]
+            # Add primary source for the answer
+            if sources_used:
+                response_data["primary_source"] = sources_used[0]
             _LOGGER.info("Tavily returned answer: %s...", data["answer"][:100])
 
-        # Include response time for debugging
-        if data.get("response_time"):
-            response_data["response_time_ms"] = round(data["response_time"] * 1000)
-
         _LOGGER.info(
-            "Tavily search complete: %d results, answer=%s",
+            "Tavily search complete: %d results, sources=%s",
             len(results),
-            "yes" if data.get("answer") else "no"
+            ", ".join(sources_used[:3])
         )
 
         return response_data

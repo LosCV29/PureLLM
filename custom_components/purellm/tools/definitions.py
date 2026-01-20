@@ -422,6 +422,24 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             ["activity", "action"]
         ))
 
+    # ===== WEB SEARCH =====
+    if config.enable_search and config.tavily_api_key:
+        tools.append(_tool(
+            "web_search",
+            "Search the internet. ONLY use when user explicitly says 'search' or 'search for'. Examples: 'search for best noise canceling headphones', 'search how to remove coffee stains', 'search latest iPhone reviews'. Do NOT use for 'who is', 'what is', 'tell me about' - use Wikipedia for those. IMPORTANT: Always cite your source by starting with 'According to [Source Name]...'",
+            {
+                "query": {
+                    "type": "string",
+                    "description": "The search query - what to search for on the internet"
+                },
+                "days": {
+                    "type": "integer",
+                    "description": "Limit results to last N days. Use 1 for 'today', 7 for 'this week', 30 for 'this month'. Omit for no time limit."
+                }
+            },
+            ["query"]
+        ))
+
     return tools
 
 
@@ -444,9 +462,11 @@ class ToolConfig:
         self.enable_device_status = entity.enable_device_status
         self.enable_wikipedia = entity.enable_wikipedia
         self.enable_music = entity.enable_music
+        self.enable_search = entity.enable_search
 
         self.openweathermap_api_key = entity.openweathermap_api_key
         self.google_places_api_key = entity.google_places_api_key
+        self.tavily_api_key = entity.tavily_api_key
 
         self.thermostat_entity = entity.thermostat_entity
         self.thermostat_temp_step = entity.thermostat_temp_step

@@ -98,6 +98,7 @@ DEFAULT_ENABLE_THERMOSTAT: Final = True
 DEFAULT_ENABLE_DEVICE_STATUS: Final = True
 DEFAULT_ENABLE_WIKIPEDIA: Final = True
 DEFAULT_ENABLE_MUSIC: Final = False  # Requires Music Assistant + player config
+DEFAULT_ENABLE_SEARCH: Final = True  # Web search via Tavily
 
 # =============================================================================
 # ENTITY CONFIGURATION - User-defined entities
@@ -235,9 +236,11 @@ DEFAULT_CUSTOM_LONGITUDE: Final = 0.0
 # =============================================================================
 CONF_OPENWEATHERMAP_API_KEY: Final = "openweathermap_api_key"
 CONF_GOOGLE_PLACES_API_KEY: Final = "google_places_api_key"
+CONF_TAVILY_API_KEY: Final = "tavily_api_key"
 
 DEFAULT_OPENWEATHERMAP_API_KEY: Final = ""
 DEFAULT_GOOGLE_PLACES_API_KEY: Final = ""
+DEFAULT_TAVILY_API_KEY: Final = ""
 
 # =============================================================================
 # NOTIFICATIONS
