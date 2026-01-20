@@ -69,7 +69,8 @@
           "enable_thermostat": "Thermostat Control",
           "enable_device_status": "Device Status Checks",
           "enable_wikipedia": "Wikipedia & Age Lookup",
-          "enable_music": "Music Control (Music Assistant)"
+          "enable_music": "Music Control (Music Assistant)",
+          "enable_search": "Web Search (Tavily)"
         }
       },
       "entities": {
@@ -112,7 +113,8 @@
         "description": "API keys for external services (leave blank to disable that feature)",
         "data": {
           "openweathermap_api_key": "OpenWeatherMap API Key",
-          "google_places_api_key": "Google API Key (Places + Restaurants)"
+          "google_places_api_key": "Google API Key (Places + Restaurants)",
+          "tavily_api_key": "Tavily API Key (Web Search)"
         }
       },
       "location": {

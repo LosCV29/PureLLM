@@ -44,6 +44,7 @@ from .const import (
     CONF_CUSTOM_LONGITUDE,
     CONF_OPENWEATHERMAP_API_KEY,
     CONF_GOOGLE_PLACES_API_KEY,
+    CONF_TAVILY_API_KEY,
     # Feature toggles
     CONF_ENABLE_WEATHER,
     CONF_ENABLE_CALENDAR,
@@ -55,6 +56,7 @@ from .const import (
     CONF_ENABLE_DEVICE_STATUS,
     CONF_ENABLE_WIKIPEDIA,
     CONF_ENABLE_MUSIC,
+    CONF_ENABLE_SEARCH,
     # Entity config
     CONF_THERMOSTAT_ENTITY,
     CONF_CALENDAR_ENTITIES,
@@ -72,6 +74,7 @@ from .const import (
     DEFAULT_CUSTOM_LONGITUDE,
     DEFAULT_OPENWEATHERMAP_API_KEY,
     DEFAULT_GOOGLE_PLACES_API_KEY,
+    DEFAULT_TAVILY_API_KEY,
     DEFAULT_ENABLE_WEATHER,
     DEFAULT_ENABLE_CALENDAR,
     DEFAULT_ENABLE_CAMERAS,
@@ -82,6 +85,7 @@ from .const import (
     DEFAULT_ENABLE_DEVICE_STATUS,
     DEFAULT_ENABLE_WIKIPEDIA,
     DEFAULT_ENABLE_MUSIC,
+    DEFAULT_ENABLE_SEARCH,
     DEFAULT_THERMOSTAT_ENTITY,
     DEFAULT_CALENDAR_ENTITIES,
     DEFAULT_ROOM_PLAYER_MAPPING,
@@ -557,6 +561,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_ENABLE_MUSIC,
                         default=current.get(CONF_ENABLE_MUSIC, DEFAULT_ENABLE_MUSIC),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_ENABLE_SEARCH,
+                        default=current.get(CONF_ENABLE_SEARCH, DEFAULT_ENABLE_SEARCH),
                     ): cv.boolean,
                 }
             ),
@@ -1450,6 +1458,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_GOOGLE_PLACES_API_KEY,
                         default=current.get(CONF_GOOGLE_PLACES_API_KEY, DEFAULT_GOOGLE_PLACES_API_KEY),
+                    ): str,
+                    vol.Optional(
+                        CONF_TAVILY_API_KEY,
+                        default=current.get(CONF_TAVILY_API_KEY, DEFAULT_TAVILY_API_KEY),
                     ): str,
                 }
             ),
