@@ -648,9 +648,9 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
         """Test connection to MCP server."""
         try:
             async with aiohttp.ClientSession() as session:
-                # Try to reach the MCP endpoint
+                # Try to reach the MCP endpoint (SSE transport uses /message)
                 async with session.post(
-                    f"{server_url.rstrip('/')}/mcp",
+                    f"{server_url.rstrip('/')}/message",
                     json={
                         "jsonrpc": "2.0",
                         "id": 1,

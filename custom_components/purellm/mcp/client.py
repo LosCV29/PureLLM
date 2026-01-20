@@ -106,7 +106,7 @@ class MCPClient:
                     },
                     "clientInfo": {
                         "name": "purellm",
-                        "version": "5.2.1",
+                        "version": "5.3.0",
                     },
                 },
             )
@@ -298,7 +298,7 @@ class MCPClient:
 
         try:
             async with self.session.post(
-                f"{self.server_url}/mcp",
+                f"{self.server_url}/message",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=self.timeout),
                 headers={"Content-Type": "application/json"},
@@ -335,7 +335,7 @@ class MCPClient:
 
         try:
             async with self.session.post(
-                f"{self.server_url}/mcp",
+                f"{self.server_url}/message",
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=5),
                 headers={"Content-Type": "application/json"},
