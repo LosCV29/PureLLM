@@ -86,6 +86,7 @@ CONF_ENABLE_THERMOSTAT: Final = "enable_thermostat"
 CONF_ENABLE_DEVICE_STATUS: Final = "enable_device_status"
 CONF_ENABLE_WIKIPEDIA: Final = "enable_wikipedia"
 CONF_ENABLE_MUSIC: Final = "enable_music"
+CONF_ENABLE_SEARCH: Final = "enable_search"
 
 DEFAULT_ENABLE_WEATHER: Final = True
 DEFAULT_ENABLE_CALENDAR: Final = True
