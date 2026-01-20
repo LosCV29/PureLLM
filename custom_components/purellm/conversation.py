@@ -43,7 +43,9 @@ from .const import (
     CONF_ENABLE_THERMOSTAT,
     CONF_ENABLE_WEATHER,
     CONF_ENABLE_WIKIPEDIA,
+    CONF_ENABLE_SEARCH,
     CONF_GOOGLE_PLACES_API_KEY,
+    CONF_TAVILY_API_KEY,
     CONF_MAX_TOKENS,
     CONF_MODEL,
     CONF_OPENWEATHERMAP_API_KEY,
@@ -82,6 +84,8 @@ from .const import (
     DEFAULT_ENABLE_THERMOSTAT,
     DEFAULT_ENABLE_WEATHER,
     DEFAULT_ENABLE_WIKIPEDIA,
+    DEFAULT_ENABLE_SEARCH,
+    DEFAULT_TAVILY_API_KEY,
     DEFAULT_PROVIDER,
     DEFAULT_ROOM_PLAYER_MAPPING,
     DEFAULT_SYSTEM_PROMPT,
@@ -117,6 +121,7 @@ from .tools import timer as timer_tool
 from .tools import lists as lists_tool
 from .tools import sofabaton as sofabaton_tool
 from .tools import reminders as reminders_tool
+from .tools import search as search_tool
 
 if TYPE_CHECKING:
     import aiohttp
@@ -234,6 +239,7 @@ class PureLLMConversationEntity(ConversationEntity):
         # API keys
         self.openweathermap_api_key = config.get(CONF_OPENWEATHERMAP_API_KEY, "")
         self.google_places_api_key = config.get(CONF_GOOGLE_PLACES_API_KEY, "")
+        self.tavily_api_key = config.get(CONF_TAVILY_API_KEY, DEFAULT_TAVILY_API_KEY)
 
         # Feature toggles
         self.enable_weather = config.get(CONF_ENABLE_WEATHER, DEFAULT_ENABLE_WEATHER)
@@ -246,6 +252,7 @@ class PureLLMConversationEntity(ConversationEntity):
         self.enable_device_status = config.get(CONF_ENABLE_DEVICE_STATUS, DEFAULT_ENABLE_DEVICE_STATUS)
         self.enable_wikipedia = config.get(CONF_ENABLE_WIKIPEDIA, DEFAULT_ENABLE_WIKIPEDIA)
         self.enable_music = config.get(CONF_ENABLE_MUSIC, DEFAULT_ENABLE_MUSIC)
+        self.enable_search = config.get(CONF_ENABLE_SEARCH, DEFAULT_ENABLE_SEARCH)
 
         # Entity configuration
         self.room_player_mapping = parse_entity_config(config.get(CONF_ROOM_PLAYER_MAPPING, DEFAULT_ROOM_PLAYER_MAPPING))
@@ -1061,6 +1068,10 @@ class PureLLMConversationEntity(ConversationEntity):
                 ),
                 "quick_camera_check": lambda: camera_tool.quick_camera_check(
                     arguments, self.hass, self.camera_friendly_names or None
+                ),
+                # Web search
+                "web_search": lambda: search_tool.web_search(
+                    arguments, self._session, self.tavily_api_key, self._track_api_call
                 ),
             }
 
