@@ -100,15 +100,6 @@ from .const import (
     PROVIDER_GOOGLE,
     PROVIDER_LM_STUDIO,
     get_version,
-    # MCP Memory Server
-    CONF_MCP_ENABLED,
-    CONF_MCP_SERVER_URL,
-    CONF_MCP_USER_ID,
-    CONF_MCP_MAX_MEMORIES,
-    DEFAULT_MCP_ENABLED,
-    DEFAULT_MCP_SERVER_URL,
-    DEFAULT_MCP_USER_ID,
-    DEFAULT_MCP_MAX_MEMORIES,
 )
 
 # Import from new modules
@@ -192,10 +183,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Current user_input for tool execution
         self._current_user_input: conversation.ConversationInput | None = None
-
-        # MCP memory components (initialized in async_added_to_hass if enabled)
-        self._mcp_client = None
-        self._mcp_memory = None
 
         # Initialize config
         self._update_from_config({**config_entry.data, **config_entry.options})
@@ -323,12 +310,6 @@ class PureLLMConversationEntity(ConversationEntity):
         except (json.JSONDecodeError, TypeError):
             self.sofabaton_activities = []
 
-        # MCP Memory Server configuration
-        self.mcp_enabled = config.get(CONF_MCP_ENABLED, DEFAULT_MCP_ENABLED)
-        self.mcp_server_url = config.get(CONF_MCP_SERVER_URL, DEFAULT_MCP_SERVER_URL)
-        self.mcp_user_id = config.get(CONF_MCP_USER_ID, DEFAULT_MCP_USER_ID)
-        self.mcp_max_memories = int(config.get(CONF_MCP_MAX_MEMORIES, DEFAULT_MCP_MAX_MEMORIES))
-
         # Clear caches on config update
         self._tools = None
         self._cached_system_prompt = None
@@ -406,10 +387,6 @@ class PureLLMConversationEntity(ConversationEntity):
         if self.enable_music and self.room_player_mapping:
             self._music_controller = MusicController(self.hass, self.room_player_mapping)
 
-        # Initialize MCP memory server connection if enabled
-        if self.mcp_enabled and self.mcp_server_url:
-            asyncio.create_task(self._initialize_mcp())
-
         # Warm up provider connection in background (pre-establish SSL handshake)
         # This saves 100-300ms on the first real query
         asyncio.create_task(self._warmup_provider_connection())
@@ -418,58 +395,6 @@ class PureLLMConversationEntity(ConversationEntity):
         self.entry.async_on_unload(
             self.entry.add_update_listener(self._async_config_updated)
         )
-
-    async def _initialize_mcp(self) -> None:
-        """Initialize MCP memory server connection.
-
-        Connects to the self-hosted mcp-mem0 Docker server and initializes
-        the memory manager for persistent context.
-        """
-        try:
-            from .mcp import MCPClient, MCPMemoryManager
-
-            _LOGGER.info("Initializing MCP memory server at %s", self.mcp_server_url)
-
-            # Create MCP client
-            self._mcp_client = MCPClient(
-                server_url=self.mcp_server_url,
-                session=self._session,
-                timeout=30.0,
-            )
-
-            # Connect to server
-            connected = await self._mcp_client.connect()
-            if not connected:
-                _LOGGER.warning("Failed to connect to MCP server at %s", self.mcp_server_url)
-                self._mcp_client = None
-                return
-
-            # Initialize memory manager
-            self._mcp_memory = MCPMemoryManager(
-                client=self._mcp_client,
-                user_id=self.mcp_user_id,
-                max_context_memories=self.mcp_max_memories,
-            )
-
-            initialized = await self._mcp_memory.initialize()
-            if not initialized:
-                _LOGGER.warning("MCP memory manager failed to initialize")
-                self._mcp_memory = None
-                return
-
-            _LOGGER.info(
-                "MCP memory server connected: %s (user: %s, max memories: %d)",
-                self._mcp_client.server_name,
-                self.mcp_user_id,
-                self.mcp_max_memories,
-            )
-
-        except ImportError as e:
-            _LOGGER.error("MCP module not found: %s", e)
-        except Exception as e:
-            _LOGGER.error("Failed to initialize MCP: %s", e)
-            self._mcp_client = None
-            self._mcp_memory = None
 
     async def _warmup_provider_connection(self) -> None:
         """Pre-establish connection to LLM provider.
@@ -557,16 +482,6 @@ class PureLLMConversationEntity(ConversationEntity):
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
 
-        # Inject MCP memory context if available
-        if self._mcp_memory and self._mcp_memory.is_ready:
-            try:
-                memory_context = await self._mcp_memory.get_context_for_query(user_text)
-                if memory_context:
-                    system_prompt = f"{system_prompt}\n\n{memory_context}"
-                    _LOGGER.debug("Injected MCP memory context (%d chars)", len(memory_context))
-            except Exception as e:
-                _LOGGER.warning("Failed to get MCP memory context: %s", e)
-
         max_tokens = self._calculate_max_tokens(user_text)
 
         try:
@@ -591,12 +506,6 @@ class PureLLMConversationEntity(ConversationEntity):
         except Exception as err:
             _LOGGER.error("PureLLM error: %s", err, exc_info=True)
             final_response = "Sorry, there was an error."
-
-        # Extract and store memories from this interaction (async, non-blocking)
-        if self._mcp_memory and self._mcp_memory.is_ready and final_response:
-            asyncio.create_task(
-                self._mcp_memory.extract_and_store_memories(user_text, final_response)
-            )
 
         response = intent.IntentResponse(language=user_input.language)
         response.async_set_speech(final_response or "No response.")
@@ -1197,40 +1106,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 if not self._music_controller:
                     return {"error": "Music control not configured"}
                 return await self._music_controller.control_music(arguments)
-
-            # MCP Memory tools
-            if tool_name == "remember_information":
-                if not self._mcp_memory or not self._mcp_memory.is_ready:
-                    return {"error": "Memory server not connected", "response_text": "I can't save that right now."}
-                content = arguments.get("content", "")
-                category = arguments.get("category", "fact")
-                if not content:
-                    return {"error": "No content provided", "response_text": "What would you like me to remember?"}
-                success = await self._mcp_memory.store_memory(content, category)
-                if success:
-                    return {"success": True, "response_text": "I'll remember that."}
-                return {"success": False, "response_text": "I couldn't save that, but I'll keep it in mind."}
-
-            if tool_name == "recall_memories":
-                if not self._mcp_memory or not self._mcp_memory.is_ready:
-                    return {"error": "Memory server not connected", "response_text": "I don't have access to my memories right now."}
-                query = arguments.get("query", "")
-                if query:
-                    memories = await self._mcp_memory.search_memories(query, limit=5)
-                else:
-                    memories = await self._mcp_memory.get_all_memories(limit=10)
-                if not memories:
-                    return {"memories": [], "response_text": "I don't have any memories about that yet."}
-                memory_texts = []
-                for mem in memories:
-                    content = mem.get("content") or mem.get("text") or mem.get("memory", "")
-                    if content:
-                        memory_texts.append(content)
-                return {
-                    "memories": memory_texts,
-                    "count": len(memory_texts),
-                    "response_text": f"I remember: {'; '.join(memory_texts[:3])}"
-                }
 
             # Fall back to script execution
             if self.hass.services.has_service("script", tool_name):

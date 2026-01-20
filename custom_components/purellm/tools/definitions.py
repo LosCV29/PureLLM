@@ -440,37 +440,6 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             ["query"]
         ))
 
-    # ===== MCP MEMORY =====
-    if config.mcp_enabled:
-        tools.append(_tool(
-            "remember_information",
-            "Store information for future reference. Use when user says 'remember that...', 'don't forget...', 'keep in mind...', or explicitly asks to save/remember something. Also use to save user preferences.",
-            {
-                "content": {
-                    "type": "string",
-                    "description": "The information to remember"
-                },
-                "category": {
-                    "type": "string",
-                    "enum": ["preference", "fact", "instruction"],
-                    "description": "Type: 'preference' for likes/dislikes, 'fact' for personal info, 'instruction' for how-to"
-                }
-            },
-            ["content"]
-        ))
-
-        tools.append(_tool(
-            "recall_memories",
-            "Search for remembered information. Use when user asks 'what do you remember about...', 'do you know my...', 'what did I tell you about...', or references past conversations.",
-            {
-                "query": {
-                    "type": "string",
-                    "description": "What to search for in memories"
-                }
-            },
-            ["query"]
-        ))
-
     return tools
 
 
@@ -506,6 +475,3 @@ class ToolConfig:
         self.calendar_entities = entity.calendar_entities
         self.room_player_mapping = entity.room_player_mapping
         self.sofabaton_activities = getattr(entity, 'sofabaton_activities', [])
-
-        # MCP Memory Server
-        self.mcp_enabled = getattr(entity, 'mcp_enabled', False)

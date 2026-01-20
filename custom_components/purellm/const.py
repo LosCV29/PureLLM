@@ -283,19 +283,6 @@ CONF_SOFABATON_ACTIVITIES: Final = "sofabaton_activities"
 DEFAULT_SOFABATON_ACTIVITIES: Final = "[]"
 
 # =============================================================================
-# MCP MEMORY SERVER - Self-hosted mcp-mem0 configuration
-# =============================================================================
-CONF_MCP_ENABLED: Final = "mcp_enabled"
-CONF_MCP_SERVER_URL: Final = "mcp_server_url"
-CONF_MCP_USER_ID: Final = "mcp_user_id"
-CONF_MCP_MAX_MEMORIES: Final = "mcp_max_memories"
-
-DEFAULT_MCP_ENABLED: Final = False
-DEFAULT_MCP_SERVER_URL: Final = "http://localhost:8050"
-DEFAULT_MCP_USER_ID: Final = "purellm_user"
-DEFAULT_MCP_MAX_MEMORIES: Final = 5
-
-# =============================================================================
 # API TIMEOUT - Shared timeout for external API calls
 # =============================================================================
 API_TIMEOUT: Final = 15  # seconds
