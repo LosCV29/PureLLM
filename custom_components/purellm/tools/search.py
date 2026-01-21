@@ -55,6 +55,7 @@ SOURCE_NAME_MAP = {
     "bleacherreport.com": "Bleacher Report",
     "imdb.com": "IMDb",
     "rottentomatoes.com": "Rotten Tomatoes",
+    "themoviedb.org": "TMDB",
     "variety.com": "Variety",
     "hollywoodreporter.com": "Hollywood Reporter",
     "allrecipes.com": "Allrecipes",
@@ -118,6 +119,13 @@ FRESHNESS_KEYWORDS = {
 # Smart domain patterns - maps keywords to target domains for better results
 # Format: (keywords_tuple, domains_list, enable_raw_content)
 DOMAIN_PATTERNS = [
+    # Movie/TV synopsis and plot information
+    (
+        ("synopsis", "plot", "storyline", "what is it about", "what's it about",
+         "summary of", "plot summary", "movie plot", "film plot"),
+        ["wikipedia.org", "imdb.com", "rottentomatoes.com", "themoviedb.org"],
+        True  # Need raw content to get full synopsis/plot text
+    ),
     # Movie/TV ratings and reviews
     (
         ("rotten tomatoes", "rt score", "tomatometer", "tomato score", "critics score",
