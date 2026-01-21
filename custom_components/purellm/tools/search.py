@@ -106,7 +106,7 @@ def _extract_source_name(url: str) -> str:
 NEWS_KEYWORDS = {
     "news", "latest", "recent", "today", "yesterday", "this week",
     "breaking", "update", "announced", "released", "happened",
-    "election", "stock", "market", "price", "score", "weather",
+    "election", "stock", "market", "price", "weather",
 }
 
 # Keywords that indicate the user wants very fresh results
@@ -114,6 +114,72 @@ FRESHNESS_KEYWORDS = {
     "today", "yesterday", "this week", "latest", "recent", "now",
     "current", "right now", "just", "breaking",
 }
+
+# Smart domain patterns - maps keywords to target domains for better results
+# Format: (keywords_tuple, domains_list, enable_raw_content)
+DOMAIN_PATTERNS = [
+    # Movie/TV ratings and reviews
+    (
+        ("rotten tomatoes", "rt score", "tomatometer", "tomato score", "critics score",
+         "audience score", "certified fresh", "rotten score"),
+        ["rottentomatoes.com"],
+        True  # Need raw content for scores
+    ),
+    (
+        ("imdb rating", "imdb score", "imdb review"),
+        ["imdb.com"],
+        True
+    ),
+    (
+        ("metacritic", "metascore"),
+        ["metacritic.com"],
+        True
+    ),
+    # Restaurant/business reviews
+    (
+        ("yelp review", "yelp rating", "yelp score"),
+        ["yelp.com"],
+        True
+    ),
+    # Recipes
+    (
+        ("recipe for", "how to make", "how to cook", "how to bake"),
+        ["allrecipes.com", "foodnetwork.com", "bonappetit.com", "seriouseats.com", "epicurious.com"],
+        False
+    ),
+    # Tech reviews
+    (
+        ("review of", "reviews for", "best rated", "top rated", "comparison"),
+        ["cnet.com", "theverge.com", "techradar.com", "tomsguide.com", "wirecutter.com"],
+        False
+    ),
+    # Health information
+    (
+        ("symptoms of", "treatment for", "side effects", "medication"),
+        ["mayoclinic.org", "webmd.com", "healthline.com", "nih.gov"],
+        False
+    ),
+]
+
+
+def _detect_target_domains(query: str) -> tuple[list[str] | None, bool]:
+    """Detect if query should target specific domains.
+
+    Args:
+        query: The search query
+
+    Returns:
+        Tuple of (domains_list or None, enable_raw_content)
+    """
+    query_lower = query.lower()
+
+    for keywords, domains, raw_content in DOMAIN_PATTERNS:
+        for keyword in keywords:
+            if keyword in query_lower:
+                _LOGGER.debug("Detected domain pattern '%s' -> %s", keyword, domains)
+                return domains, raw_content
+
+    return None, False
 
 
 def _detect_topic(query: str) -> str:
@@ -162,10 +228,12 @@ async def web_search(
     Args:
         arguments: Tool arguments containing:
             - query: Search query (required)
-            - topic: "general" or "news" (auto-detected if not provided)
+            - topic: "general", "news", or "finance" (auto-detected if not provided)
             - max_results: Number of results (default: 5)
             - include_answer: Whether to include AI summary (default: True)
             - days: Limit results to last N days (optional, for freshness)
+            - include_domains: List of domains to search (e.g., ["rottentomatoes.com"])
+            - exclude_domains: List of domains to exclude
         session: aiohttp session
         api_key: Tavily API key
         track_api_call: Callback to track API usage
@@ -193,8 +261,15 @@ async def web_search(
     # Include AI-generated answer (highly recommended)
     include_answer = arguments.get("include_answer", True)
 
-    # Include raw content for more context
-    include_raw_content = arguments.get("include_raw_content", False)
+    # Smart domain detection - auto-target specific sites based on query
+    auto_domains, auto_raw_content = _detect_target_domains(query)
+
+    # Use explicit domains if provided, otherwise use auto-detected
+    include_domains = arguments.get("include_domains") or auto_domains
+    exclude_domains = arguments.get("exclude_domains")
+
+    # Include raw content if explicitly requested OR if auto-detected for domain targeting
+    include_raw_content = arguments.get("include_raw_content", auto_raw_content)
 
     # Days filter for freshness (None = no filter)
     days = arguments.get("days")
@@ -219,9 +294,15 @@ async def web_search(
     if days:
         payload["days"] = days
 
+    # Add domain filters if specified
+    if include_domains:
+        payload["include_domains"] = include_domains
+    if exclude_domains:
+        payload["exclude_domains"] = exclude_domains
+
     _LOGGER.info(
-        "Tavily search: query='%s', topic=%s, depth=%s, max=%d, days=%s",
-        query, topic, search_depth, max_results, days
+        "Tavily search: query='%s', topic=%s, depth=%s, max=%d, days=%s, domains=%s, raw=%s",
+        query, topic, search_depth, max_results, days, include_domains, include_raw_content
     )
 
     try:
