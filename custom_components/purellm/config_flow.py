@@ -103,9 +103,11 @@ from .const import (
     CONF_NOTIFICATION_ENTITIES,
     CONF_NOTIFY_ON_PLACES,
     CONF_NOTIFY_ON_RESTAURANTS,
+    CONF_NOTIFY_ON_SEARCH,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
     DEFAULT_NOTIFY_ON_RESTAURANTS,
+    DEFAULT_NOTIFY_ON_SEARCH,
     # Voice Scripts
     CONF_VOICE_SCRIPTS,
     DEFAULT_VOICE_SCRIPTS,
@@ -1381,6 +1383,8 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 processed_input[CONF_NOTIFY_ON_PLACES] = user_input[CONF_NOTIFY_ON_PLACES]
             if CONF_NOTIFY_ON_RESTAURANTS in user_input:
                 processed_input[CONF_NOTIFY_ON_RESTAURANTS] = user_input[CONF_NOTIFY_ON_RESTAURANTS]
+            if CONF_NOTIFY_ON_SEARCH in user_input:
+                processed_input[CONF_NOTIFY_ON_SEARCH] = user_input[CONF_NOTIFY_ON_SEARCH]
 
             new_options = {**self._entry.options, **processed_input}
             return self.async_create_entry(title="", data=new_options)
@@ -1432,6 +1436,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_NOTIFY_ON_RESTAURANTS,
                         default=current.get(CONF_NOTIFY_ON_RESTAURANTS, DEFAULT_NOTIFY_ON_RESTAURANTS),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_NOTIFY_ON_SEARCH,
+                        default=current.get(CONF_NOTIFY_ON_SEARCH, DEFAULT_NOTIFY_ON_SEARCH),
                     ): cv.boolean,
                 }
             ),
