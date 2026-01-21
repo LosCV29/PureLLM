@@ -249,11 +249,13 @@ CONF_NOTIFICATION_ENTITIES: Final = "notification_entities"
 CONF_NOTIFY_ON_PLACES: Final = "notify_on_places"
 CONF_NOTIFY_ON_RESTAURANTS: Final = "notify_on_restaurants"
 CONF_NOTIFY_ON_CAMERA: Final = "notify_on_camera"
+CONF_NOTIFY_ON_SEARCH: Final = "notify_on_search"
 
 DEFAULT_NOTIFICATION_ENTITIES: Final = ""  # Newline-separated list of notify service names
 DEFAULT_NOTIFY_ON_PLACES: Final = True
 DEFAULT_NOTIFY_ON_RESTAURANTS: Final = True
 DEFAULT_NOTIFY_ON_CAMERA: Final = True
+DEFAULT_NOTIFY_ON_SEARCH: Final = True
 
 # =============================================================================
 # VOICE SCRIPTS - User-configurable trigger phrases mapped to scripts
