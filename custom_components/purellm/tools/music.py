@@ -1,6 +1,7 @@
 """Music control tool handler."""
 from __future__ import annotations
 
+import asyncio
 import codecs
 import logging
 import re
@@ -257,6 +258,35 @@ class MusicController:
         _LOGGER.warning("Could not find area_id for %s", entity_id)
         return None
 
+    async def _wait_for_playback_start(self, player: str, timeout: float = 3.0) -> bool:
+        """Wait for player to reach 'playing' state after play_media call.
+
+        DLNA players often need extra time to initialize after receiving a play command.
+        This method polls the player state to ensure playback has actually started.
+
+        Args:
+            player: The media_player entity_id
+            timeout: Max seconds to wait (default 3.0)
+
+        Returns:
+            True if player reached 'playing' state, False if timeout
+        """
+        poll_interval = 0.3
+        elapsed = 0.0
+
+        while elapsed < timeout:
+            state = self._hass.states.get(player)
+            if state and state.state == "playing":
+                _LOGGER.info("Player %s confirmed playing after %.1fs", player, elapsed)
+                return True
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+        # Log but don't fail - the command was sent, player may still be initializing
+        _LOGGER.warning("Player %s did not reach 'playing' state within %.1fs (state: %s)",
+                       player, timeout, state.state if state else "unknown")
+        return False
+
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "", song_on_album: str = "") -> dict:
         """Play music via Music Assistant with search-first for accuracy.
 
@@ -398,6 +428,7 @@ class MusicController:
                                             target={"entity_id": player},
                                             blocking=True
                                         )
+                                        await self._wait_for_playback_start(player)
                                         if shuffle:
                                             await self._hass.services.async_call(
                                                 "media_player", "shuffle_set",
@@ -432,6 +463,7 @@ class MusicController:
                                                 target={"entity_id": player},
                                                 blocking=True
                                             )
+                                            await self._wait_for_playback_start(player)
                                             if shuffle:
                                                 await self._hass.services.async_call(
                                                     "media_player", "shuffle_set",
@@ -529,6 +561,7 @@ class MusicController:
                                     target={"entity_id": player},
                                     blocking=True
                                 )
+                                await self._wait_for_playback_start(player)
                                 if shuffle:
                                     await self._hass.services.async_call(
                                         "media_player", "shuffle_set",
@@ -658,6 +691,7 @@ class MusicController:
                     target={"entity_id": player},
                     blocking=True
                 )
+                await self._wait_for_playback_start(player)
 
                 if shuffle:
                     await self._hass.services.async_call(
@@ -976,6 +1010,7 @@ class MusicController:
                 target={"entity_id": player},
                 blocking=True
             )
+            await self._wait_for_playback_start(player)
 
             await self._hass.services.async_call(
                 "media_player", "shuffle_set",
