@@ -194,7 +194,9 @@ async def get_sports_info(
         try:
             found_sport, found_league = team_leagues[0] if team_leagues else (None, None)
             scoreboards_to_check = [(found_sport, found_league)]
-            if found_sport == "soccer":
+            # Only add other soccer leagues if NOT prioritizing UCL
+            # When user asks for Champions League, only check UCL scoreboard
+            if found_sport == "soccer" and not prioritize_ucl:
                 soccer_leagues = ["eng.1", "uefa.champions", "eng.fa", "eng.league_cup", "usa.1", "esp.1", "ger.1", "ita.1", "fra.1"]
                 for sl in soccer_leagues:
                     if (found_sport, sl) not in scoreboards_to_check:
