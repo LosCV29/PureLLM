@@ -204,13 +204,8 @@ async def get_sports_info(
         try:
             found_sport, found_league = team_leagues[0] if team_leagues else (None, None)
             scoreboards_to_check = [(found_sport, found_league)]
-            # Only add other soccer leagues if NOT prioritizing UCL
-            # When user asks for Champions League, only check UCL scoreboard
-            if found_sport == "soccer" and not prioritize_ucl:
-                soccer_leagues = ["eng.1", "uefa.champions", "eng.fa", "eng.league_cup", "usa.1", "esp.1", "ger.1", "ita.1", "fra.1"]
-                for sl in soccer_leagues:
-                    if (found_sport, sl) not in scoreboards_to_check:
-                        scoreboards_to_check.append((found_sport, sl))
+            # Only check the specified league when user explicitly requests one
+            # Do NOT add other leagues - this caused wrong fixtures being returned
 
             for sb_sport, sb_league in scoreboards_to_check:
                 if live_game_from_scoreboard and next_game_from_scoreboard:
@@ -295,7 +290,7 @@ async def get_sports_info(
             major_soccer_leagues = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions"]
             if found_sport == "soccer" and not next_game_from_scoreboard and found_league in major_soccer_leagues:
                 now_local = datetime.now(hass_timezone)
-                for days_ahead in range(1, 22):  # Check next 3 weeks
+                for days_ahead in range(0, 22):  # Check today and next 3 weeks
                     if next_game_from_scoreboard:
                         break
                     future_date = now_local + timedelta(days=days_ahead)
