@@ -296,10 +296,10 @@ class MusicController:
         media_type: str,
         max_retries: int = 2
     ) -> bool:
-        """Play media with proper wake-up for DLNA players.
+        """Play media with proper wake-up for Pioneer receiver.
 
-        DLNA players in "off" state don't accept commands until turned on.
-        This method calls turn_on first for DLNA players, waits for wake-up,
+        Pioneer receiver in "off" state ignores commands until turned on.
+        This method calls turn_on first ONLY if the receiver is off,
         then sends the play command.
 
         Args:
@@ -312,29 +312,33 @@ class MusicController:
             True if command was sent successfully
         """
         # Check if this is the Pioneer receiver that needs wake-up
-        # Only Pioneer VSX receivers need turn_on before play_media
-        needs_wakeup = "pioneer" in player.lower()
+        is_pioneer = "pioneer" in player.lower()
 
-        _LOGGER.info("Playing media: uri='%s', type='%s' on %s (needs_wakeup: %s)",
-                    media_id, media_type, player, needs_wakeup)
+        _LOGGER.info("Playing media: uri='%s', type='%s' on %s (is_pioneer: %s)",
+                    media_id, media_type, player, is_pioneer)
 
-        # Pioneer receiver needs to be turned on first - ignores commands when off
-        if needs_wakeup:
+        # Pioneer receiver needs to be turned on first ONLY if it's off
+        if is_pioneer:
             state = self._hass.states.get(player)
             current_state = state.state if state else "unknown"
             _LOGGER.info("Pioneer receiver %s current state: %s", player, current_state)
 
-            # Send turn_on command to wake up the receiver
-            _LOGGER.info("Sending turn_on to wake Pioneer receiver %s", player)
-            await self._hass.services.async_call(
-                "media_player", "turn_on",
-                {},
-                target={"entity_id": player},
-                blocking=True
-            )
-
-            # Wait for receiver to wake up and be ready
-            await asyncio.sleep(1.0)
+            # Only send turn_on if receiver is actually off or unavailable
+            if current_state in ("off", "unavailable", "unknown"):
+                try:
+                    _LOGGER.info("Sending turn_on to wake Pioneer receiver %s", player)
+                    await self._hass.services.async_call(
+                        "media_player", "turn_on",
+                        {},
+                        target={"entity_id": player},
+                        blocking=True
+                    )
+                    # Wait for receiver to wake up
+                    await asyncio.sleep(1.0)
+                except Exception as e:
+                    _LOGGER.warning("turn_on failed for %s: %s - continuing anyway", player, e)
+            else:
+                _LOGGER.info("Pioneer receiver already on (state: %s), skipping turn_on", current_state)
 
         # Now send the play command
         await self._hass.services.async_call(
