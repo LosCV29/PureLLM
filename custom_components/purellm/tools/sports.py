@@ -48,6 +48,13 @@ async def get_sports_info(
         track_api_call("sports")
         team_key = team_name.lower().strip()
 
+        # Remove common extra words that don't help with team matching
+        noise_words = ["game", "match", "next", "last", "the", "play", "playing", "fixture", "fixtures", "schedule"]
+        for word in noise_words:
+            team_key = team_key.replace(word, "").strip()
+        # Clean up multiple spaces
+        team_key = " ".join(team_key.split())
+
         # Check for UEFA Champions League ONLY - these keywords mean user wants UCL
         ucl_keywords = ["champions league", "ucl", "champions", "uefa"]
         wants_ucl = any(kw in team_key for kw in ucl_keywords)
