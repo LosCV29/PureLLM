@@ -281,15 +281,16 @@ async def get_sports_info(
                             }
                             next_game_from_scoreboard = True
 
-            # For UCL: check upcoming dates if no next game found (UCL schedule API only shows completed games)
-            if prioritize_ucl and not next_game_from_scoreboard and found_league == "uefa.champions":
+            # For soccer: check upcoming dates if no next game found (ESPN soccer schedule API only shows completed games)
+            major_soccer_leagues = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions"]
+            if found_sport == "soccer" and not next_game_from_scoreboard and found_league in major_soccer_leagues:
                 now_local = datetime.now(hass_timezone)
                 for days_ahead in range(1, 22):  # Check next 3 weeks
                     if next_game_from_scoreboard:
                         break
                     future_date = now_local + timedelta(days=days_ahead)
                     date_str = future_date.strftime("%Y%m%d")
-                    future_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/uefa.champions/scoreboard?dates={date_str}"
+                    future_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{found_league}/scoreboard?dates={date_str}"
                     async with session.get(future_url, headers=ESPN_HEADERS) as future_resp:
                         if future_resp.status != 200:
                             continue
