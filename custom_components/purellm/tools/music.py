@@ -296,11 +296,11 @@ class MusicController:
         media_type: str,
         max_retries: int = 2
     ) -> bool:
-        """Play media with automatic retry for DLNA players that need wake-up.
+        """Play media with quick double-tap for DLNA players that need wake-up.
 
         Some DLNA players (receivers, smart TVs) need a "wake-up" command before
-        they'll actually start playing. This method retries the play command
-        if playback doesn't start within the timeout.
+        they'll actually start playing. This method sends the command twice quickly
+        to mimic the manual workaround of sending the request twice.
 
         Args:
             player: The media_player entity_id
@@ -309,44 +309,40 @@ class MusicController:
             max_retries: Maximum number of attempts (default 2)
 
         Returns:
-            True if playback started, False if all retries failed
+            True if command was sent successfully
         """
-        for attempt in range(1, max_retries + 1):
-            _LOGGER.info("Play attempt %d/%d: uri='%s', type='%s' on %s",
-                        attempt, max_retries, media_id, media_type, player)
+        _LOGGER.info("Playing media with double-tap: uri='%s', type='%s' on %s",
+                    media_id, media_type, player)
 
-            await self._hass.services.async_call(
-                "music_assistant", "play_media",
-                {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
-                target={"entity_id": player},
-                blocking=True
-            )
+        # First command - this "wakes up" the DLNA player
+        await self._hass.services.async_call(
+            "music_assistant", "play_media",
+            {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
+            target={"entity_id": player},
+            blocking=True
+        )
 
-            if await self._wait_for_playback_start(player):
-                if attempt > 1:
-                    _LOGGER.info("Playback started on retry attempt %d", attempt)
-                return True
+        # Brief pause to let the first command register
+        await asyncio.sleep(0.5)
 
-            # If not playing yet, try sending an explicit play command
-            # Some DLNA players load the queue but don't auto-start
-            _LOGGER.info("Sending explicit media_play to kick-start playback on %s", player)
-            await self._hass.services.async_call(
-                "media_player", "media_play",
-                {},
-                target={"entity_id": player},
-                blocking=True
-            )
+        # Second command - this actually starts playback on the now-awake player
+        _LOGGER.info("Sending second play command (double-tap) on %s", player)
+        await self._hass.services.async_call(
+            "music_assistant", "play_media",
+            {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
+            target={"entity_id": player},
+            blocking=True
+        )
 
-            # Check again after explicit play command
-            if await self._wait_for_playback_start(player, timeout=2.0):
-                _LOGGER.info("Playback started after explicit play command on attempt %d", attempt)
-                return True
+        # Quick check if playing, but don't block on it
+        await asyncio.sleep(0.3)
+        state = self._hass.states.get(player)
+        if state and state.state == "playing":
+            _LOGGER.info("Player %s confirmed playing after double-tap", player)
+            return True
 
-            if attempt < max_retries:
-                _LOGGER.info("Playback not started, retrying full sequence...")
-
-        _LOGGER.warning("Playback did not start after %d attempts on %s", max_retries, player)
-        return False
+        _LOGGER.info("Double-tap completed on %s (state: %s)", player, state.state if state else "unknown")
+        return True
 
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "", song_on_album: str = "") -> dict:
         """Play music via Music Assistant with search-first for accuracy.
