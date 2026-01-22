@@ -273,6 +273,7 @@ class MusicController:
         """
         poll_interval = 0.3
         elapsed = 0.0
+        state = None
 
         while elapsed < timeout:
             state = self._hass.states.get(player)
@@ -283,8 +284,9 @@ class MusicController:
             elapsed += poll_interval
 
         # Log but don't fail - the command was sent, player may still be initializing
+        current_state = state.state if state else "unknown"
         _LOGGER.warning("Player %s did not reach 'playing' state within %.1fs (state: %s)",
-                       player, timeout, state.state if state else "unknown")
+                       player, timeout, current_state)
         return False
 
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "", song_on_album: str = "") -> dict:
