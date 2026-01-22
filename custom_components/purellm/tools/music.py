@@ -296,11 +296,10 @@ class MusicController:
         media_type: str,
         max_retries: int = 2
     ) -> bool:
-        """Play media with conditional double-tap for DLNA players that need wake-up.
+        """Play media with double-tap only for DLNA players.
 
-        Some DLNA players (receivers, smart TVs) need a "wake-up" command before
-        they'll actually start playing. This method sends a second command ONLY
-        if the player didn't respond to the first one.
+        Only DLNA players need the wake-up double-tap. Other players (Sonos, etc.)
+        get a single command.
 
         Args:
             player: The media_player entity_id
@@ -311,7 +310,11 @@ class MusicController:
         Returns:
             True if command was sent successfully
         """
-        _LOGGER.info("Playing media: uri='%s', type='%s' on %s", media_id, media_type, player)
+        # Check if this is a DLNA player that needs double-tap
+        is_dlna = "dlna" in player.lower()
+
+        _LOGGER.info("Playing media: uri='%s', type='%s' on %s (DLNA: %s)",
+                    media_id, media_type, player, is_dlna)
 
         # First command
         await self._hass.services.async_call(
@@ -321,27 +324,17 @@ class MusicController:
             blocking=True
         )
 
-        # Brief pause to let responsive players start
-        await asyncio.sleep(0.5)
+        # Only DLNA players need the wake-up double-tap
+        if is_dlna:
+            await asyncio.sleep(0.5)
+            _LOGGER.info("Sending wake-up double-tap to DLNA player %s", player)
+            await self._hass.services.async_call(
+                "music_assistant", "play_media",
+                {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
+                target={"entity_id": player},
+                blocking=True
+            )
 
-        # Check if player is already playing - if so, no double-tap needed
-        state = self._hass.states.get(player)
-        if state and state.state == "playing":
-            _LOGGER.info("Player %s started on first command, no double-tap needed", player)
-            return True
-
-        # Player didn't start - likely a DLNA device that needs wake-up
-        # Send second command (double-tap)
-        _LOGGER.info("Player %s not playing (state: %s), sending wake-up double-tap",
-                    player, state.state if state else "unknown")
-        await self._hass.services.async_call(
-            "music_assistant", "play_media",
-            {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
-            target={"entity_id": player},
-            blocking=True
-        )
-
-        _LOGGER.info("Double-tap sent to %s", player)
         return True
 
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "", song_on_album: str = "") -> dict:
