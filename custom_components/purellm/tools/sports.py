@@ -281,6 +281,57 @@ async def get_sports_info(
                             }
                             next_game_from_scoreboard = True
 
+            # For UCL: check upcoming dates if no next game found (UCL schedule API only shows completed games)
+            if prioritize_ucl and not next_game_from_scoreboard and found_league == "uefa.champions":
+                now_local = datetime.now(hass_timezone)
+                for days_ahead in range(1, 22):  # Check next 3 weeks
+                    if next_game_from_scoreboard:
+                        break
+                    future_date = now_local + timedelta(days=days_ahead)
+                    date_str = future_date.strftime("%Y%m%d")
+                    future_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/uefa.champions/scoreboard?dates={date_str}"
+                    async with session.get(future_url, headers=ESPN_HEADERS) as future_resp:
+                        if future_resp.status != 200:
+                            continue
+                        future_data = await future_resp.json()
+                        for fut_event in future_data.get("events", []):
+                            fut_comp = fut_event.get("competitions", [{}])[0]
+                            fut_competitors = fut_comp.get("competitors", [])
+                            fut_team_ids = [c.get("team", {}).get("id", "") for c in fut_competitors]
+                            if team_id not in fut_team_ids:
+                                continue
+                            # Found upcoming UCL game
+                            home_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "home"), {})
+                            away_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "away"), {})
+                            home_name = home_team_fut.get("team", {}).get("displayName", "Home")
+                            away_name = away_team_fut.get("team", {}).get("displayName", "Away")
+                            game_date_str = fut_event.get("date", "")
+                            try:
+                                game_dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
+                                game_dt_local = game_dt.astimezone(hass_timezone)
+                                game_date_only = game_dt_local.date()
+                                today_date = now_local.date()
+                                tomorrow_date = today_date + timedelta(days=1)
+                                time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
+                                if game_date_only == today_date:
+                                    formatted_date = f"Today at {time_str}"
+                                elif game_date_only == tomorrow_date:
+                                    formatted_date = f"Tomorrow at {time_str}"
+                                else:
+                                    formatted_date = game_dt_local.strftime("%A, %B %d at %I:%M %p")
+                            except (ValueError, KeyError, TypeError, AttributeError):
+                                formatted_date = "TBD"
+                            venue = fut_comp.get("venue", {}).get("fullName", "")
+                            result["next_game"] = {
+                                "date": formatted_date,
+                                "home_team": home_name,
+                                "away_team": away_name,
+                                "venue": venue,
+                                "summary": f"{away_name} @ {home_name} - {formatted_date}"
+                            }
+                            next_game_from_scoreboard = True
+                            break
+
         except Exception as e:
             _LOGGER.warning("Failed to check scoreboard for live games: %s", e)
 
