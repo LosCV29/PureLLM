@@ -48,32 +48,39 @@ async def get_sports_info(
         track_api_call("sports")
         team_key = team_name.lower().strip()
 
-        # Check for league-specific keywords to prioritize search
-        champions_league_keywords = ["champions league", "ucl", "champions"]
-        prioritize_ucl = any(kw in team_key for kw in champions_league_keywords)
-        for kw in champions_league_keywords:
-            team_key = team_key.replace(kw, "").strip()
+        # Check for soccer league-specific keywords
+        soccer_league_keywords = {
+            "uefa.champions": ["champions league", "ucl", "champions", "uefa"],
+            "eng.1": ["premier league", "premier", "epl", "english premier"],
+            "esp.1": ["la liga", "primera", "spanish", "laliga"],
+            "ger.1": ["bundesliga", "german"],
+            "ita.1": ["serie a", "italian", "seria a"],
+            "fra.1": ["ligue 1", "ligue1", "french"],
+        }
 
-        # Search for team in major leagues
-        if prioritize_ucl:
-            leagues_to_try = [
-                ("soccer", "uefa.champions"),
-                ("soccer", "eng.1"),
-                ("basketball", "nba"),
-                ("football", "nfl"),
-                ("baseball", "mlb"),
-                ("hockey", "nhl"),
-                ("football", "college-football"),
-                ("basketball", "mens-college-basketball"),
-            ]
+        specified_soccer_league = None
+        prioritize_ucl = False
+        for league_code, keywords in soccer_league_keywords.items():
+            if any(kw in team_key for kw in keywords):
+                specified_soccer_league = league_code
+                if league_code == "uefa.champions":
+                    prioritize_ucl = True
+                # Remove the keyword from team_key
+                for kw in keywords:
+                    team_key = team_key.replace(kw, "").strip()
+                break
+
+        # Define leagues to search based on whether a soccer league was specified
+        if specified_soccer_league:
+            # Only search the specified soccer league
+            leagues_to_try = [("soccer", specified_soccer_league)]
         else:
+            # Non-soccer sports only - soccer requires explicit league specification
             leagues_to_try = [
                 ("basketball", "nba"),
                 ("football", "nfl"),
                 ("baseball", "mlb"),
                 ("hockey", "nhl"),
-                ("soccer", "eng.1"),
-                ("soccer", "uefa.champions"),
                 ("football", "college-football"),
                 ("basketball", "mens-college-basketball"),
             ]
@@ -118,7 +125,10 @@ async def get_sports_info(
                                 break
 
         if not team_found:
-            return {"error": f"Team '{team_name}' not found. Try the full team name (e.g., 'Miami Heat', 'New York Yankees')"}
+            # If no league was specified, suggest they may need to specify a soccer league
+            if not specified_soccer_league:
+                return {"error": f"Team '{team_name}' not found. For soccer teams, you must specify the league (e.g., 'Man City Premier League', 'Real Madrid La Liga', 'Bayern Munich Champions League')."}
+            return {"error": f"Team '{team_name}' not found in the specified league."}
 
         result = {"team": full_name}
 
