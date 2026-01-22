@@ -323,14 +323,14 @@ class MusicController:
                     target={"entity_id": "media_player.pioneer_zone_1"},
                     blocking=True
                 )
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(2.0)
                 await self._hass.services.async_call(
                     "media_player", "select_source",
                     {"source": "NETWORK"},
                     target={"entity_id": "media_player.pioneer_zone_1"},
                     blocking=True
                 )
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(2.0)
             except Exception as e:
                 _LOGGER.warning("Pioneer wake-up failed: %s", e)
 
