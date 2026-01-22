@@ -1143,9 +1143,8 @@ class PureLLMConversationEntity(ConversationEntity):
             if tool_name == "control_sofabaton":
                 if not self.sofabaton_activities:
                     return {"error": "No SofaBaton activities configured"}
-                session = async_get_clientsession(self.hass)
                 return await sofabaton_tool.control_sofabaton(
-                    arguments, session, self.sofabaton_activities
+                    self.hass, arguments, self.sofabaton_activities
                 )
 
             if tool_name == "control_music":
