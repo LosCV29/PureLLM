@@ -1,12 +1,36 @@
 # vLLM Model Configuration Notes
 
-## Current Setup (FP8 - RECOMMENDED)
+## Current Setup (30B MoE - RECOMMENDED)
+
+**Model:** `QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ`
+**Type:** 30B MoE (Mixture of Experts) with AWQ quantization (~3B active params)
+**Context:** 32,768 tokens
+**Speed:** ~180 tokens/s
+**Date:** 2026-01-21
+
+### Docker Run Command
+```powershell
+docker run -d --gpus all `
+  --name vllm-multimodal `
+  -p 1234:8000 `
+  vllm/vllm-openai:latest `
+  --model QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ `
+  --trust-remote-code `
+  --max-model-len 32768 `
+  --served-model-name qwen3-multimodal `
+  --gpu-memory-utilization 0.7 `
+  --enable-auto-tool-choice `
+  --tool-call-parser hermes
+```
+
+---
+
+## Alternative: 8B FP8 (slower but more context)
 
 **Model:** `Qwen/Qwen3-VL-8B-Instruct-FP8`
-**Type:** 8B Dense with FP8 quantization (official Qwen release)
+**Type:** 8B Dense with FP8 quantization
 **Context:** 65,536 tokens
-**Speed:** ~50 tokens/s (WSL2 on Windows)
-**Date:** 2026-01-21
+**Speed:** ~50 tokens/s (limited by WSL2)
 
 ### Docker Run Command
 ```powershell
@@ -19,30 +43,6 @@ docker run -d --gpus all `
   --max-model-len 65536 `
   --served-model-name qwen3-multimodal `
   --gpu-memory-utilization 0.75 `
-  --enable-auto-tool-choice `
-  --tool-call-parser hermes
-```
-
----
-
-## Rollback Config (30B MoE)
-
-**Model:** `QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ`
-**Type:** 30B MoE (Mixture of Experts) with AWQ quantization
-**Context:** 32,768 tokens
-**Date:** 2026-01-20
-
-### Docker Run Command (for rollback)
-```powershell
-docker run -d --gpus all `
-  --name vllm-multimodal `
-  -p 1234:8000 `
-  vllm/vllm-openai:latest `
-  --model QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ `
-  --trust-remote-code `
-  --max-model-len 32768 `
-  --served-model-name qwen3-multimodal `
-  --gpu-memory-utilization 0.7 `
   --enable-auto-tool-choice `
   --tool-call-parser hermes
 ```
@@ -75,11 +75,11 @@ docker run -d --gpus all `
 
 | Config | Model | Quant | Context | Speed | VRAM |
 |--------|-------|-------|---------|-------|------|
-| FP8 (current) | 8B Dense | FP8 | 64K | ~50 tok/s | ~25GB |
-| AWQ 4-bit | 8B Dense | AWQ | 64K | 3-6 tok/s | ~25GB |
-| 30B MoE | 30B (3B active) | AWQ | 32K | ~4 tok/s | ~24GB |
+| **30B MoE (recommended)** | 30B (3B active) | AWQ | 32K | **~180 tok/s** | ~24GB |
+| 8B FP8 | 8B Dense | FP8 | 64K | ~50 tok/s | ~25GB |
+| 8B AWQ 4-bit | 8B Dense | AWQ | 64K | 3-6 tok/s | ~25GB |
 
-**Note:** Speed is limited by WSL2 overhead on Windows. Native Linux would be 2-3x faster.
+**Why is MoE faster?** The 30B MoE only activates ~3B parameters per token, making it faster than dense 8B models while maintaining quality of a larger model.
 
 ---
 
