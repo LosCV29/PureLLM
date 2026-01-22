@@ -4,7 +4,8 @@
 
 **Model:** `QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ`
 **Type:** 30B MoE (Mixture of Experts) with AWQ quantization (~3B active params)
-**Context:** 32,768 tokens
+**Context:** 65,536 tokens
+**GPU Utilization:** 60%
 **Speed:** ~180 tokens/s
 **Date:** 2026-01-21
 
@@ -16,9 +17,9 @@ docker run -d --gpus all `
   vllm/vllm-openai:latest `
   --model QuantTrio/Qwen3-VL-30B-A3B-Instruct-AWQ `
   --trust-remote-code `
-  --max-model-len 32768 `
+  --max-model-len 65536 `
   --served-model-name qwen3-multimodal `
-  --gpu-memory-utilization 0.7 `
+  --gpu-memory-utilization 0.6 `
   --enable-auto-tool-choice `
   --tool-call-parser hermes
 ```
@@ -75,7 +76,7 @@ docker run -d --gpus all `
 
 | Config | Model | Quant | Context | Speed | VRAM |
 |--------|-------|-------|---------|-------|------|
-| **30B MoE (recommended)** | 30B (3B active) | AWQ | 32K | **~180 tok/s** | ~24GB |
+| **30B MoE (recommended)** | 30B (3B active) | AWQ | 64K | **~180 tok/s** | 60% (~19GB) |
 | 8B FP8 | 8B Dense | FP8 | 64K | ~50 tok/s | ~25GB |
 | 8B AWQ 4-bit | 8B Dense | AWQ | 64K | 3-6 tok/s | ~25GB |
 
