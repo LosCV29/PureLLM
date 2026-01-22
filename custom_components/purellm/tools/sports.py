@@ -84,6 +84,7 @@ async def get_sports_info(
         full_name = team_name
         team_leagues = []
         team_id = None
+        team_abbrev = None  # Store abbreviation for backup matching
 
         search_words = team_key.split()
 
@@ -111,6 +112,7 @@ async def get_sports_info(
 
                             if match:
                                 team_id = t.get("id", "")
+                                team_abbrev = t.get("abbreviation", "").lower()
                                 full_name = t.get("displayName", team_name)
                                 url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams/{team_id}/schedule"
                                 team_leagues.append((sport, league))
@@ -300,8 +302,23 @@ async def get_sports_info(
                             if fut_status.get("state", "") != "pre":
                                 continue
                             fut_competitors = fut_comp.get("competitors", [])
-                            fut_team_ids = [c.get("team", {}).get("id", "") for c in fut_competitors]
-                            if team_id not in fut_team_ids:
+                            # Match by ID, abbreviation, or display name (ESPN IDs can differ between endpoints)
+                            team_match = False
+                            for c in fut_competitors:
+                                c_team = c.get("team", {})
+                                c_id = c_team.get("id", "")
+                                c_abbrev = c_team.get("abbreviation", "").lower()
+                                c_name = c_team.get("displayName", "").lower()
+                                if c_id == team_id:
+                                    team_match = True
+                                    break
+                                if team_abbrev and c_abbrev == team_abbrev:
+                                    team_match = True
+                                    break
+                                if full_name.lower() in c_name or c_name in full_name.lower():
+                                    team_match = True
+                                    break
+                            if not team_match:
                                 continue
                             # Found upcoming game
                             home_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "home"), {})
