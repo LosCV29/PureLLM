@@ -48,35 +48,29 @@ async def get_sports_info(
         track_api_call("sports")
         team_key = team_name.lower().strip()
 
-        # Check for soccer league-specific keywords
-        soccer_league_keywords = {
-            "uefa.champions": ["champions league", "ucl", "champions", "uefa"],
-            "eng.1": ["premier league", "premier", "epl", "english premier"],
-            "esp.1": ["la liga", "primera", "spanish", "laliga"],
-            "ger.1": ["bundesliga", "german"],
-            "ita.1": ["serie a", "italian", "seria a"],
-            "fra.1": ["ligue 1", "ligue1", "french"],
-        }
+        # Check for UEFA Champions League ONLY - these keywords mean user wants UCL
+        ucl_keywords = ["champions league", "ucl", "champions", "uefa"]
+        wants_ucl = any(kw in team_key for kw in ucl_keywords)
 
-        specified_soccer_league = None
-        prioritize_ucl = False
-        for league_code, keywords in soccer_league_keywords.items():
-            if any(kw in team_key for kw in keywords):
-                specified_soccer_league = league_code
-                if league_code == "uefa.champions":
-                    prioritize_ucl = True
-                # Remove the keyword from team_key
-                for kw in keywords:
-                    team_key = team_key.replace(kw, "").strip()
-                break
+        # Remove UCL keywords from team_key if present
+        if wants_ucl:
+            for kw in ucl_keywords:
+                team_key = team_key.replace(kw, "").strip()
 
-        # Define leagues to search based on whether a soccer league was specified
-        if specified_soccer_league:
-            # Only search the specified soccer league
-            leagues_to_try = [("soccer", specified_soccer_league)]
+        # Define leagues to search
+        if wants_ucl:
+            # User explicitly wants Champions League - ONLY search UCL
+            leagues_to_try = [("soccer", "uefa.champions")]
         else:
-            # Non-soccer sports only - soccer requires explicit league specification
+            # Search domestic soccer leagues first (to find team's home league)
+            # Then search American sports
+            # NOTE: We do NOT include UCL here - user must explicitly ask for it
             leagues_to_try = [
+                ("soccer", "eng.1"),      # Premier League
+                ("soccer", "esp.1"),      # La Liga
+                ("soccer", "ger.1"),      # Bundesliga
+                ("soccer", "ita.1"),      # Serie A
+                ("soccer", "fra.1"),      # Ligue 1
                 ("basketball", "nba"),
                 ("football", "nfl"),
                 ("baseball", "mlb"),
@@ -125,10 +119,9 @@ async def get_sports_info(
                                 break
 
         if not team_found:
-            # If no league was specified, suggest they may need to specify a soccer league
-            if not specified_soccer_league:
-                return {"error": f"Team '{team_name}' not found. For soccer teams, you must specify the league (e.g., 'Man City Premier League', 'Real Madrid La Liga', 'Bayern Munich Champions League')."}
-            return {"error": f"Team '{team_name}' not found in the specified league."}
+            if wants_ucl:
+                return {"error": f"Team '{team_name}' not found in UEFA Champions League."}
+            return {"error": f"Team '{team_name}' not found. Try the full team name (e.g., 'Miami Heat', 'Manchester City', 'Real Madrid')."}
 
         result = {"team": full_name}
 
@@ -302,11 +295,15 @@ async def get_sports_info(
                         future_data = await future_resp.json()
                         for fut_event in future_data.get("events", []):
                             fut_comp = fut_event.get("competitions", [{}])[0]
+                            # Skip completed or in-progress games
+                            fut_status = fut_comp.get("status", {}).get("type", {})
+                            if fut_status.get("state", "") != "pre":
+                                continue
                             fut_competitors = fut_comp.get("competitors", [])
                             fut_team_ids = [c.get("team", {}).get("id", "") for c in fut_competitors]
                             if team_id not in fut_team_ids:
                                 continue
-                            # Found upcoming UCL game
+                            # Found upcoming game
                             home_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "home"), {})
                             away_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "away"), {})
                             home_name = home_team_fut.get("team", {}).get("displayName", "Home")
