@@ -327,8 +327,23 @@ class MusicController:
                     _LOGGER.info("Playback started on retry attempt %d", attempt)
                 return True
 
+            # If not playing yet, try sending an explicit play command
+            # Some DLNA players load the queue but don't auto-start
+            _LOGGER.info("Sending explicit media_play to kick-start playback on %s", player)
+            await self._hass.services.async_call(
+                "media_player", "media_play",
+                {},
+                target={"entity_id": player},
+                blocking=True
+            )
+
+            # Check again after explicit play command
+            if await self._wait_for_playback_start(player, timeout=2.0):
+                _LOGGER.info("Playback started after explicit play command on attempt %d", attempt)
+                return True
+
             if attempt < max_retries:
-                _LOGGER.info("Playback not started, retrying...")
+                _LOGGER.info("Playback not started, retrying full sequence...")
 
         _LOGGER.warning("Playback did not start after %d attempts on %s", max_retries, player)
         return False
