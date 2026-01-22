@@ -1144,7 +1144,9 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Handle SofaBaton X2 activity configuration.
 
-        SofaBaton activities map custom names to API keys for starting/stopping activities.
+        SofaBaton activities map custom voice names to switch entities.
+        Voice triggers: 'start [name]' or 'turn on [name]' to turn on,
+                       'turn off [name]' to turn off.
         """
         current = {**self._entry.data, **self._entry.options}
         current_activities_json = current.get(CONF_SOFABATON_ACTIVITIES, DEFAULT_SOFABATON_ACTIVITIES)
@@ -1158,8 +1160,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             selected = user_input.get("select_activity", "")
             activity_name = user_input.get("activity_name", "").strip()
-            start_key = user_input.get("start_key", "").strip()
-            stop_key = user_input.get("stop_key", "").strip()
+            entity_id = user_input.get("entity_id", "")
             action = user_input.get("action", "add")
 
             # Find index of selected activity
@@ -1177,17 +1178,23 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 # Update selected activity
                 activities_list[selected_idx] = {
                     "name": activity_name if activity_name else selected,
-                    "start_key": start_key,
-                    "stop_key": stop_key,
+                    "entity_id": entity_id if entity_id else activities_list[selected_idx].get("entity_id", ""),
                 }
-            elif action == "add" and activity_name and (start_key or stop_key):
-                # Add new activity
-                activities_list.append({
-                    "name": activity_name,
-                    "start_key": start_key,
-                    "stop_key": stop_key,
-                })
-            elif not selected and not activity_name and not start_key:
+            elif action == "add" and activity_name and entity_id:
+                # Add new activity - check for duplicate names
+                existing = [a for a in activities_list if a.get("name", "").lower() == activity_name.lower()]
+                if existing:
+                    # Update existing instead of adding duplicate
+                    for a in activities_list:
+                        if a.get("name", "").lower() == activity_name.lower():
+                            a["entity_id"] = entity_id
+                            break
+                else:
+                    activities_list.append({
+                        "name": activity_name,
+                        "entity_id": entity_id,
+                    })
+            elif not selected and not activity_name and not entity_id:
                 # Empty submit - return to menu
                 return self.async_create_entry(title="", data=self._entry.options)
 
@@ -1207,19 +1214,18 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             activity_lines = []
             for a in activities_list:
                 name = a.get("name", "")
-                has_start = "Start" if a.get("start_key") else ""
-                has_stop = "Stop" if a.get("stop_key") else ""
-                keys = " | ".join(filter(None, [has_start, has_stop]))
-                activity_lines.append(f"**{name}** ({keys})")
-            description = "**Current SofaBaton activities:**\n" + "\n".join(activity_lines) + "\n\nSelect one to edit/delete, or add a new one below."
+                entity = a.get("entity_id", "")
+                activity_lines.append(f"**{name}** → {entity}")
+            description = "**Current SofaBaton activities:**\n" + "\n".join(activity_lines) + "\n\nSelect one to edit/delete, or add a new one below.\n\n**Voice triggers:** 'start [name]' or 'turn on [name]' / 'turn off [name]'"
         else:
-            description = "No SofaBaton activities configured. Add your first activity below.\n\n**Instructions:**\n1. Open Sofabaton app → Me → API Interface\n2. Copy the full URL for each activity (On/Off)\n3. Paste the full URL below\n\n**Example:** PC, PS5, Stream Box"
+            description = "No SofaBaton activities configured. Add your first activity below.\n\n**Instructions:**\n1. Select a SofaBaton switch entity from the dropdown\n2. Give it a custom voice name (e.g., 'PC', 'PlayStation', 'Movie Mode')\n\n**Voice triggers:** 'start PC' or 'turn on PC' / 'turn off PC'"
 
         # Build select options for existing activities
         select_options = []
         for a in activities_list:
             name = a.get("name", "")
-            select_options.append(selector.SelectOptionDict(value=name, label=name))
+            entity = a.get("entity_id", "")
+            select_options.append(selector.SelectOptionDict(value=name, label=f"{name} → {entity}"))
 
         return self.async_show_form(
             step_id="sofabaton",
@@ -1237,14 +1243,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                             type=selector.TextSelectorType.TEXT,
                         )
                     ),
-                    vol.Optional("start_key"): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.PASSWORD,
-                        )
-                    ),
-                    vol.Optional("stop_key"): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.PASSWORD,
+                    vol.Optional("entity_id"): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="switch",
+                            multiple=False,
                         )
                     ),
                     vol.Optional("action", default="add"): selector.SelectSelector(

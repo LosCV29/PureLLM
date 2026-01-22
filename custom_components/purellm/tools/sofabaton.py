@@ -1,28 +1,26 @@
-"""SofaBaton X2 remote tool handler."""
+"""SofaBaton X2 remote tool handler using Home Assistant switch entities."""
 from __future__ import annotations
 
 import logging
 from typing import Any, TYPE_CHECKING
 
-from ..const import API_TIMEOUT
-
 if TYPE_CHECKING:
-    import aiohttp
+    from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
 
 async def control_sofabaton(
+    hass: "HomeAssistant",
     arguments: dict[str, Any],
-    session: "aiohttp.ClientSession",
     sofabaton_activities: list[dict[str, str]],
 ) -> dict[str, Any]:
-    """Control SofaBaton X2 activities.
+    """Control SofaBaton X2 activities via Home Assistant switch entities.
 
     Args:
+        hass: Home Assistant instance
         arguments: Tool arguments (activity, action)
-        session: aiohttp client session
-        sofabaton_activities: List of configured activities with name, start_url, stop_url
+        sofabaton_activities: List of configured activities with name, entity_id
 
     Returns:
         Control result dict
@@ -56,40 +54,35 @@ async def control_sofabaton(
             "error": f"Activity '{activity_name}' not found. Available activities: {', '.join(available) or 'none configured'}"
         }
 
-    # Get the appropriate URL (supports both old key format and new full URL format)
-    if action == "start":
-        url = matched_activity.get("start_key", "") or matched_activity.get("start_url", "")
-        if not url:
-            return {"error": f"No start URL configured for activity '{matched_activity.get('name')}'"}
-    else:  # stop
-        url = matched_activity.get("stop_key", "") or matched_activity.get("stop_url", "")
-        if not url:
-            return {"error": f"No stop URL configured for activity '{matched_activity.get('name')}'"}
+    # Get the entity ID
+    entity_id = matched_activity.get("entity_id", "")
+    if not entity_id:
+        return {"error": f"No entity configured for activity '{matched_activity.get('name')}'"}
 
-    # If it's not a full URL, it might be an old-style key - try the legacy format
-    if not url.startswith("http"):
-        # Legacy format - append to old API endpoint (likely won't work anymore)
-        url = f"https://rc.sofa.ai/api/open/activity/{url}"
-        _LOGGER.warning(
-            "Using legacy SofaBaton API key format. Please update to full URL format "
-            "by copying the URL from the Sofabaton app."
+    # Verify entity exists
+    state = hass.states.get(entity_id)
+    if state is None:
+        return {"error": f"Entity '{entity_id}' not found in Home Assistant"}
+
+    # Determine service based on action
+    service = "turn_on" if action == "start" else "turn_off"
+
+    # Call the switch service
+    try:
+        await hass.services.async_call(
+            "switch",
+            service,
+            {"entity_id": entity_id},
+            blocking=True,
         )
 
-    # Make the API call
-    try:
-        async with session.get(url, timeout=API_TIMEOUT) as response:
-            if response.status == 200:
-                friendly_name = matched_activity.get("name", activity_name)
-                action_past = "started" if action == "start" else "stopped"
-                return {
-                    "status": "success",
-                    "response_text": f"{friendly_name} {action_past}."
-                }
-            else:
-                text = await response.text()
-                _LOGGER.error("SofaBaton API error: %s - %s", response.status, text)
-                return {"error": f"SofaBaton API returned status {response.status}"}
+        friendly_name = matched_activity.get("name", activity_name)
+        action_past = "started" if action == "start" else "stopped"
+        return {
+            "status": "success",
+            "response_text": f"{friendly_name} {action_past}."
+        }
 
     except Exception as err:
-        _LOGGER.error("SofaBaton API call failed: %s", err)
-        return {"error": f"Failed to control SofaBaton: {str(err)}"}
+        _LOGGER.error("SofaBaton switch control failed: %s", err)
+        return {"error": f"Failed to control SofaBaton activity: {str(err)}"}

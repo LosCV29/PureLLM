@@ -407,7 +407,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         activity_names = [a.get("name", "") for a in config.sofabaton_activities if a.get("name")]
         tools.append(_tool(
             "control_sofabaton",
-            f"Control SofaBaton X2 remote activities. Available activities: {', '.join(activity_names)}. Use for starting or stopping entertainment activities like 'Watch TV', 'Movie Night', etc.",
+            f"Control SofaBaton X2 remote activities. Available activities: {', '.join(activity_names)}. TRIGGER WORDS: Use 'start' action for 'start [activity]' OR 'turn on [activity]'. Use 'stop' action for 'turn off [activity]'. Examples: 'start PC', 'turn on Movie Mode', 'turn off PlayStation'.",
             {
                 "activity": {
                     "type": "string",
@@ -416,7 +416,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 "action": {
                     "type": "string",
                     "enum": ["start", "stop"],
-                    "description": "'start' to begin the activity, 'stop' to end it"
+                    "description": "'start' when user says 'start X' or 'turn on X'. 'stop' when user says 'turn off X'."
                 }
             },
             ["activity", "action"]

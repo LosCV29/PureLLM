@@ -276,12 +276,12 @@ CONF_CAMERA_FRIENDLY_NAMES: Final = "camera_friendly_names"
 DEFAULT_CAMERA_FRIENDLY_NAMES: Final = ""
 
 # =============================================================================
-# SOFABATON ACTIVITIES - API keys for SofaBaton X2 remote activities
+# SOFABATON ACTIVITIES - Switch entities for SofaBaton X2 remote activities
 # =============================================================================
 CONF_SOFABATON_ACTIVITIES: Final = "sofabaton_activities"
 
 # Default SofaBaton activities (empty JSON list)
-# Format: JSON list of objects with name, start_key, stop_key fields
+# Format: JSON list of objects with name (voice trigger), entity_id (switch entity)
 DEFAULT_SOFABATON_ACTIVITIES: Final = "[]"
 
 # =============================================================================
