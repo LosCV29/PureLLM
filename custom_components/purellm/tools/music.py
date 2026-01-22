@@ -289,6 +289,50 @@ class MusicController:
                        player, timeout, current_state)
         return False
 
+    async def _play_media_with_retry(
+        self,
+        player: str,
+        media_id: str,
+        media_type: str,
+        max_retries: int = 2
+    ) -> bool:
+        """Play media with automatic retry for DLNA players that need wake-up.
+
+        Some DLNA players (receivers, smart TVs) need a "wake-up" command before
+        they'll actually start playing. This method retries the play command
+        if playback doesn't start within the timeout.
+
+        Args:
+            player: The media_player entity_id
+            media_id: The URI/ID of the media to play
+            media_type: The type of media (track, album, artist, playlist)
+            max_retries: Maximum number of attempts (default 2)
+
+        Returns:
+            True if playback started, False if all retries failed
+        """
+        for attempt in range(1, max_retries + 1):
+            _LOGGER.info("Play attempt %d/%d: uri='%s', type='%s' on %s",
+                        attempt, max_retries, media_id, media_type, player)
+
+            await self._hass.services.async_call(
+                "music_assistant", "play_media",
+                {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
+                target={"entity_id": player},
+                blocking=True
+            )
+
+            if await self._wait_for_playback_start(player):
+                if attempt > 1:
+                    _LOGGER.info("Playback started on retry attempt %d", attempt)
+                return True
+
+            if attempt < max_retries:
+                _LOGGER.info("Playback not started, retrying...")
+
+        _LOGGER.warning("Playback did not start after %d attempts on %s", max_retries, player)
+        return False
+
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "", song_on_album: str = "") -> dict:
         """Play music via Music Assistant with search-first for accuracy.
 
@@ -424,13 +468,7 @@ class MusicController:
                                 # If we have a URI, play directly
                                 if album_uri:
                                     for player in target_players:
-                                        await self._hass.services.async_call(
-                                            "music_assistant", "play_media",
-                                            {"media_id": album_uri, "media_type": "album", "enqueue": "replace", "radio_mode": False},
-                                            target={"entity_id": player},
-                                            blocking=True
-                                        )
-                                        await self._wait_for_playback_start(player)
+                                        await self._play_media_with_retry(player, album_uri, "album")
                                         if shuffle:
                                             await self._hass.services.async_call(
                                                 "media_player", "shuffle_set",
@@ -459,13 +497,7 @@ class MusicController:
                                         found_album_uri = found_album.get("uri") or found_album.get("media_id")
 
                                         for player in target_players:
-                                            await self._hass.services.async_call(
-                                                "music_assistant", "play_media",
-                                                {"media_id": found_album_uri, "media_type": "album", "enqueue": "replace", "radio_mode": False},
-                                                target={"entity_id": player},
-                                                blocking=True
-                                            )
-                                            await self._wait_for_playback_start(player)
+                                            await self._play_media_with_retry(player, found_album_uri, "album")
                                             if shuffle:
                                                 await self._hass.services.async_call(
                                                     "media_player", "shuffle_set",
@@ -557,13 +589,7 @@ class MusicController:
 
                             # Play it
                             for player in target_players:
-                                await self._hass.services.async_call(
-                                    "music_assistant", "play_media",
-                                    {"media_id": found_uri, "media_type": "album", "enqueue": "replace", "radio_mode": False},
-                                    target={"entity_id": player},
-                                    blocking=True
-                                )
-                                await self._wait_for_playback_start(player)
+                                await self._play_media_with_retry(player, found_uri, "album")
                                 if shuffle:
                                     await self._hass.services.async_call(
                                         "media_player", "shuffle_set",
@@ -686,14 +712,7 @@ class MusicController:
 
             # Play the found media
             for player in target_players:
-                _LOGGER.info("Playing: uri='%s', type='%s' on %s", found_uri, found_type, player)
-                await self._hass.services.async_call(
-                    "music_assistant", "play_media",
-                    {"media_id": found_uri, "media_type": found_type, "enqueue": "replace", "radio_mode": False},
-                    target={"entity_id": player},
-                    blocking=True
-                )
-                await self._wait_for_playback_start(player)
+                await self._play_media_with_retry(player, found_uri, found_type)
 
                 if shuffle:
                     await self._hass.services.async_call(
@@ -1006,13 +1025,7 @@ class MusicController:
             player = target_players[0]
             _LOGGER.info("Playing playlist '%s' shuffled on %s", playlist_name, player)
 
-            await self._hass.services.async_call(
-                "music_assistant", "play_media",
-                {"media_id": playlist_uri, "media_type": "playlist", "enqueue": "replace", "radio_mode": False},
-                target={"entity_id": player},
-                blocking=True
-            )
-            await self._wait_for_playback_start(player)
+            await self._play_media_with_retry(player, playlist_uri, "playlist")
 
             await self._hass.services.async_call(
                 "media_player", "shuffle_set",
