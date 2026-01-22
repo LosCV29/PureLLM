@@ -311,20 +311,21 @@ class MusicController:
         Returns:
             True if command was sent successfully
         """
-        # Check if this is a DLNA player that needs wake-up
-        is_dlna = "dlna" in player.lower()
+        # Check if this is the Pioneer receiver that needs wake-up
+        # Only Pioneer VSX receivers need turn_on before play_media
+        needs_wakeup = "pioneer" in player.lower()
 
-        _LOGGER.info("Playing media: uri='%s', type='%s' on %s (DLNA: %s)",
-                    media_id, media_type, player, is_dlna)
+        _LOGGER.info("Playing media: uri='%s', type='%s' on %s (needs_wakeup: %s)",
+                    media_id, media_type, player, needs_wakeup)
 
-        # DLNA players need to be turned on first - they ignore commands when off
-        if is_dlna:
+        # Pioneer receiver needs to be turned on first - ignores commands when off
+        if needs_wakeup:
             state = self._hass.states.get(player)
             current_state = state.state if state else "unknown"
-            _LOGGER.info("DLNA player %s current state: %s", player, current_state)
+            _LOGGER.info("Pioneer receiver %s current state: %s", player, current_state)
 
             # Send turn_on command to wake up the receiver
-            _LOGGER.info("Sending turn_on to wake DLNA player %s", player)
+            _LOGGER.info("Sending turn_on to wake Pioneer receiver %s", player)
             await self._hass.services.async_call(
                 "media_player", "turn_on",
                 {},
