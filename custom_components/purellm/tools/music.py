@@ -298,10 +298,6 @@ class MusicController:
     ) -> bool:
         """Play media with proper wake-up for Pioneer receiver.
 
-        Pioneer receiver needs to be turned on AND set to NETWORK source
-        before it can receive DLNA audio. Uses the Onkyo integration entity
-        (pioneer_zone_1) to control power and source.
-
         Args:
             player: The media_player entity_id
             media_id: The URI/ID of the media to play
@@ -311,51 +307,34 @@ class MusicController:
         Returns:
             True if command was sent successfully
         """
-        # Check if this is the Pioneer receiver that needs wake-up
+        # Check if this is the Pioneer receiver
         is_pioneer = "pioneer" in player.lower()
 
         _LOGGER.info("Playing media: uri='%s', type='%s' on %s (is_pioneer: %s)",
                     media_id, media_type, player, is_pioneer)
 
-        # Pioneer receiver needs to be turned on and set to NETWORK source
+        # Pioneer receiver: always turn on + select NETWORK source first
         if is_pioneer:
-            # Use the Onkyo integration entity to control the physical receiver
-            pioneer_control = "media_player.pioneer_zone_1"
-
-            state = self._hass.states.get(pioneer_control)
-            current_state = state.state if state else "unknown"
-            current_source = state.attributes.get("source", "") if state else ""
-            _LOGGER.info("Pioneer receiver %s state: %s, source: %s", pioneer_control, current_state, current_source)
-
             try:
-                # Turn on the receiver if it's off
-                if current_state in ("off", "unavailable", "unknown"):
-                    _LOGGER.info("Turning on Pioneer receiver %s", pioneer_control)
-                    await self._hass.services.async_call(
-                        "media_player", "turn_on",
-                        {},
-                        target={"entity_id": pioneer_control},
-                        blocking=True
-                    )
-                    await asyncio.sleep(1.0)
-
-                # Select NETWORK source if not already on it
-                if current_source != "NETWORK":
-                    _LOGGER.info("Selecting NETWORK source on Pioneer receiver")
-                    await self._hass.services.async_call(
-                        "media_player", "select_source",
-                        {"source": "NETWORK"},
-                        target={"entity_id": pioneer_control},
-                        blocking=True
-                    )
-                    await asyncio.sleep(0.5)
-                else:
-                    _LOGGER.info("Pioneer already on NETWORK source")
-
+                _LOGGER.info("Pioneer wake-up: turn_on + select NETWORK")
+                await self._hass.services.async_call(
+                    "media_player", "turn_on",
+                    {},
+                    target={"entity_id": "media_player.pioneer_zone_1"},
+                    blocking=True
+                )
+                await asyncio.sleep(0.5)
+                await self._hass.services.async_call(
+                    "media_player", "select_source",
+                    {"source": "NETWORK"},
+                    target={"entity_id": "media_player.pioneer_zone_1"},
+                    blocking=True
+                )
+                await asyncio.sleep(0.5)
             except Exception as e:
-                _LOGGER.warning("Pioneer wake-up failed: %s - continuing anyway", e)
+                _LOGGER.warning("Pioneer wake-up failed: %s", e)
 
-        # Now send the play command to Music Assistant
+        # Play command
         await self._hass.services.async_call(
             "music_assistant", "play_media",
             {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
