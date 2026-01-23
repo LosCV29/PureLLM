@@ -413,7 +413,7 @@ async def control_device(
         "set_cover_position": "set position for",
         "start": "started", "return_to_base": "sent home", "stop": "stopped",
         "locate": "located", "press": "pressed",
-        "media_play": "playing", "media_pause": "paused", "media_stop": "stopped",
+        "media_play": "resumed", "media_pause": "paused", "media_stop": "stopped",
         "media_next_track": "skipped to next", "media_previous_track": "went back to previous",
         "volume_up": "turned up", "volume_down": "turned down",
         "volume_set": "set volume for", "volume_mute": "muted/unmuted",
@@ -597,6 +597,16 @@ async def control_device(
         if domain == "media_player":
             if action == "set_volume" and volume is not None:
                 service_data["volume_level"] = max(0, min(100, volume)) / 100.0
+            if action in ("play", "resume", "pause"):
+                # Check current playback state
+                state = hass.states.get(entity_id)
+                current_state = state.state if state else None
+
+                # Check if already in desired state
+                if current_state == "playing" and action in ("play", "resume"):
+                    return {"success": True, "response_text": f"The {friendly_name} is already playing."}
+                elif current_state == "paused" and action == "pause":
+                    return {"success": True, "response_text": f"The {friendly_name} is already paused."}
             if action in ("mute", "unmute"):
                 # Check current mute state if available
                 state = hass.states.get(entity_id)
@@ -693,6 +703,10 @@ async def control_device(
                 response = f"I've muted the {controlled[0]}."
             elif action == "unmute":
                 response = f"I've unmuted the {controlled[0]}."
+            elif action in ("play", "resume"):
+                response = f"The {controlled[0]} is now playing."
+            elif action == "pause":
+                response = f"The {controlled[0]} is now paused."
             elif hvac_mode:
                 response = f"I've set the {controlled[0]} to {hvac_mode} mode."
             elif action == "set_temperature" and temperature is not None:
