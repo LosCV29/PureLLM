@@ -114,7 +114,6 @@ from .tools import weather as weather_tool
 from .tools import sports as sports_tool
 from .tools import places as places_tool
 from .tools import wikipedia as wikipedia_tool
-from .tools import music_info as music_info_tool
 from .tools import calendar as calendar_tool
 from .tools import camera as camera_tool
 from .tools import thermostat as thermostat_tool
@@ -1056,12 +1055,6 @@ class PureLLMConversationEntity(ConversationEntity):
             if tool_name in ("calculate_age", "get_wikipedia_summary"):
                 handler = getattr(wikipedia_tool, tool_name)
                 return await handler(arguments, self._session, self._track_api_call)
-
-            # Music info tool (MusicBrainz)
-            if tool_name == "get_music_info":
-                return await music_info_tool.get_music_info(
-                    arguments, self._session, self._track_api_call
-                )
 
             # Reminder tools
             if tool_name in ("create_reminder", "get_reminders"):
