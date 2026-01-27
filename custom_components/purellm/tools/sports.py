@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
-from ..utils.http_client import fetch_json, log_and_error
+from ..utils.http_client import fetch_json, log_and_error, CACHE_TTL_SHORT
 
 if TYPE_CHECKING:
     import aiohttp
@@ -17,6 +17,37 @@ _LOGGER = logging.getLogger(__name__)
 
 # Common ESPN API headers
 ESPN_HEADERS = {"User-Agent": "HomeAssistant-PolyVoice/1.0"}
+
+# Cache TTL for team lists (teams don't change often)
+TEAMS_CACHE_TTL = 3600  # 1 hour
+
+
+async def _fetch_teams_for_league(
+    session: "aiohttp.ClientSession",
+    sport: str,
+    league: str,
+) -> tuple[str, str, list[dict]]:
+    """Fetch teams for a single league. Returns (sport, league, teams_list)."""
+    teams_url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams?limit=500"
+    data, status = await fetch_json(session, teams_url, headers=ESPN_HEADERS, cache_ttl=TEAMS_CACHE_TTL)
+    if data and status == 200:
+        teams = data.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", [])
+        return (sport, league, teams)
+    return (sport, league, [])
+
+
+async def _fetch_soccer_scoreboard_for_date(
+    session: "aiohttp.ClientSession",
+    league: str,
+    date_str: str,
+    days_ahead: int,
+) -> tuple[int, str, dict | None]:
+    """Fetch soccer scoreboard for a single date. Returns (days_ahead, date_str, data)."""
+    url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}/scoreboard?dates={date_str}"
+    data, status = await fetch_json(session, url, headers=ESPN_HEADERS, cache_ttl=CACHE_TTL_SHORT)
+    if data and status == 200:
+        return (days_ahead, date_str, data)
+    return (days_ahead, date_str, None)
 
 
 async def get_sports_info(
@@ -95,37 +126,44 @@ async def get_sports_info(
 
         search_words = team_key.split()
 
+        # Fetch all league teams in parallel (major optimization)
+        league_tasks = [
+            _fetch_teams_for_league(session, sport, league)
+            for sport, league in leagues_to_try
+        ]
+        all_league_results = await asyncio.gather(*league_tasks, return_exceptions=True)
+
+        # Search through results for matching team
         for match_type in ["abbrev", "name"]:
             if team_found:
                 break
-            for sport, league in leagues_to_try:
+            for result in all_league_results:
                 if team_found:
                     break
-                teams_url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams?limit=500"
-                async with session.get(teams_url, headers=ESPN_HEADERS) as teams_resp:
-                    if teams_resp.status == 200:
-                        teams_data = await teams_resp.json()
-                        for team in teams_data.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", []):
-                            t = team.get("team", {})
-                            match = False
-                            if match_type == "abbrev":
-                                match = team_key == t.get("abbreviation", "").lower()
-                            else:
-                                display_name = t.get("displayName", "").lower()
-                                short_name = t.get("shortDisplayName", "").lower()
-                                nickname = t.get("nickname", "").lower()
-                                combined = f"{display_name} {short_name} {nickname}"
-                                match = all(word in combined for word in search_words)
+                if isinstance(result, Exception):
+                    continue
+                sport, league, teams = result
+                for team in teams:
+                    t = team.get("team", {})
+                    match = False
+                    if match_type == "abbrev":
+                        match = team_key == t.get("abbreviation", "").lower()
+                    else:
+                        display_name = t.get("displayName", "").lower()
+                        short_name = t.get("shortDisplayName", "").lower()
+                        nickname = t.get("nickname", "").lower()
+                        combined = f"{display_name} {short_name} {nickname}"
+                        match = all(word in combined for word in search_words)
 
-                            if match:
-                                team_id = t.get("id", "")
-                                team_abbrev = t.get("abbreviation", "").lower()
-                                full_name = t.get("displayName", team_name)
-                                url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams/{team_id}/schedule"
-                                team_leagues.append((sport, league))
-                                if not team_found:
-                                    team_found = True
-                                break
+                    if match:
+                        team_id = t.get("id", "")
+                        team_abbrev = t.get("abbreviation", "").lower()
+                        full_name = t.get("displayName", team_name)
+                        url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams/{team_id}/schedule"
+                        team_leagues.append((sport, league))
+                        if not team_found:
+                            team_found = True
+                        break
 
         if not team_found:
             if wants_ucl:
@@ -289,75 +327,88 @@ async def get_sports_info(
                             next_game_from_scoreboard = True
 
             # For soccer: check upcoming dates if no next game found (ESPN soccer schedule API only shows completed games)
+            # Fetch all 22 days in parallel for major performance improvement
             major_soccer_leagues = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions"]
             if found_sport == "soccer" and not next_game_from_scoreboard and found_league in major_soccer_leagues:
                 now_local = datetime.now(hass_timezone)
-                for days_ahead in range(0, 22):  # Check today and next 3 weeks
-                    if next_game_from_scoreboard:
-                        break
+
+                # Build tasks for all 22 days in parallel
+                future_tasks = []
+                for days_ahead in range(0, 22):
                     future_date = now_local + timedelta(days=days_ahead)
                     date_str = future_date.strftime("%Y%m%d")
-                    future_url = f"https://site.api.espn.com/apis/site/v2/sports/soccer/{found_league}/scoreboard?dates={date_str}"
-                    async with session.get(future_url, headers=ESPN_HEADERS) as future_resp:
-                        if future_resp.status != 200:
-                            continue
-                        future_data = await future_resp.json()
-                        for fut_event in future_data.get("events", []):
-                            fut_comp = fut_event.get("competitions", [{}])[0]
-                            # Skip completed or in-progress games
-                            fut_status = fut_comp.get("status", {}).get("type", {})
-                            if fut_status.get("state", "") != "pre":
-                                continue
-                            fut_competitors = fut_comp.get("competitors", [])
-                            # Match by ID, abbreviation, or display name (ESPN IDs can differ between endpoints)
-                            team_match = False
-                            for c in fut_competitors:
-                                c_team = c.get("team", {})
-                                c_id = c_team.get("id", "")
-                                c_abbrev = c_team.get("abbreviation", "").lower()
-                                c_name = c_team.get("displayName", "").lower()
-                                if c_id == team_id:
-                                    team_match = True
-                                    break
-                                if team_abbrev and c_abbrev == team_abbrev:
-                                    team_match = True
-                                    break
-                                if full_name.lower() in c_name or c_name in full_name.lower():
-                                    team_match = True
-                                    break
-                            if not team_match:
-                                continue
-                            # Found upcoming game
-                            home_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "home"), {})
-                            away_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "away"), {})
-                            home_name = home_team_fut.get("team", {}).get("displayName", "Home")
-                            away_name = away_team_fut.get("team", {}).get("displayName", "Away")
-                            game_date_str = fut_event.get("date", "")
-                            try:
-                                game_dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
-                                game_dt_local = game_dt.astimezone(hass_timezone)
-                                game_date_only = game_dt_local.date()
-                                today_date = now_local.date()
-                                tomorrow_date = today_date + timedelta(days=1)
-                                time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
-                                if game_date_only == today_date:
-                                    formatted_date = f"Today at {time_str}"
-                                elif game_date_only == tomorrow_date:
-                                    formatted_date = f"Tomorrow at {time_str}"
-                                else:
-                                    formatted_date = game_dt_local.strftime("%A, %B %d at %I:%M %p")
-                            except (ValueError, KeyError, TypeError, AttributeError):
-                                formatted_date = "TBD"
-                            venue = fut_comp.get("venue", {}).get("fullName", "")
-                            result["next_game"] = {
-                                "date": formatted_date,
-                                "home_team": home_name,
-                                "away_team": away_name,
-                                "venue": venue,
-                                "summary": f"{away_name} @ {home_name} - {formatted_date}"
-                            }
-                            next_game_from_scoreboard = True
+                    future_tasks.append(
+                        _fetch_soccer_scoreboard_for_date(session, found_league, date_str, days_ahead)
+                    )
+
+                # Fetch all dates in parallel
+                future_results = await asyncio.gather(*future_tasks, return_exceptions=True)
+
+                # Sort by days_ahead and process to find earliest upcoming game
+                valid_results = [r for r in future_results if not isinstance(r, Exception) and r[2] is not None]
+                valid_results.sort(key=lambda x: x[0])  # Sort by days_ahead
+
+                for days_ahead, date_str, future_data in valid_results:
+                    if next_game_from_scoreboard:
+                        break
+                    for fut_event in future_data.get("events", []):
+                        if next_game_from_scoreboard:
                             break
+                        fut_comp = fut_event.get("competitions", [{}])[0]
+                        # Skip completed or in-progress games
+                        fut_status = fut_comp.get("status", {}).get("type", {})
+                        if fut_status.get("state", "") != "pre":
+                            continue
+                        fut_competitors = fut_comp.get("competitors", [])
+                        # Match by ID, abbreviation, or display name (ESPN IDs can differ between endpoints)
+                        team_match = False
+                        for c in fut_competitors:
+                            c_team = c.get("team", {})
+                            c_id = c_team.get("id", "")
+                            c_abbrev = c_team.get("abbreviation", "").lower()
+                            c_name = c_team.get("displayName", "").lower()
+                            if c_id == team_id:
+                                team_match = True
+                                break
+                            if team_abbrev and c_abbrev == team_abbrev:
+                                team_match = True
+                                break
+                            if full_name.lower() in c_name or c_name in full_name.lower():
+                                team_match = True
+                                break
+                        if not team_match:
+                            continue
+                        # Found upcoming game
+                        home_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "home"), {})
+                        away_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "away"), {})
+                        home_name = home_team_fut.get("team", {}).get("displayName", "Home")
+                        away_name = away_team_fut.get("team", {}).get("displayName", "Away")
+                        game_date_str = fut_event.get("date", "")
+                        try:
+                            game_dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
+                            game_dt_local = game_dt.astimezone(hass_timezone)
+                            game_date_only = game_dt_local.date()
+                            today_date = now_local.date()
+                            tomorrow_date = today_date + timedelta(days=1)
+                            time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
+                            if game_date_only == today_date:
+                                formatted_date = f"Today at {time_str}"
+                            elif game_date_only == tomorrow_date:
+                                formatted_date = f"Tomorrow at {time_str}"
+                            else:
+                                formatted_date = game_dt_local.strftime("%A, %B %d at %I:%M %p")
+                        except (ValueError, KeyError, TypeError, AttributeError):
+                            formatted_date = "TBD"
+                        venue = fut_comp.get("venue", {}).get("fullName", "")
+                        result["next_game"] = {
+                            "date": formatted_date,
+                            "home_team": home_name,
+                            "away_team": away_name,
+                            "venue": venue,
+                            "summary": f"{away_name} @ {home_name} - {formatted_date}"
+                        }
+                        next_game_from_scoreboard = True
+                        break
 
         except Exception as e:
             _LOGGER.warning("Failed to check scoreboard for live games: %s", e)
