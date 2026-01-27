@@ -119,9 +119,23 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "get_wikipedia_summary",
-            "Get information from Wikipedia. Use for 'who is', 'what is', 'tell me about' questions. ALSO use for music/artist INFO queries like 'what is [artist]'s latest album', 'what albums did [artist] release', 'who sings [song]' - these are INFO requests, NOT playback requests.",
-            {"topic": {"type": "string", "description": "The topic to look up (e.g., 'Albert Einstein', 'World War II', '21 Savage discography', 'Taylor Swift albums')"}},
+            "Get information from Wikipedia. Use for 'who is', 'what is', 'tell me about' questions about people, places, events, concepts. Do NOT use for music/album queries - use get_music_info instead.",
+            {"topic": {"type": "string", "description": "The topic to look up (e.g., 'Albert Einstein', 'World War II')"}},
             ["topic"]
+        ))
+
+        tools.append(_tool(
+            "get_music_info",
+            "Get accurate music/artist information from MusicBrainz. ALWAYS use this for: 'what is [artist]'s latest/newest/last album', 'what albums did [artist] release', '[artist] discography'. This is the AUTHORITATIVE source for album info - more accurate than Wikipedia or web search.",
+            {
+                "artist": {"type": "string", "description": "The artist/band name (e.g., '21 Savage', 'Taylor Swift', 'The Beatles')"},
+                "query_type": {
+                    "type": "string",
+                    "enum": ["latest_album", "discography"],
+                    "description": "'latest_album' for most recent album (default), 'discography' for full album list"
+                }
+            },
+            ["artist"]
         ))
 
     # ===== SPORTS =====
