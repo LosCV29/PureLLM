@@ -119,8 +119,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "get_wikipedia_summary",
-            "Get information from Wikipedia. Use for 'who is', 'what is', 'tell me about' questions.",
-            {"topic": {"type": "string", "description": "The topic to look up (e.g., 'Albert Einstein', 'World War II')"}},
+            "Get information from Wikipedia. Use for 'who is', 'what is', 'tell me about' questions. ALSO use for music/artist INFO queries like 'what is [artist]'s latest album', 'what albums did [artist] release', 'who sings [song]' - these are INFO requests, NOT playback requests.",
+            {"topic": {"type": "string", "description": "The topic to look up (e.g., 'Albert Einstein', 'World War II', '21 Savage discography', 'Taylor Swift albums')"}},
             ["topic"]
         ))
 
@@ -275,14 +275,14 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control ALL music playback via Music Assistant. Available rooms: {rooms_list}. For pause/stop/resume/skip - NO room needed. For play/shuffle - specify room.",
+            f"Control music PLAYBACK via Music Assistant. ONLY use for PLAYBACK commands: 'play X', 'shuffle X', 'pause', 'skip', etc. Available rooms: {rooms_list}. NEVER use for INFORMATIONAL queries like 'what is X's latest album', 'who sings X', 'tell me about X album' - use get_wikipedia_summary or web_search for those instead.",
             {
                 "action": {
                     "type": "string",
                     "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"],
                     "description": "'play' for songs/albums/artists. 'shuffle' for shuffled playlists by artist/genre."
                 },
-                "query": {"type": "string", "description": "Song title, album name, or smart modifier. For albums: can include 'latest', 'last', 'newest', 'first', 'debut'. Example: 'bad bunny's latest album' → query='latest', artist='Bad Bunny', media_type='album'."},
+                "query": {"type": "string", "description": "Song title, album name, or smart modifier. For albums: can include 'latest', 'last', 'newest', 'first', 'debut'. Example: 'play bad bunny's latest album' → query='latest', artist='Bad Bunny', media_type='album'."},
                 "artist": {"type": "string", "description": "Artist name. REQUIRED for tracks and albums."},
                 "album": {"type": "string", "description": "Album name. Use when playing a specific track FROM an album."},
                 "song_on_album": {"type": "string", "description": "Use when user wants an album that contains a specific song. Example: 'play the jay-z album with big pimpin' → song_on_album='Big Pimpin', artist='Jay-Z', media_type='album'. The system will find which album contains that song and play it."},
@@ -426,7 +426,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_search and config.tavily_api_key:
         tools.append(_tool(
             "web_search",
-            "Search the internet. ONLY use when user explicitly says 'search' or 'search for'. Examples: 'search for best noise canceling headphones', 'search Rotten Tomatoes score for Oppenheimer', 'search latest iPhone reviews'. Do NOT use for 'who is', 'what is', 'tell me about' - use Wikipedia for those. SMART DOMAINS: The system auto-detects and targets specific sites (Rotten Tomatoes, IMDb, Yelp, recipe sites, etc.) based on keywords in your query. IMPORTANT: Always cite your source by starting with 'According to [Source Name]...'",
+            "Search the internet for current/recent information. Use for: (1) explicit searches ('search for X'), (2) recent releases ('what is [artist]'s latest/newest album', 'when did [movie] come out'), (3) current events, reviews, ratings. For 'latest album' questions, this is BETTER than Wikipedia since it has current info. Use Wikipedia for historical/biographical info. SMART DOMAINS: Auto-targets sites (Rotten Tomatoes, IMDb, etc.) based on keywords. IMPORTANT: Always cite your source.",
             {
                 "query": {
                     "type": "string",
