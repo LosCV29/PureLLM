@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any, TYPE_CHECKING
-from datetime import datetime
+from urllib.parse import quote
 
 from ..const import API_TIMEOUT
 from ..utils.http_client import log_and_error
@@ -31,27 +31,80 @@ async def get_music_info(
 
     Args:
         arguments: Tool arguments containing:
-            - artist: Artist name (required)
-            - query_type: "latest_album", "discography", "albums" (default: latest_album)
+            - artist: Artist name (for album queries)
+            - song: Song title (for "who sings" queries)
+            - query_type: "latest_album", "discography", "song_artist"
         session: aiohttp session
         track_api_call: Callback to track API usage
 
     Returns:
-        Music info dict with artist and album details
+        Music info dict with artist and album/song details
     """
     artist_name = arguments.get("artist", "").strip()
+    song_title = arguments.get("song", "").strip()
     query_type = arguments.get("query_type", "latest_album")
-
-    if not artist_name:
-        return {"error": "No artist name provided"}
 
     headers = {"User-Agent": USER_AGENT, "Accept": "application/json"}
 
     try:
         track_api_call("musicbrainz")
 
+        # Handle song lookup ("who sings X")
+        if query_type == "song_artist" or (song_title and not artist_name):
+            if not song_title:
+                return {"error": "No song title provided"}
+
+            # Search for recording (song)
+            search_url = f"{MUSICBRAINZ_API}/recording?query={quote(song_title)}&fmt=json&limit=10"
+
+            async with asyncio.timeout(API_TIMEOUT):
+                async with session.get(search_url, headers=headers) as response:
+                    if response.status != 200:
+                        return {"error": f"MusicBrainz search failed: HTTP {response.status}"}
+                    data = await response.json()
+
+            recordings = data.get("recordings", [])
+            if not recordings:
+                return {
+                    "instruction": "Start your response with 'According to MusicBrainz, ...'",
+                    "message": f"Song '{song_title}' not found on MusicBrainz",
+                }
+
+            # Get the top result
+            recording = recordings[0]
+            song_name = recording.get("title", song_title)
+
+            # Get artist credits
+            artist_credits = recording.get("artist-credit", [])
+            if artist_credits:
+                artists = []
+                for credit in artist_credits:
+                    if "artist" in credit:
+                        artists.append(credit["artist"].get("name", "Unknown"))
+                artist_display = " & ".join(artists) if artists else "Unknown"
+            else:
+                artist_display = "Unknown"
+
+            # Get album info if available
+            releases = recording.get("releases", [])
+            album_name = releases[0].get("title") if releases else None
+
+            result = {
+                "instruction": "Start your response with 'According to MusicBrainz, ...'",
+                "song": song_name,
+                "artist": artist_display,
+            }
+            if album_name:
+                result["album"] = album_name
+
+            return result
+
+        # Handle artist/album queries
+        if not artist_name:
+            return {"error": "No artist name provided"}
+
         # Step 1: Search for the artist
-        search_url = f"{MUSICBRAINZ_API}/artist?query={artist_name}&fmt=json&limit=5"
+        search_url = f"{MUSICBRAINZ_API}/artist?query={quote(artist_name)}&fmt=json&limit=5"
 
         async with asyncio.timeout(API_TIMEOUT):
             async with session.get(search_url, headers=headers) as response:
