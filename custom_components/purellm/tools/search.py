@@ -180,7 +180,6 @@ DOMAIN_PATTERNS = [
         ["mayoclinic.org", "webmd.com", "healthline.com", "nih.gov"],
         False
     ),
-    # NOTE: Music queries are handled by get_music_info tool (MusicBrainz), not web_search
 ]
 
 
