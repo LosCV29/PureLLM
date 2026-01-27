@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
+import time
 from functools import wraps
 from typing import Any, Callable, TYPE_CHECKING
 
@@ -12,6 +14,48 @@ if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
+
+# Simple TTL cache for API responses
+# Structure: {cache_key: (data, expiry_timestamp)}
+_api_cache: dict[str, tuple[Any, float]] = {}
+_cache_lock = asyncio.Lock()
+
+# Default TTL values in seconds
+CACHE_TTL_SHORT = 300  # 5 minutes - for sports scores, weather
+CACHE_TTL_MEDIUM = 900  # 15 minutes - for places, search
+CACHE_TTL_LONG = 3600  # 1 hour - for Wikipedia, static data
+
+
+def _make_cache_key(url: str, method: str = "GET", body: dict | None = None) -> str:
+    """Generate a cache key from URL and optional body."""
+    key_data = f"{method}:{url}"
+    if body:
+        key_data += f":{hashlib.md5(str(sorted(body.items())).encode()).hexdigest()}"
+    return hashlib.md5(key_data.encode()).hexdigest()
+
+
+async def _get_cached(cache_key: str) -> tuple[Any, bool]:
+    """Get cached response if valid. Returns (data, hit)."""
+    async with _cache_lock:
+        if cache_key in _api_cache:
+            data, expiry = _api_cache[cache_key]
+            if time.time() < expiry:
+                return data, True
+            # Expired, remove it
+            del _api_cache[cache_key]
+    return None, False
+
+
+async def _set_cached(cache_key: str, data: Any, ttl: float) -> None:
+    """Store data in cache with TTL."""
+    async with _cache_lock:
+        _api_cache[cache_key] = (data, time.time() + ttl)
+        # Clean up expired entries if cache is getting large
+        if len(_api_cache) > 100:
+            now = time.time()
+            expired = [k for k, (_, exp) in _api_cache.items() if now >= exp]
+            for k in expired:
+                del _api_cache[k]
 
 
 def tool_error(message: str) -> dict[str, str]:
@@ -51,6 +95,7 @@ async def fetch_json(
     *,
     headers: dict[str, str] | None = None,
     timeout: float = API_TIMEOUT,
+    cache_ttl: float | None = None,
 ) -> tuple[dict[str, Any] | None, int]:
     """Fetch JSON from a URL with standardized timeout and error handling.
 
@@ -59,15 +104,29 @@ async def fetch_json(
         url: URL to fetch
         headers: Optional request headers
         timeout: Request timeout in seconds
+        cache_ttl: Optional TTL in seconds to cache the response
 
     Returns:
         Tuple of (json_data or None, status_code)
     """
+    # Check cache first if caching is enabled
+    cache_key = None
+    if cache_ttl is not None:
+        cache_key = _make_cache_key(url)
+        cached_data, cache_hit = await _get_cached(cache_key)
+        if cache_hit:
+            _LOGGER.debug("Cache hit for: %s", url)
+            return cached_data, 200
+
     try:
         async with asyncio.timeout(timeout):
             async with session.get(url, headers=headers) as response:
                 if response.status == 200:
-                    return await response.json(), response.status
+                    data = await response.json()
+                    # Cache the successful response
+                    if cache_key is not None:
+                        await _set_cached(cache_key, data, cache_ttl)
+                    return data, response.status
                 return None, response.status
     except asyncio.TimeoutError:
         _LOGGER.warning("Request timed out: %s", url)
