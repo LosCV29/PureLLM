@@ -289,7 +289,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control music PLAYBACK via Music Assistant. ONLY use for PLAYBACK commands: 'play X', 'shuffle X', 'pause', 'skip', etc. Available rooms: {rooms_list}. NEVER use for INFORMATIONAL queries like 'what is X's latest album', 'who sings X', 'tell me about X album' - use get_wikipedia_summary or web_search for those instead.",
+            f"Control music PLAYBACK via Music Assistant. ONLY use for PLAYBACK commands: 'play X', 'shuffle X', 'pause', 'skip', etc. Available rooms: {rooms_list}. NEVER use for INFORMATIONAL queries like 'what is X's latest album', 'how many albums', 'who sings X' - use get_music_info for those instead.",
             {
                 "action": {
                     "type": "string",
@@ -440,7 +440,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_search and config.tavily_api_key:
         tools.append(_tool(
             "web_search",
-            "Search the internet for current/recent information. Use for: (1) explicit searches ('search for X'), (2) recent releases ('what is [artist]'s latest/newest album', 'when did [movie] come out'), (3) current events, reviews, ratings. For 'latest album' questions, this is BETTER than Wikipedia since it has current info. Use Wikipedia for historical/biographical info. SMART DOMAINS: Auto-targets sites (Rotten Tomatoes, IMDb, etc.) based on keywords. IMPORTANT: Always cite your source.",
+            "Search the internet for current events, news, reviews, ratings. NEVER use for music/artist/album questions - use get_music_info instead. Use web_search for: (1) explicit 'search for X' requests, (2) movie/TV reviews and ratings, (3) current events and news, (4) product reviews. SMART DOMAINS: Auto-targets sites (Rotten Tomatoes, IMDb, etc.) based on keywords.",
             {
                 "query": {
                     "type": "string",
