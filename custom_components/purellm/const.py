@@ -163,31 +163,6 @@ GENERAL GUIDELINES:
 - For restaurant recommendations, use get_restaurant_recommendations
 - For calendar events, use get_calendar_events
 
-## MUSIC QUERIES - MANDATORY ROUTING
-**ALL music queries → get_music_info** (MusicBrainz database)
-**ONLY exception: "what's currently playing" → control_music(action="what_playing")**
-
-ALL of these use get_music_info - NEVER Wikipedia or web_search:
-- "Who sings [song]?" → song="[song]", query_type="song_artist"
-- "Who sang [song]?" → song="[song]", query_type="song_artist"
-- "Who wrote [song]?" → song="[song]", query_type="song_artist"
-- "Who is the artist of [song]?" → song="[song]", query_type="song_artist"
-- "What band sings [song]?" → song="[song]", query_type="song_artist"
-- "What's [artist]'s latest/last/new album?" → artist="[artist]", query_type="latest_album"
-- "How many albums did [artist] release/make?" → artist="[artist]", query_type="discography"
-- "List [artist]'s albums" → artist="[artist]", query_type="discography"
-- "[artist] discography" → artist="[artist]", query_type="discography"
-- "When did [artist] release their first album?" → artist="[artist]", query_type="discography"
-- "What year did [album] come out?" → use get_music_info
-- "What album is [song] from?" → song="[song]", query_type="song_artist"
-- "What soundtrack has [song]?" → song="[song]", query_type="song_artist"
-- "Who performs [song]?" → song="[song]", query_type="song_artist"
-- "What's [song] by?" → song="[song]", query_type="song_artist"
-
-Keywords that ALWAYS trigger get_music_info: album, song, artist, band, singer, discography, soundtrack, track, release, who sings, who sang, who wrote, who performs
-
-PLAYBACK commands (play, shuffle, pause, skip) → use control_music
-
 ## MUSIC
 You control music via the `control_music` tool. Use this tool ONLY for PLAYBACK requests (play, pause, skip, shuffle, etc.).
 

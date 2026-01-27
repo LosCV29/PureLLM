@@ -119,23 +119,9 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "get_wikipedia_summary",
-            "Get information from Wikipedia. Use for 'who is', 'what is', 'tell me about' questions about people, places, events, concepts. NEVER use for music/artist/album queries - ALWAYS use get_music_info instead for anything music-related.",
-            {"topic": {"type": "string", "description": "The topic to look up (e.g., 'Albert Einstein', 'World War II'). NOT for music artists or albums!"}},
+            "Get information from Wikipedia. Use for 'who is', 'what is', 'tell me about' questions about people, places, events, concepts.",
+            {"topic": {"type": "string", "description": "The topic to look up (e.g., 'Albert Einstein', 'World War II', 'Taylor Swift')"}},
             ["topic"]
-        ))
-
-        tools.append(_tool(
-            "get_music_info",
-            "REQUIRED for ALL music/song/album/artist questions. Uses MusicBrainz. Trigger words: album, song, artist, band, singer, discography, soundtrack, track, who sings, who sang, who wrote, who performs. ONLY exception: 'what's currently playing' uses control_music. NEVER use Wikipedia or web_search for music - ALWAYS use this tool.",
-            {
-                "artist": {"type": "string", "description": "Artist/band name for album queries (e.g., 'Taylor Swift', '21 Savage', 'The Beatles')"},
-                "song": {"type": "string", "description": "Song title for 'who sings/sang/wrote/performs' queries (e.g., 'Ordinary People', 'Blinding Lights', 'Bohemian Rhapsody')"},
-                "query_type": {
-                    "type": "string",
-                    "enum": ["latest_album", "discography", "song_artist"],
-                    "description": "'song_artist' for who sings/sang/wrote/performs, 'latest_album' for newest album, 'discography' for album list/count"
-                }
-            }
         ))
 
     # ===== SPORTS =====
@@ -289,7 +275,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control music PLAYBACK via Music Assistant. ONLY use for PLAYBACK commands: 'play X', 'shuffle X', 'pause', 'skip', etc. Available rooms: {rooms_list}. NEVER use for INFORMATIONAL queries like 'what is X's latest album', 'how many albums', 'who sings X' - use get_music_info for those instead.",
+            f"Control music PLAYBACK via Music Assistant. Available rooms: {rooms_list}. For pause/stop/resume/skip - NO room needed. For play/shuffle - specify room.",
             {
                 "action": {
                     "type": "string",
