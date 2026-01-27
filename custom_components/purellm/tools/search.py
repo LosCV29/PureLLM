@@ -180,20 +180,7 @@ DOMAIN_PATTERNS = [
         ["mayoclinic.org", "webmd.com", "healthline.com", "nih.gov"],
         False
     ),
-    # Music - albums, discography, releases
-    (
-        ("latest album", "newest album", "new album", "last album", "recent album",
-         "discography", "albums by", "what album", "released album", "debut album",
-         "'s album", "album called", "album named"),
-        ["allmusic.com", "wikipedia.org", "genius.com", "billboard.com", "pitchfork.com"],
-        True  # Need raw content for album details
-    ),
-    # Music - songs/tracks
-    (
-        ("who sings", "who sang", "what song", "lyrics to", "who wrote"),
-        ["genius.com", "allmusic.com", "wikipedia.org"],
-        True
-    ),
+    # NOTE: Music queries are handled by get_music_info tool (MusicBrainz), not web_search
 ]
 
 

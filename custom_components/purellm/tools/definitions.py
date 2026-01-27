@@ -126,13 +126,13 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "get_music_info",
-            "Get accurate music/artist information from MusicBrainz. ALWAYS use this for ANY album-related question: 'what is [artist]'s latest album', 'how many albums did [artist] release', 'what albums did [artist] make', '[artist] discography', 'list [artist] albums', 'when did [artist] release their first album'. This is MORE ACCURATE than Wikipedia for music data.",
+            "REQUIRED for ALL music/artist information questions. Use MusicBrainz database. Examples: 'what is [artist]'s latest/last/new album', 'how many albums did [artist] release/make', '[artist] discography', 'list [artist] albums', 'when did [artist] release an album', 'what year did [album] come out'. ONLY exception: 'what is currently playing' uses control_music instead. For ANY other music question, use THIS tool - not Wikipedia, not web_search.",
             {
                 "artist": {"type": "string", "description": "The artist/band name (e.g., '21 Savage', 'Taylor Swift', 'The Beatles', '50 Cent')"},
                 "query_type": {
                     "type": "string",
                     "enum": ["latest_album", "discography"],
-                    "description": "'latest_album' for most recent album, 'discography' for full album list/count (use this for 'how many albums' questions)"
+                    "description": "'latest_album' for most recent album, 'discography' for full album list/count (use for 'how many albums' questions)"
                 }
             },
             ["artist"]
