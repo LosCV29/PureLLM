@@ -126,16 +126,16 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
         tools.append(_tool(
             "get_music_info",
-            "REQUIRED for ALL music/artist information questions. Use MusicBrainz database. Examples: 'what is [artist]'s latest/last/new album', 'how many albums did [artist] release/make', '[artist] discography', 'list [artist] albums', 'when did [artist] release an album', 'what year did [album] come out'. ONLY exception: 'what is currently playing' uses control_music instead. For ANY other music question, use THIS tool - not Wikipedia, not web_search.",
+            "REQUIRED for ALL music/song/album/artist questions. Uses MusicBrainz. Trigger words: album, song, artist, band, singer, discography, soundtrack, track, who sings, who sang, who wrote, who performs. ONLY exception: 'what's currently playing' uses control_music. NEVER use Wikipedia or web_search for music - ALWAYS use this tool.",
             {
-                "artist": {"type": "string", "description": "The artist/band name (e.g., '21 Savage', 'Taylor Swift', 'The Beatles', '50 Cent')"},
+                "artist": {"type": "string", "description": "Artist/band name for album queries (e.g., 'Taylor Swift', '21 Savage', 'The Beatles')"},
+                "song": {"type": "string", "description": "Song title for 'who sings/sang/wrote/performs' queries (e.g., 'Ordinary People', 'Blinding Lights', 'Bohemian Rhapsody')"},
                 "query_type": {
                     "type": "string",
-                    "enum": ["latest_album", "discography"],
-                    "description": "'latest_album' for most recent album, 'discography' for full album list/count (use for 'how many albums' questions)"
+                    "enum": ["latest_album", "discography", "song_artist"],
+                    "description": "'song_artist' for who sings/sang/wrote/performs, 'latest_album' for newest album, 'discography' for album list/count"
                 }
-            },
-            ["artist"]
+            }
         ))
 
     # ===== SPORTS =====

@@ -164,16 +164,27 @@ GENERAL GUIDELINES:
 - For calendar events, use get_calendar_events
 
 ## MUSIC QUERIES - MANDATORY ROUTING
-**ALL music information queries → get_music_info** (uses MusicBrainz - accurate database)
-**ONLY exception: "what's playing" / "what song is this" → control_music** (action="what_playing")
+**ALL music queries → get_music_info** (MusicBrainz database)
+**ONLY exception: "what's currently playing" → control_music(action="what_playing")**
 
-Examples - ALL of these use get_music_info:
-- "What is 21 Savage's latest album?" → get_music_info(artist="21 Savage")
-- "How many albums did Taylor Swift release?" → get_music_info(artist="Taylor Swift", query_type="discography")
-- "List 50 Cent's albums" → get_music_info(artist="50 Cent", query_type="discography")
-- "When did Drake release his first album?" → get_music_info(artist="Drake", query_type="discography")
+ALL of these use get_music_info - NEVER Wikipedia or web_search:
+- "Who sings [song]?" → song="[song]", query_type="song_artist"
+- "Who sang [song]?" → song="[song]", query_type="song_artist"
+- "Who wrote [song]?" → song="[song]", query_type="song_artist"
+- "Who is the artist of [song]?" → song="[song]", query_type="song_artist"
+- "What band sings [song]?" → song="[song]", query_type="song_artist"
+- "What's [artist]'s latest/last/new album?" → artist="[artist]", query_type="latest_album"
+- "How many albums did [artist] release/make?" → artist="[artist]", query_type="discography"
+- "List [artist]'s albums" → artist="[artist]", query_type="discography"
+- "[artist] discography" → artist="[artist]", query_type="discography"
+- "When did [artist] release their first album?" → artist="[artist]", query_type="discography"
+- "What year did [album] come out?" → use get_music_info
+- "What album is [song] from?" → song="[song]", query_type="song_artist"
+- "What soundtrack has [song]?" → song="[song]", query_type="song_artist"
+- "Who performs [song]?" → song="[song]", query_type="song_artist"
+- "What's [song] by?" → song="[song]", query_type="song_artist"
 
-NEVER use Wikipedia or web_search for music/album questions. ALWAYS use get_music_info.
+Keywords that ALWAYS trigger get_music_info: album, song, artist, band, singer, discography, soundtrack, track, release, who sings, who sang, who wrote, who performs
 
 PLAYBACK commands (play, shuffle, pause, skip) → use control_music
 
