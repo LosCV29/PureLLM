@@ -63,7 +63,6 @@ from .const import (
     CONF_NOTIFY_ON_PLACES,
     CONF_NOTIFY_ON_RESTAURANTS,
     CONF_NOTIFY_ON_CAMERA,
-    CONF_NOTIFY_ON_SEARCH,
     CONF_VOICE_SCRIPTS,
     DEFAULT_VOICE_SCRIPTS,
     CONF_CAMERA_FRIENDLY_NAMES,
@@ -75,7 +74,6 @@ from .const import (
     DEFAULT_NOTIFY_ON_PLACES,
     DEFAULT_NOTIFY_ON_RESTAURANTS,
     DEFAULT_NOTIFY_ON_CAMERA,
-    DEFAULT_NOTIFY_ON_SEARCH,
     DEFAULT_ENABLE_CALENDAR,
     DEFAULT_ENABLE_CAMERAS,
     DEFAULT_ENABLE_DEVICE_STATUS,
@@ -286,7 +284,6 @@ class PureLLMConversationEntity(ConversationEntity):
         self.notify_on_places = config.get(CONF_NOTIFY_ON_PLACES, DEFAULT_NOTIFY_ON_PLACES)
         self.notify_on_restaurants = config.get(CONF_NOTIFY_ON_RESTAURANTS, DEFAULT_NOTIFY_ON_RESTAURANTS)
         self.notify_on_camera = config.get(CONF_NOTIFY_ON_CAMERA, DEFAULT_NOTIFY_ON_CAMERA)
-        self.notify_on_search = config.get(CONF_NOTIFY_ON_SEARCH, DEFAULT_NOTIFY_ON_SEARCH)
 
         # Voice scripts configuration
         voice_scripts_json = config.get(CONF_VOICE_SCRIPTS, DEFAULT_VOICE_SCRIPTS)
@@ -980,47 +977,6 @@ class PureLLMConversationEntity(ConversationEntity):
         except Exception as err:
             _LOGGER.error("Error sending camera notification: %s", err, exc_info=True)
 
-    async def _send_search_notification(self, search_result: dict[str, Any]) -> None:
-        """Send notification with top search result URL to configured devices."""
-        try:
-            results = search_result.get("results", [])
-            query = search_result.get("query", "search")
-            answer = search_result.get("answer", "")
-
-            if not results:
-                return
-
-            top_result = results[0]
-            title_text = top_result.get("title", "Search Result")
-            url = top_result.get("url", "")
-            source = top_result.get("source", "")
-            snippet = top_result.get("snippet", "")
-
-            if not url:
-                return
-
-            _LOGGER.info("Sending search notification for query: %s", query)
-
-            title = f"🔍 {source}" if source else "🔍 Search Result"
-
-            # Build message - use snippet or truncated answer
-            if snippet:
-                message = snippet[:150] + "..." if len(snippet) > 150 else snippet
-            elif answer:
-                message = answer[:150] + "..." if len(answer) > 150 else answer
-            else:
-                message = title_text
-
-            actions = [
-                {"action": "URI", "title": "🔗 Open Link", "uri": url}
-            ]
-
-            notification_data = self._build_notification_data(title, message, actions, url)
-            await self._send_notification(notification_data, "search")
-
-        except Exception as err:
-            _LOGGER.error("Error sending search notification: %s", err, exc_info=True)
-
     # =========================================================================
     # Tool Execution
     # =========================================================================
@@ -1134,8 +1090,6 @@ class PureLLMConversationEntity(ConversationEntity):
                         await self._send_reservation_notification(result)
                     elif tool_name in ("check_camera", "quick_camera_check") and self.notify_on_camera and result.get("snapshot_url"):
                         await self._send_camera_notification(result)
-                    elif tool_name == "web_search" and self.notify_on_search and result.get("results"):
-                        await self._send_search_notification(result)
 
                 return result
 
