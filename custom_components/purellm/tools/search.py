@@ -389,11 +389,33 @@ async def web_search(
         }
 
         # Include AI-generated answer if available - this should be used as the primary response
-        if data.get("answer"):
+        if data.get("answer") and results:
+            answer = data["answer"]
+
+            # Find which result best matches the answer (simple word overlap)
+            best_match_idx = 0
+            best_score = 0
+            answer_words = set(answer.lower().split())
+
+            for i, r in enumerate(results):
+                snippet = r.get("snippet", "").lower()
+                snippet_words = set(snippet.split())
+                overlap = len(answer_words & snippet_words)
+                if overlap > best_score:
+                    best_score = overlap
+                    best_match_idx = i
+
+            best_result = results[best_match_idx]
+            best_source = best_result.get("source", sources_used[0] if sources_used else "web search")
+            best_url = best_result.get("url", "")
+
+            response_data["answer"] = answer
+            response_data["instruction"] = f"CRITICAL: Use ONLY this answer - do not make up information. Say: 'According to {best_source}, {answer}'"
+            response_data["source"] = best_source
+            response_data["source_url"] = best_url  # For notification
+        elif data.get("answer"):
             response_data["answer"] = data["answer"]
-            response_data["instruction"] = f"CRITICAL: Use ONLY this answer - do not make up information. Say: 'According to {sources_used[0] if sources_used else 'web search'}, {data['answer']}'"
-            if sources_used:
-                response_data["source"] = sources_used[0]
+            response_data["instruction"] = f"CRITICAL: Use ONLY this answer - do not make up information. Say: 'According to web search, {data['answer']}'"
         else:
             response_data["instruction"] = "CRITICAL: Use ONLY the information in the results below. Do NOT make up or guess any information. If the answer isn't in the results, say you couldn't find it."
             response_data["sources"] = sources_used
