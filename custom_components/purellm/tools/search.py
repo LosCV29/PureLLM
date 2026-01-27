@@ -381,22 +381,22 @@ async def web_search(
 
             results.append(result)
 
-        # Build response with attribution instruction
+        # Build response with strict instructions
         response_data = {
-            "instruction": "IMPORTANT: Start your response with 'According to [source]...' using one of the sources listed below.",
-            "sources": sources_used,  # List of source names for easy reference
             "query": query,
             "result_count": len(results),
             "results": results,
         }
 
-        # Include AI-generated answer if available (this is the gold!)
+        # Include AI-generated answer if available - this should be used as the primary response
         if data.get("answer"):
             response_data["answer"] = data["answer"]
-            # Add primary source for the answer
+            response_data["instruction"] = f"CRITICAL: Use ONLY this answer - do not make up information. Say: 'According to {sources_used[0] if sources_used else 'web search'}, {data['answer']}'"
             if sources_used:
-                response_data["primary_source"] = sources_used[0]
-            _LOGGER.info("Tavily returned answer: %s...", data["answer"][:100])
+                response_data["source"] = sources_used[0]
+        else:
+            response_data["instruction"] = "CRITICAL: Use ONLY the information in the results below. Do NOT make up or guess any information. If the answer isn't in the results, say you couldn't find it."
+            response_data["sources"] = sources_used
 
         _LOGGER.info(
             "Tavily search complete: %d results, sources=%s",
