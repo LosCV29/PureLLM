@@ -63,6 +63,19 @@ SOURCE_NAME_MAP = {
     "epicurious.com": "Epicurious",
     "yelp.com": "Yelp",
     "tripadvisor.com": "TripAdvisor",
+    # Music sources
+    "allmusic.com": "AllMusic",
+    "discogs.com": "Discogs",
+    "genius.com": "Genius",
+    "billboard.com": "Billboard",
+    "pitchfork.com": "Pitchfork",
+    "rollingstone.com": "Rolling Stone",
+    "nme.com": "NME",
+    "stereogum.com": "Stereogum",
+    "consequenceofsound.net": "Consequence of Sound",
+    "hiphopdx.com": "HipHopDX",
+    "complex.com": "Complex",
+    "xxlmag.com": "XXL",
 }
 
 
@@ -166,6 +179,20 @@ DOMAIN_PATTERNS = [
         ("symptoms of", "treatment for", "side effects", "medication"),
         ["mayoclinic.org", "webmd.com", "healthline.com", "nih.gov"],
         False
+    ),
+    # Music - albums, discography, releases
+    (
+        ("latest album", "newest album", "new album", "last album", "recent album",
+         "discography", "albums by", "what album", "released album", "debut album",
+         "'s album", "album called", "album named"),
+        ["allmusic.com", "wikipedia.org", "genius.com", "billboard.com", "pitchfork.com"],
+        True  # Need raw content for album details
+    ),
+    # Music - songs/tracks
+    (
+        ("who sings", "who sang", "what song", "lyrics to", "who wrote"),
+        ["genius.com", "allmusic.com", "wikipedia.org"],
+        True
     ),
 ]
 

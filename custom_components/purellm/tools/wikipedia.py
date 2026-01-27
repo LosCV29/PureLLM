@@ -15,6 +15,36 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Patterns indicating the user wants album/discography info
+ALBUM_KEYWORDS = [
+    "latest album", "newest album", "new album", "last album", "recent album",
+    "first album", "debut album", "albums", "discography", "album called",
+]
+
+
+def _transform_album_query(topic: str) -> str:
+    """Transform album queries to search for discography.
+
+    Examples:
+        "21 Savage's latest album" -> "21 Savage discography"
+        "what is Taylor Swift's new album" -> "Taylor Swift discography"
+    """
+    topic_lower = topic.lower()
+
+    for keyword in ALBUM_KEYWORDS:
+        if keyword in topic_lower:
+            # Extract artist name by removing album keywords and common phrases
+            artist = topic_lower
+            for remove in ALBUM_KEYWORDS + ["what is", "what's", "'s", "by", "the"]:
+                artist = artist.replace(remove, " ")
+            artist = " ".join(artist.split()).strip()  # Clean up whitespace
+
+            if artist:
+                _LOGGER.info("Wikipedia: Transformed album query '%s' -> '%s discography'", topic, artist)
+                return f"{artist} discography"
+
+    return topic
+
 
 async def calculate_age(
     arguments: dict[str, Any],
@@ -140,6 +170,10 @@ async def get_wikipedia_summary(
 
     if not topic:
         return {"error": "No topic provided"}
+
+    # Transform album queries to discography searches for better results
+    original_topic = topic
+    topic = _transform_album_query(topic)
 
     try:
         track_api_call("wikipedia")
