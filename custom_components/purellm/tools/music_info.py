@@ -100,6 +100,7 @@ async def get_music_info(
 
         if not release_groups:
             return {
+                "instruction": "Start your response with 'According to MusicBrainz, ...'",
                 "artist": artist_display_name,
                 "message": f"No studio albums found for {artist_display_name}",
             }
@@ -132,10 +133,10 @@ async def get_music_info(
         if query_type == "latest_album" and albums:
             latest = albums[0]
             return {
+                "instruction": "Start your response with 'According to MusicBrainz, ...'",
                 "artist": artist_display_name,
                 "latest_album": latest["name"],
                 "release_date": latest["release_date"],
-                "source": "MusicBrainz",
             }
 
         elif query_type in ("discography", "albums"):
@@ -144,21 +145,21 @@ async def get_music_info(
                 f"{a['name']} ({a['release_date']})" for a in albums[:15]
             ]
             return {
+                "instruction": "Start your response with 'According to MusicBrainz, ...'",
                 "artist": artist_display_name,
                 "total_albums": len(albums),
                 "albums": album_list,
-                "source": "MusicBrainz",
             }
 
         else:
             # Default: return latest with some context
             latest = albums[0] if albums else None
             return {
+                "instruction": "Start your response with 'According to MusicBrainz, ...'",
                 "artist": artist_display_name,
                 "latest_album": latest["name"] if latest else "Unknown",
                 "release_date": latest["release_date"] if latest else "Unknown",
                 "total_albums": len(albums),
-                "source": "MusicBrainz",
             }
 
     except asyncio.TimeoutError:
