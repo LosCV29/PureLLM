@@ -1041,7 +1041,7 @@ class PureLLMConversationEntity(ConversationEntity):
             # Sports tools (all use same pattern)
             if tool_name in ("get_sports_info", "get_ufc_info", "check_league_games", "list_league_games"):
                 handler = getattr(sports_tool, tool_name)
-                return await handler(arguments, self._session, hass_tz, self._track_api_call)
+                return await handler(arguments, self._session, hass_tz, self._track_api_call, self.tavily_api_key)
 
             # Wikipedia tools
             if tool_name in ("calculate_age", "get_wikipedia_summary"):
