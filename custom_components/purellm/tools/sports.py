@@ -353,7 +353,32 @@ async def get_sports_info(
         is_basketball = "basketball" in team_key_original
         is_football = "football" in team_key_original
 
-        # If explicitly college OR (basketball + not NBA team), try NCAA API
+        # NCAA team nicknames - triggers NCAA API routing for queries like "hurricanes basketball"
+        ncaa_team_nicknames = [
+            # ACC
+            "hurricanes", "blue devils", "tar heels", "wolfpack", "demon deacons",
+            "yellow jackets", "seminoles", "hokies", "orange", "fighting irish",
+            "cardinals",  # Louisville
+            # SEC
+            "crimson tide", "volunteers", "razorbacks", "gamecocks", "commodores",
+            "aggies", "gators", "rebels", "ole miss", "bulldogs", "tigers",
+            # Big Ten
+            "wolverines", "spartans", "buckeyes", "badgers", "hawkeyes", "gophers",
+            "boilermakers", "hoosiers", "illini", "terrapins", "nittany lions",
+            "cornhuskers", "scarlet knights", "wildcats",
+            # Big 12
+            "jayhawks", "longhorns", "sooners", "red raiders", "horned frogs",
+            "mountaineers", "cyclones", "bearcats", "knights",
+            # Pac-12 / West
+            "bruins", "trojans", "ducks", "beavers", "sun devils", "buffaloes", "utes",
+            # Big East
+            "hoyas", "bluejays", "pirates", "musketeers", "red storm", "friars", "golden eagles",
+            # Other notable
+            "zags", "gonzaga", "shockers", "aztecs", "miners", "owls", "huskies",
+            "cougars", "mustangs", "mean green", "roadrunners", "hilltoppers",
+        ]
+
+        # NBA teams - exclude from NCAA basketball routing
         nba_teams = ["hawks", "celtics", "nets", "hornets", "bulls", "cavaliers", "cavs",
                      "mavericks", "mavs", "nuggets", "pistons", "warriors", "rockets",
                      "pacers", "clippers", "lakers", "grizzlies", "heat", "bucks",
@@ -361,8 +386,23 @@ async def get_sports_info(
                      "76ers", "sixers", "suns", "blazers", "kings", "spurs", "raptors", "jazz", "wizards"]
         is_nba_team = any(nba in team_key_original for nba in nba_teams)
 
-        # Detect college basketball: has "basketball" keyword and NOT an NBA team
+        # NFL teams - exclude from NCAA football routing
+        nfl_teams = ["falcons", "ravens", "bills", "panthers", "bears", "bengals", "browns",
+                     "cowboys", "broncos", "lions", "packers", "texans", "colts", "jaguars",
+                     "chiefs", "raiders", "chargers", "rams", "dolphins", "vikings", "patriots",
+                     "saints", "giants", "jets", "eagles", "steelers", "49ers", "seahawks",
+                     "buccaneers", "bucs", "titans", "commanders"]
+        is_nfl_team = any(nfl in team_key_original for nfl in nfl_teams)
+
+        # Check if query contains NCAA team nickname
+        is_ncaa_nickname = any(nick in team_key_original for nick in ncaa_team_nicknames)
+
+        # Detect college sports:
+        # 1. Has "basketball" keyword and NOT an NBA team, OR
+        # 2. Has NCAA team nickname and NOT a pro team
         if is_basketball and not is_nba_team:
+            is_college_query = True
+        elif is_ncaa_nickname and not is_nba_team and not is_nfl_team:
             is_college_query = True
 
         if is_college_query:
