@@ -80,7 +80,9 @@ async def get_sports_info(
         team_key = team_name.lower().strip()
 
         # Remove common extra words that don't help with team matching
-        noise_words = ["game", "match", "next", "last", "the", "play", "playing", "fixture", "fixtures", "schedule"]
+        noise_words = ["game", "match", "next", "last", "the", "play", "playing", "fixture", "fixtures", "schedule",
+                       "mens", "womens", "men's", "women's", "basketball", "football", "baseball", "hockey",
+                       "team", "university", "of", "college", "state"]
         for word in noise_words:
             team_key = team_key.replace(word, "").strip()
         # Clean up multiple spaces
@@ -263,9 +265,25 @@ async def get_sports_info(
                         sb_state = sb_status.get("state", "")
 
                         sb_competitors = sb_comp.get("competitors", [])
-                        sb_team_ids = [c.get("team", {}).get("id", "") for c in sb_competitors]
 
-                        if team_id not in sb_team_ids:
+                        # Match by ID, abbreviation, or display name (ESPN IDs can differ between endpoints for college sports)
+                        team_match = False
+                        for c in sb_competitors:
+                            c_team = c.get("team", {})
+                            c_id = c_team.get("id", "")
+                            c_abbrev = c_team.get("abbreviation", "").lower()
+                            c_name = c_team.get("displayName", "").lower()
+                            if c_id == team_id:
+                                team_match = True
+                                break
+                            if team_abbrev and c_abbrev == team_abbrev:
+                                team_match = True
+                                break
+                            if full_name.lower() in c_name or c_name in full_name.lower():
+                                team_match = True
+                                break
+
+                        if not team_match:
                             continue
 
                         home_team_sb = next((c for c in sb_competitors if c.get("homeAway") == "home"), {})
