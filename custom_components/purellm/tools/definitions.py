@@ -426,7 +426,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_search and config.tavily_api_key:
         tools.append(_tool(
             "web_search",
-            "Search the internet for current events, news, reviews, ratings. Use for: (1) explicit 'search for X' requests, (2) movie/TV reviews and ratings, (3) current events and news, (4) product reviews, (5) music info like latest albums, who sings a song. SMART DOMAINS: Auto-targets sites (Rotten Tomatoes, IMDb, AllMusic, etc.) based on keywords.",
+            "PRIORITY: When user says 'search', 'search for', 'look up', or 'google' - ALWAYS use this tool, even for sports queries. Use for: (1) ANY request starting with 'search' or 'search for', (2) college basketball (NCAAB) queries - ESPN is unreliable, (3) movie/TV reviews and ratings, (4) current events and news, (5) product reviews, (6) music info. SMART DOMAINS: Auto-targets sites based on keywords.",
             {
                 "query": {
                     "type": "string",
