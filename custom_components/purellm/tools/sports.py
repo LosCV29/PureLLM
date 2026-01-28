@@ -120,6 +120,7 @@ async def get_sports_info(
                 ("football", "nfl"),
                 ("baseball", "mlb"),
                 ("hockey", "nhl"),
+                ("basketball", "mens-college-basketball"),  # NCAA Basketball
             ]
 
         team_found = False
