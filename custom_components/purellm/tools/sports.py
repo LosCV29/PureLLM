@@ -84,6 +84,12 @@ async def get_sports_info(
         track_api_call("sports")
         team_key = team_name.lower().strip()
 
+        # Detect sport type from query BEFORE removing noise words
+        wants_football = "football" in team_key
+        wants_basketball = "basketball" in team_key
+        wants_baseball = "baseball" in team_key
+        wants_hockey = "hockey" in team_key
+
         # Remove common extra words that don't help with team matching
         noise_words = ["game", "match", "next", "last", "the", "play", "playing", "fixture", "fixtures", "schedule",
                        "mens", "womens", "men's", "women's", "basketball", "football", "baseball", "hockey",
@@ -102,14 +108,72 @@ async def get_sports_info(
             for kw in ucl_keywords:
                 team_key = team_key.replace(kw, "").strip()
 
-        # Define leagues to search
+        # Define leagues to search - order based on sport keyword in query
         if wants_ucl:
             # User explicitly wants Champions League - ONLY search UCL
             leagues_to_try = [("soccer", "uefa.champions")]
+        elif wants_football:
+            # User asked about football - search football leagues first
+            leagues_to_try = [
+                ("football", "nfl"),
+                ("football", "college-football"),
+                ("basketball", "nba"),
+                ("basketball", "mens-college-basketball"),
+                ("baseball", "mlb"),
+                ("hockey", "nhl"),
+                ("soccer", "eng.1"),
+                ("soccer", "esp.1"),
+                ("soccer", "ger.1"),
+                ("soccer", "ita.1"),
+                ("soccer", "fra.1"),
+            ]
+        elif wants_basketball:
+            # User asked about basketball - search basketball leagues first
+            leagues_to_try = [
+                ("basketball", "nba"),
+                ("basketball", "mens-college-basketball"),
+                ("football", "nfl"),
+                ("football", "college-football"),
+                ("baseball", "mlb"),
+                ("hockey", "nhl"),
+                ("soccer", "eng.1"),
+                ("soccer", "esp.1"),
+                ("soccer", "ger.1"),
+                ("soccer", "ita.1"),
+                ("soccer", "fra.1"),
+            ]
+        elif wants_baseball:
+            # User asked about baseball - search MLB first
+            leagues_to_try = [
+                ("baseball", "mlb"),
+                ("basketball", "nba"),
+                ("basketball", "mens-college-basketball"),
+                ("football", "nfl"),
+                ("football", "college-football"),
+                ("hockey", "nhl"),
+                ("soccer", "eng.1"),
+                ("soccer", "esp.1"),
+                ("soccer", "ger.1"),
+                ("soccer", "ita.1"),
+                ("soccer", "fra.1"),
+            ]
+        elif wants_hockey:
+            # User asked about hockey - search NHL first
+            leagues_to_try = [
+                ("hockey", "nhl"),
+                ("basketball", "nba"),
+                ("basketball", "mens-college-basketball"),
+                ("football", "nfl"),
+                ("football", "college-football"),
+                ("baseball", "mlb"),
+                ("soccer", "eng.1"),
+                ("soccer", "esp.1"),
+                ("soccer", "ger.1"),
+                ("soccer", "ita.1"),
+                ("soccer", "fra.1"),
+            ]
         else:
-            # Search domestic soccer leagues first (to find team's home league)
-            # Then search American sports
-            # NOTE: We do NOT include UCL here - user must explicitly ask for it
+            # Default order - soccer first, then American sports
             leagues_to_try = [
                 ("soccer", "eng.1"),      # Premier League
                 ("soccer", "esp.1"),      # La Liga
