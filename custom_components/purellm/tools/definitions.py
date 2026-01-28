@@ -132,7 +132,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             {
                 "team_name": {
                     "type": "string",
-                    "description": "Team name. IMPORTANT: Include the sport if user specifies it (football, basketball, baseball, hockey)! Examples: 'Miami Hurricanes football', 'Miami Hurricanes basketball', 'Sacramento Kings', 'Liverpool Champions League'"
+                    "description": "Team name. CRITICAL for COLLEGE teams: Include 'football' or 'basketball' to distinguish sports! Examples: 'Miami Hurricanes football', 'Ohio State basketball', 'Alabama football'. Pro teams don't need sport: 'Miami Heat', 'Dallas Cowboys'"
                 },
                 "query_type": {
                     "type": "string",
