@@ -297,19 +297,21 @@ async def get_ncaa_sports_info(
                         game_date = check_date.strftime("%A, %B %d")
                         date_str = f"{game_date} at {start_time}" if start_time else game_date
 
+                    opponent = home if not game['is_home'] else away
+                    is_home = game['is_home']
                     result["next_game"] = {
+                        "opponent": opponent,
                         "date": date_str,
                         "home_team": home,
                         "away_team": away,
+                        "is_home": is_home,
                         "venue": venue,
                     }
-                    opponent = home if not game['is_home'] else away
-                    is_home = game['is_home']
-                    # Format: "Next game: vs Stanford (home) on Tuesday at 9:00 PM at Watsco Center"
-                    home_away = "(home)" if is_home else "(away)"
-                    next_text = f"Next game: vs {opponent} {home_away} on {date_str}"
+                    # Format: "Next game: vs Stanford (home) on Tuesday at 9:00 PM. Playing at Watsco Center"
+                    home_away = "home" if is_home else "away"
+                    next_text = f"Next game: {opponent} ({home_away}) on {date_str}"
                     if venue:
-                        next_text += f". Playing at {venue}"
+                        next_text += f". Location: {venue}"
                     response_parts.append(next_text)
                     break
 
