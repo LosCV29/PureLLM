@@ -50,6 +50,269 @@ async def _fetch_soccer_scoreboard_for_date(
     return (days_ahead, date_str, None)
 
 
+# ============ NCAA API Integration ============
+# Uses https://ncaa-api.henrygd.me/ for reliable college sports data
+NCAA_API_BASE = "https://ncaa-api.henrygd.me"
+NCAA_SPORTS = {
+    "mens-college-basketball": "basketball-men/d1",
+    "college-football": "football/fbs",
+}
+
+
+async def _fetch_ncaa_scoreboard(
+    session: "aiohttp.ClientSession",
+    ncaa_sport: str,
+    date: datetime,
+) -> list[dict]:
+    """Fetch NCAA scoreboard for a specific date.
+
+    Args:
+        session: aiohttp session
+        ncaa_sport: NCAA sport path (e.g., "basketball-men/d1")
+        date: Date to fetch games for
+
+    Returns:
+        List of games from NCAA API
+    """
+    date_str = date.strftime("%Y/%m/%d")
+    url = f"{NCAA_API_BASE}/scoreboard/{ncaa_sport}/{date_str}"
+
+    try:
+        async with session.get(url, timeout=10) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("games", [])
+            _LOGGER.warning("NCAA scoreboard API returned %d for %s", resp.status, url)
+    except Exception as e:
+        _LOGGER.warning("NCAA scoreboard API error: %s", e)
+
+    return []
+
+
+async def _fetch_ncaa_standings(
+    session: "aiohttp.ClientSession",
+    ncaa_sport: str,
+) -> list[dict]:
+    """Fetch NCAA standings.
+
+    Args:
+        session: aiohttp session
+        ncaa_sport: NCAA sport path (e.g., "basketball-men/d1")
+
+    Returns:
+        List of conference standings from NCAA API
+    """
+    url = f"{NCAA_API_BASE}/standings/{ncaa_sport}"
+
+    try:
+        async with session.get(url, timeout=10) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                return data.get("data", [])
+            _LOGGER.warning("NCAA standings API returned %d", resp.status)
+    except Exception as e:
+        _LOGGER.warning("NCAA standings API error: %s", e)
+
+    return []
+
+
+def _find_team_in_ncaa_standings(standings: list[dict], team_key: str) -> dict | None:
+    """Find a team in NCAA standings data.
+
+    Args:
+        standings: List of conference standings
+        team_key: Search term for team name
+
+    Returns:
+        Team standings dict or None
+    """
+    search_words = team_key.lower().split()
+
+    for conf in standings:
+        conf_name = conf.get("conference", "")
+        for team in conf.get("standings", []):
+            school = team.get("School", "").lower()
+            # Match if all search words are in the school name
+            if all(word in school for word in search_words):
+                return {
+                    "school": team.get("School"),
+                    "conference": conf_name,
+                    "overall_wins": team.get("Overall W", "0"),
+                    "overall_losses": team.get("Overall L", "0"),
+                    "conf_wins": team.get("Conference W", "0"),
+                    "conf_losses": team.get("Conference L", "0"),
+                    "streak": team.get("Overall STREAK", ""),
+                }
+
+    return None
+
+
+def _find_team_game_in_ncaa_scoreboard(games: list[dict], team_key: str) -> dict | None:
+    """Find a team's game in NCAA scoreboard data.
+
+    Args:
+        games: List of games from NCAA API
+        team_key: Search term for team name
+
+    Returns:
+        Game dict or None
+    """
+    search_words = team_key.lower().split()
+
+    for g in games:
+        game = g.get("game", {})
+        home = game.get("home", {}).get("names", {})
+        away = game.get("away", {}).get("names", {})
+
+        home_full = home.get("full", "").lower()
+        away_full = away.get("full", "").lower()
+        home_short = home.get("short", "").lower()
+        away_short = away.get("short", "").lower()
+
+        # Check if team matches home or away
+        home_match = all(word in f"{home_full} {home_short}" for word in search_words)
+        away_match = all(word in f"{away_full} {away_short}" for word in search_words)
+
+        if home_match or away_match:
+            return {
+                "home_team": game.get("home", {}).get("names", {}).get("full", "Home"),
+                "away_team": game.get("away", {}).get("names", {}).get("full", "Away"),
+                "home_score": game.get("home", {}).get("score", ""),
+                "away_score": game.get("away", {}).get("score", ""),
+                "state": game.get("gameState", ""),
+                "start_time": game.get("startTime", ""),
+                "start_date": game.get("startDate", ""),
+                "venue": game.get("venue", {}).get("name", ""),
+                "is_home": home_match,
+            }
+
+    return None
+
+
+async def get_ncaa_sports_info(
+    session: "aiohttp.ClientSession",
+    team_name: str,
+    ncaa_sport: str,
+    query_type: str,
+    hass_timezone,
+) -> dict[str, Any]:
+    """Get sports info from NCAA API.
+
+    Args:
+        session: aiohttp session
+        team_name: Team name to search for
+        ncaa_sport: NCAA sport path (e.g., "basketball-men/d1")
+        query_type: Type of query (standings, next_game, both)
+        hass_timezone: Home Assistant timezone
+
+    Returns:
+        Sports data dict
+    """
+    # Clean up team name for searching
+    team_key = team_name.lower().strip()
+    noise_words = ["game", "match", "next", "last", "the", "play", "playing",
+                   "mens", "womens", "men's", "women's", "basketball", "football",
+                   "team", "university", "of", "college", "state"]
+    for word in noise_words:
+        team_key = team_key.replace(word, "").strip()
+    team_key = " ".join(team_key.split())
+
+    result = {"team": team_name, "source": "ncaa"}
+    response_parts = []
+
+    # Get standings if requested
+    if query_type in ["standings", "both"]:
+        standings = await _fetch_ncaa_standings(session, ncaa_sport)
+        team_standings = _find_team_in_ncaa_standings(standings, team_key)
+
+        if team_standings:
+            record = f"{team_standings['overall_wins']}-{team_standings['overall_losses']}"
+            conf_record = f"{team_standings['conf_wins']}-{team_standings['conf_losses']}"
+            school = team_standings['school']
+            result["team"] = school
+            result["standings"] = {
+                "record": record,
+                "conference_record": conf_record,
+                "conference": team_standings['conference'],
+                "streak": team_standings['streak'],
+            }
+            standing_text = f"{school} is {record} overall, {conf_record} in {team_standings['conference']}"
+            if team_standings['streak']:
+                standing_text += f" ({team_standings['streak']})"
+            response_parts.append(standing_text)
+
+    # Get next game if requested
+    if query_type in ["next_game", "both", "last_game"]:
+        now = datetime.now(hass_timezone)
+
+        # Check today and next 7 days for upcoming games
+        for days_ahead in range(8):
+            check_date = now + timedelta(days=days_ahead)
+            games = await _fetch_ncaa_scoreboard(session, ncaa_sport, check_date)
+            game = _find_team_game_in_ncaa_scoreboard(games, team_key)
+
+            if game:
+                state = game['state']
+                home = game['home_team']
+                away = game['away_team']
+
+                if state == "live" or state == "in":
+                    # Game in progress
+                    h_score = game['home_score']
+                    a_score = game['away_score']
+                    result["live_game"] = game
+                    response_parts.append(f"LIVE: {away} {a_score} @ {home} {h_score}")
+                    break
+
+                elif state == "pre":
+                    # Upcoming game
+                    start_time = game.get('start_time', '')
+                    venue = game.get('venue', '')
+
+                    # Format date
+                    if days_ahead == 0:
+                        date_str = f"Today at {start_time}" if start_time else "Today"
+                    elif days_ahead == 1:
+                        date_str = f"Tomorrow at {start_time}" if start_time else "Tomorrow"
+                    else:
+                        game_date = check_date.strftime("%A, %B %d")
+                        date_str = f"{game_date} at {start_time}" if start_time else game_date
+
+                    result["next_game"] = {
+                        "date": date_str,
+                        "home_team": home,
+                        "away_team": away,
+                        "venue": venue,
+                    }
+                    opponent = home if not game['is_home'] else away
+                    location = "vs" if game['is_home'] else "@"
+                    next_text = f"Next game: {location} {opponent} - {date_str}"
+                    if venue:
+                        next_text += f" at {venue}"
+                    response_parts.append(next_text)
+                    break
+
+                elif state == "final" or state == "post":
+                    # Completed game - only use if looking for last game
+                    if query_type == "last_game" or (query_type == "both" and "last_game" not in result):
+                        h_score = game['home_score']
+                        a_score = game['away_score']
+                        result["last_game"] = game
+                        response_parts.append(f"Last game: {away} {a_score} @ {home} {h_score}")
+                    continue  # Keep looking for next game
+
+    if not response_parts:
+        # Team not found in NCAA data
+        return {"error": f"Could not find '{team_name}' in NCAA {ncaa_sport.replace('/', ' ')} data."}
+
+    result["response_text"] = ". ".join(response_parts)
+    _LOGGER.info("NCAA sports info for %s: %s", team_name, result.get("response_text", ""))
+    return result
+
+
+# ============ ESPN API Functions ============
+
+
 async def get_sports_info(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
@@ -79,7 +342,42 @@ async def get_sports_info(
 
     try:
         track_api_call("sports")
-        team_key = team_name.lower().strip()
+        team_key_original = team_name.lower().strip()
+
+        # ============ College Sports Detection ============
+        # Check if this is a college sports query - route to NCAA API
+        college_keywords = ["university", "college", "ncaa", "ncaab", "ncaaf"]
+        is_college_query = any(kw in team_key_original for kw in college_keywords)
+
+        # Also check for college basketball vs college football
+        is_basketball = "basketball" in team_key_original
+        is_football = "football" in team_key_original
+
+        # If explicitly college OR (basketball + not NBA team), try NCAA API
+        nba_teams = ["hawks", "celtics", "nets", "hornets", "bulls", "cavaliers", "cavs",
+                     "mavericks", "mavs", "nuggets", "pistons", "warriors", "rockets",
+                     "pacers", "clippers", "lakers", "grizzlies", "heat", "bucks",
+                     "timberwolves", "wolves", "pelicans", "knicks", "thunder", "magic",
+                     "76ers", "sixers", "suns", "blazers", "kings", "spurs", "raptors", "jazz", "wizards"]
+        is_nba_team = any(nba in team_key_original for nba in nba_teams)
+
+        # Detect college basketball: has "basketball" keyword and NOT an NBA team
+        if is_basketball and not is_nba_team:
+            is_college_query = True
+
+        if is_college_query:
+            # Determine which NCAA sport
+            if is_football:
+                ncaa_sport = NCAA_SPORTS.get("college-football")
+            else:
+                # Default to basketball for college queries
+                ncaa_sport = NCAA_SPORTS.get("mens-college-basketball")
+
+            _LOGGER.info("Routing to NCAA API for college sports: %s -> %s", team_name, ncaa_sport)
+            return await get_ncaa_sports_info(session, team_name, ncaa_sport, query_type, hass_timezone)
+
+        # ============ Pro Sports (ESPN API) ============
+        team_key = team_key_original
 
         # Remove common extra words that don't help with team matching
         noise_words = ["game", "match", "next", "last", "the", "play", "playing", "fixture", "fixtures", "schedule",
@@ -711,6 +1009,7 @@ async def get_ufc_info(
 
 
 # League code mappings for ESPN API
+# College sports use NCAA API (marked with "ncaa:" prefix)
 LEAGUE_CODES = {
     # American sports
     "nfl": ("football", "nfl"),
@@ -718,9 +1017,13 @@ LEAGUE_CODES = {
     "mlb": ("baseball", "mlb"),
     "nhl": ("hockey", "nhl"),
     "mls": ("soccer", "usa.1"),
+    # College sports - routed to NCAA API in get_sports_info
     "college football": ("football", "college-football"),
     "ncaa football": ("football", "college-football"),
-    # NOTE: college basketball removed - ESPN API is unreliable for NCAAB
+    "ncaaf": ("football", "college-football"),
+    "college basketball": ("basketball", "mens-college-basketball"),
+    "ncaa basketball": ("basketball", "mens-college-basketball"),
+    "ncaab": ("basketball", "mens-college-basketball"),
     # Soccer/Football
     "premier league": ("soccer", "eng.1"),
     "epl": ("soccer", "eng.1"),

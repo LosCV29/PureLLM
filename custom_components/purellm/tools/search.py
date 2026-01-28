@@ -132,6 +132,13 @@ FRESHNESS_KEYWORDS = {
 # Smart domain patterns - maps keywords to target domains for better results
 # Format: (keywords_tuple, domains_list, enable_raw_content)
 DOMAIN_PATTERNS = [
+    # College basketball/sports schedules - exclude ticket sites
+    (
+        ("basketball game", "basketball schedule", "basketball record", "next game",
+         "hurricanes basketball", "college basketball", "ncaa basketball", "ncaab"),
+        ["espn.com", "sports-reference.com", "cbssports.com", "247sports.com", "on3.com"],
+        False
+    ),
     # Movie/TV synopsis and plot information
     (
         ("synopsis", "plot", "storyline", "what is it about", "what's it about",
