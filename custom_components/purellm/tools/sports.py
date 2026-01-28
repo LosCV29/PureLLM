@@ -50,63 +50,6 @@ async def _fetch_soccer_scoreboard_for_date(
     return (days_ahead, date_str, None)
 
 
-async def _college_basketball_web_search(
-    session: "aiohttp.ClientSession",
-    team_name: str,
-    query_type: str,
-    tavily_api_key: str,
-) -> dict[str, Any] | None:
-    """Use web search as fallback for college basketball (ESPN API is unreliable).
-
-    Returns formatted sports data or None if search fails.
-    """
-    if not tavily_api_key:
-        return None
-
-    try:
-        # Build search query based on what info is needed
-        if query_type == "standings":
-            search_query = f"{team_name} college basketball record standings 2026"
-        elif query_type == "next_game":
-            search_query = f"{team_name} college basketball next game schedule 2026"
-        else:
-            search_query = f"{team_name} college basketball schedule record 2026"
-
-        payload = {
-            "api_key": tavily_api_key,
-            "query": search_query,
-            "search_depth": "basic",
-            "include_answer": True,
-            "max_results": 5,
-        }
-
-        async with session.post(
-            "https://api.tavily.com/search",
-            json=payload,
-            timeout=10,
-        ) as resp:
-            if resp.status != 200:
-                _LOGGER.warning("College basketball web search failed: %s", resp.status)
-                return None
-
-            data = await resp.json()
-            answer = data.get("answer", "")
-
-            if not answer:
-                return None
-
-            _LOGGER.info("College basketball web search result for %s: %s", team_name, answer[:200])
-            return {
-                "response_text": answer,
-                "team": team_name,
-                "source": "web_search",
-            }
-
-    except Exception as e:
-        _LOGGER.warning("College basketball web search error: %s", e)
-        return None
-
-
 async def get_sports_info(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
@@ -121,7 +64,7 @@ async def get_sports_info(
         session: aiohttp session
         hass_timezone: Home Assistant timezone
         track_api_call: Callback to track API usage
-        tavily_api_key: Optional Tavily API key for web search fallback
+        tavily_api_key: Unused, kept for API compatibility
 
     Returns:
         Sports data dict
@@ -136,28 +79,7 @@ async def get_sports_info(
 
     try:
         track_api_call("sports")
-        team_key_original = team_name.lower().strip()
-
-        # Simple college basketball detection:
-        # If "basketball" is mentioned AND team is NOT an NBA team → use web search
-        nba_teams = ["hawks", "celtics", "nets", "hornets", "bulls", "cavaliers", "cavs",
-                     "mavericks", "mavs", "nuggets", "pistons", "warriors", "rockets",
-                     "pacers", "clippers", "lakers", "grizzlies", "heat", "bucks",
-                     "timberwolves", "wolves", "pelicans", "knicks", "thunder", "magic",
-                     "76ers", "sixers", "suns", "trail blazers", "blazers", "kings",
-                     "spurs", "raptors", "jazz", "wizards"]
-
-        has_basketball = "basketball" in team_key_original
-        is_nba_team = any(nba in team_key_original for nba in nba_teams)
-
-        if has_basketball and not is_nba_team and tavily_api_key:
-            _LOGGER.info("College basketball detected for '%s' - using web search", team_name)
-            result = await _college_basketball_web_search(session, team_name, query_type, tavily_api_key)
-            if result:
-                return result
-            return {"error": f"Could not find college basketball info for {team_name}. Try a web search."}
-
-        team_key = team_key_original
+        team_key = team_name.lower().strip()
 
         # Remove common extra words that don't help with team matching
         noise_words = ["game", "match", "next", "last", "the", "play", "playing", "fixture", "fixtures", "schedule",
@@ -196,7 +118,7 @@ async def get_sports_info(
                 ("baseball", "mlb"),
                 ("hockey", "nhl"),
                 ("football", "college-football"),
-                ("basketball", "mens-college-basketball"),
+                # NOTE: mens-college-basketball removed - ESPN API is unreliable for NCAAB
             ]
 
         team_found = False
@@ -251,16 +173,6 @@ async def get_sports_info(
             if wants_ucl:
                 return {"error": f"Team '{team_name}' not found in UEFA Champions League."}
             return {"error": f"Team '{team_name}' not found. Try the full team name (e.g., 'Miami Heat', 'Manchester City', 'Real Madrid')."}
-
-        # If team was found in college basketball, use web search instead of unreliable ESPN API
-        found_sport, found_league = team_leagues[0] if team_leagues else (None, None)
-        if found_league == "mens-college-basketball" and tavily_api_key:
-            _LOGGER.info("College basketball team '%s' found - using web search instead of ESPN", full_name)
-            result = await _college_basketball_web_search(session, full_name, query_type, tavily_api_key)
-            if result:
-                return result
-            # If web search fails, return error rather than using bad ESPN data
-            return {"error": f"Could not find current info for {full_name}. Try a web search."}
 
         result = {"team": full_name}
 
@@ -808,8 +720,7 @@ LEAGUE_CODES = {
     "mls": ("soccer", "usa.1"),
     "college football": ("football", "college-football"),
     "ncaa football": ("football", "college-football"),
-    "college basketball": ("basketball", "mens-college-basketball"),
-    "ncaa basketball": ("basketball", "mens-college-basketball"),
+    # NOTE: college basketball removed - ESPN API is unreliable for NCAAB
     # Soccer/Football
     "premier league": ("soccer", "eng.1"),
     "epl": ("soccer", "eng.1"),
