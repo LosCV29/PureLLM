@@ -116,6 +116,25 @@ async def _fetch_ncaa_standings(
     return []
 
 
+def _normalize_state_names(text: str) -> str:
+    """Expand state abbreviations in text for matching.
+
+    NCAA API uses inconsistent formats: 'Miami (FL)' vs 'Miami (Florida)'
+    This normalizes by expanding abbreviations so both match.
+    """
+    state_map = {
+        "(fl)": "(fl) (florida)",
+        "(oh)": "(oh) (ohio)",
+        "(pa)": "(pa) (pennsylvania)",
+        "(tx)": "(tx) (texas)",
+        "(ca)": "(ca) (california)",
+    }
+    text_lower = text.lower()
+    for abbrev, expanded in state_map.items():
+        text_lower = text_lower.replace(abbrev, expanded)
+    return text_lower
+
+
 def _find_team_in_ncaa_standings(standings: list[dict], team_key: str) -> dict | None:
     """Find a team in NCAA standings data.
 
@@ -132,8 +151,10 @@ def _find_team_in_ncaa_standings(standings: list[dict], team_key: str) -> dict |
         conf_name = conf.get("conference", "")
         for team in conf.get("standings", []):
             school = team.get("School", "").lower()
+            # Normalize state abbreviations for matching
+            school_normalized = _normalize_state_names(school)
             # Match if all search words are in the school name
-            if all(word in school for word in search_words):
+            if all(word in school_normalized for word in search_words):
                 return {
                     "school": team.get("School"),
                     "conference": conf_name,
@@ -169,9 +190,13 @@ def _find_team_game_in_ncaa_scoreboard(games: list[dict], team_key: str) -> dict
         home_short = home.get("short", "").lower()
         away_short = away.get("short", "").lower()
 
+        # Normalize state names for matching (handles FL vs Florida, etc.)
+        home_text = _normalize_state_names(f"{home_full} {home_short}")
+        away_text = _normalize_state_names(f"{away_full} {away_short}")
+
         # Check if team matches home or away
-        home_match = all(word in f"{home_full} {home_short}" for word in search_words)
-        away_match = all(word in f"{away_full} {away_short}" for word in search_words)
+        home_match = all(word in home_text for word in search_words)
+        away_match = all(word in away_text for word in search_words)
 
         if home_match or away_match:
             return {
@@ -212,10 +237,10 @@ async def get_ncaa_sports_info(
     team_key = team_name.lower().strip()
 
     # Map nicknames to state codes for teams with same city name
-    # NCAA uses "Miami (FL)" vs "Miami (OH)", so we need to disambiguate
+    # NCAA API uses "University of Miami (Florida)" in scoreboard, "Miami (FL)" in standings
     nickname_to_state = {
-        "hurricanes": "fl",      # Miami (FL) Hurricanes
-        "redhawks": "oh",        # Miami (OH) RedHawks
+        "hurricanes": "florida",   # Miami (Florida) Hurricanes
+        "redhawks": "ohio",        # Miami (Ohio) RedHawks
     }
 
     # Check if query contains a nickname that needs state disambiguation
