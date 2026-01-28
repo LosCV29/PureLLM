@@ -121,6 +121,7 @@ async def get_sports_info(
                 ("baseball", "mlb"),
                 ("hockey", "nhl"),
                 ("basketball", "mens-college-basketball"),  # NCAA Basketball
+                ("football", "college-football"),  # NCAA Football
             ]
 
         team_found = False
@@ -621,7 +622,10 @@ async def get_sports_info(
                     response_parts.append(f"{lg['summary']} on {date_str}")
         if "next_game" in result:
             ng = result["next_game"]
-            response_parts.append(f"Next game: {ng['summary']}")
+            next_text = f"Next game: {ng['summary']}"
+            if ng.get('venue'):
+                next_text += f" at {ng['venue']}"
+            response_parts.append(next_text)
 
         result["response_text"] = ". ".join(response_parts) if response_parts else f"No game info found for {full_name}"
 
