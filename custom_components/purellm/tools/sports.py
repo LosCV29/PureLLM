@@ -332,8 +332,9 @@ async def get_sports_info(
                         _LOGGER.debug("Sports: Found team match on scoreboard, state=%s", sb_state)
                         home_team_sb = next((c for c in sb_competitors if c.get("homeAway") == "home"), {})
                         away_team_sb = next((c for c in sb_competitors if c.get("homeAway") == "away"), {})
-                        home_name = home_team_sb.get("team", {}).get("displayName", "Home")
-                        away_name = away_team_sb.get("team", {}).get("displayName", "Away")
+                        # Use 'or' to handle empty strings (not just missing keys)
+                        home_name = home_team_sb.get("team", {}).get("displayName") or "Home"
+                        away_name = away_team_sb.get("team", {}).get("displayName") or "Away"
 
                         if sb_state == "in":
                             home_score = home_team_sb.get("score", "0")
@@ -443,8 +444,9 @@ async def get_sports_info(
                         # Found upcoming game
                         home_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "home"), {})
                         away_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "away"), {})
-                        home_name = home_team_fut.get("team", {}).get("displayName", "Home")
-                        away_name = away_team_fut.get("team", {}).get("displayName", "Away")
+                        # Use 'or' to handle empty strings (not just missing keys)
+                        home_name = home_team_fut.get("team", {}).get("displayName") or "Home"
+                        away_name = away_team_fut.get("team", {}).get("displayName") or "Away"
                         game_date_str = fut_event.get("date", "")
                         try:
                             game_dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
@@ -508,8 +510,9 @@ async def get_sports_info(
                             home_team = next((c for c in competitors if c.get("homeAway") == "home"), {})
                             away_team = next((c for c in competitors if c.get("homeAway") == "away"), {})
 
-                            home_name = home_team.get("team", {}).get("displayName", "Home")
-                            away_name = away_team.get("team", {}).get("displayName", "Away")
+                            # Use 'or' to handle empty strings (not just missing keys)
+                            home_name = home_team.get("team", {}).get("displayName") or "Home"
+                            away_name = away_team.get("team", {}).get("displayName") or "Away"
                             home_score_raw = home_team.get("score", "0")
                             away_score_raw = away_team.get("score", "0")
                             home_score = home_score_raw.get("displayValue", home_score_raw) if isinstance(home_score_raw, dict) else home_score_raw
@@ -587,8 +590,9 @@ async def get_sports_info(
                             competitors = comp.get("competitors", [])
                             home_team = next((c for c in competitors if c.get("homeAway") == "home"), {})
                             away_team = next((c for c in competitors if c.get("homeAway") == "away"), {})
-                            home_name = home_team.get("team", {}).get("displayName", "Home")
-                            away_name = away_team.get("team", {}).get("displayName", "Away")
+                            # Use 'or' to handle empty strings (not just missing keys)
+                            home_name = home_team.get("team", {}).get("displayName") or "Home"
+                            away_name = away_team.get("team", {}).get("displayName") or "Away"
 
                             # Format the date with relative dates
                             game_dt_local = next_game_date.astimezone(hass_timezone)
@@ -891,8 +895,9 @@ async def list_league_games(
             home_team = next((c for c in competitors if c.get("homeAway") == "home"), {})
             away_team = next((c for c in competitors if c.get("homeAway") == "away"), {})
 
-            home_name = home_team.get("team", {}).get("shortDisplayName", "Home")
-            away_name = away_team.get("team", {}).get("shortDisplayName", "Away")
+            # Use 'or' to handle empty strings (not just missing keys)
+            home_name = home_team.get("team", {}).get("shortDisplayName") or "Home"
+            away_name = away_team.get("team", {}).get("shortDisplayName") or "Away"
 
             if state == "in":
                 home_score = home_team.get("score", "0")
