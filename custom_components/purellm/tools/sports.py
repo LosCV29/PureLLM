@@ -252,6 +252,16 @@ async def get_sports_info(
                 return {"error": f"Team '{team_name}' not found in UEFA Champions League."}
             return {"error": f"Team '{team_name}' not found. Try the full team name (e.g., 'Miami Heat', 'Manchester City', 'Real Madrid')."}
 
+        # If team was found in college basketball, use web search instead of unreliable ESPN API
+        found_sport, found_league = team_leagues[0] if team_leagues else (None, None)
+        if found_league == "mens-college-basketball" and tavily_api_key:
+            _LOGGER.info("College basketball team '%s' found - using web search instead of ESPN", full_name)
+            result = await _college_basketball_web_search(session, full_name, query_type, tavily_api_key)
+            if result:
+                return result
+            # If web search fails, return error rather than using bad ESPN data
+            return {"error": f"Could not find current info for {full_name}. Try a web search."}
+
         result = {"team": full_name}
 
         # Fetch standings if requested
