@@ -138,28 +138,23 @@ async def get_sports_info(
         track_api_call("sports")
         team_key_original = team_name.lower().strip()
 
-        # Detect college basketball - use web search instead of unreliable ESPN API
-        college_keywords = ["hurricanes", "wildcats", "bulldogs", "tigers", "bears", "cardinals", "blue devils",
-                           "tar heels", "wolfpack", "seminoles", "cavaliers", "hokies", "yellow jackets",
-                           "gamecocks", "gators", "volunteers", "crimson tide", "auburn", "razorbacks",
-                           "jayhawks", "cyclones", "longhorns", "aggies", "sooners", "cowboys", "red raiders",
-                           "mountaineers", "spartans", "wolverines", "buckeyes", "badgers", "hawkeyes",
-                           "boilermakers", "hoosiers", "illini", "golden gophers", "cornhuskers", "nittany lions",
-                           "terrapins", "scarlet knights", "orange", "panthers", "demon deacons", "cardinals"]
-        is_college = any(kw in team_key_original for kw in ["university", "college", "ncaa", "hurricanes"])
-        # Also check if it's a known college team nickname without a pro equivalent
-        if not is_college and any(kw in team_key_original for kw in college_keywords):
-            # Check it's not a pro team (Heat, Dolphins, etc.)
-            pro_keywords = ["heat", "dolphins", "marlins", "panthers nhl", "inter miami"]
-            if not any(pk in team_key_original for pk in pro_keywords):
-                is_college = True
+        # Simple college basketball detection:
+        # If "basketball" is mentioned AND team is NOT an NBA team → use web search
+        nba_teams = ["hawks", "celtics", "nets", "hornets", "bulls", "cavaliers", "cavs",
+                     "mavericks", "mavs", "nuggets", "pistons", "warriors", "rockets",
+                     "pacers", "clippers", "lakers", "grizzlies", "heat", "bucks",
+                     "timberwolves", "wolves", "pelicans", "knicks", "thunder", "magic",
+                     "76ers", "sixers", "suns", "trail blazers", "blazers", "kings",
+                     "spurs", "raptors", "jazz", "wizards"]
 
-        if is_college and tavily_api_key:
+        has_basketball = "basketball" in team_key_original
+        is_nba_team = any(nba in team_key_original for nba in nba_teams)
+
+        if has_basketball and not is_nba_team and tavily_api_key:
             _LOGGER.info("College basketball detected for '%s' - using web search", team_name)
             result = await _college_basketball_web_search(session, team_name, query_type, tavily_api_key)
             if result:
                 return result
-            # If web search fails, return error rather than trying ESPN
             return {"error": f"Could not find college basketball info for {team_name}. Try a web search."}
 
         team_key = team_key_original
