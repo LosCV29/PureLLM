@@ -328,7 +328,8 @@ async def get_ncaa_sports_info(
         # Team not found in NCAA data
         return {"error": f"Could not find '{team_name}' in NCAA {ncaa_sport.replace('/', ' ')} data."}
 
-    result["response_text"] = ". ".join(response_parts)
+    # Add directive prefix to ensure LLM responds verbatim
+    result["response_text"] = "[SAY THIS EXACTLY]: " + ". ".join(response_parts)
     _LOGGER.info("NCAA sports info for %s: %s", team_name, result.get("response_text", ""))
     return result
 
