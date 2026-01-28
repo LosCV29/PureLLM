@@ -213,6 +213,25 @@ async def get_ncaa_sports_info(
     noise_words = ["game", "match", "next", "last", "the", "play", "playing",
                    "mens", "womens", "men's", "women's", "basketball", "football",
                    "team", "university", "of", "college", "state"]
+    # Also strip NCAA team nicknames since NCAA API uses school names, not nicknames
+    # e.g., "miami hurricanes" -> "miami" to match "Miami" in NCAA data
+    ncaa_nicknames = [
+        "hurricanes", "blue devils", "tar heels", "wolfpack", "demon deacons",
+        "yellow jackets", "seminoles", "hokies", "orange", "fighting irish",
+        "cardinals", "crimson tide", "volunteers", "razorbacks", "gamecocks",
+        "commodores", "aggies", "gators", "rebels", "ole miss", "bulldogs",
+        "tigers", "wolverines", "spartans", "buckeyes", "badgers", "hawkeyes",
+        "gophers", "boilermakers", "hoosiers", "illini", "terrapins",
+        "nittany lions", "cornhuskers", "scarlet knights", "wildcats",
+        "jayhawks", "longhorns", "sooners", "red raiders", "horned frogs",
+        "mountaineers", "cyclones", "bearcats", "knights", "bruins", "trojans",
+        "ducks", "beavers", "sun devils", "buffaloes", "utes", "hoyas",
+        "bluejays", "pirates", "musketeers", "red storm", "friars",
+        "golden eagles", "zags", "gonzaga", "shockers", "aztecs", "miners",
+        "owls", "huskies", "cougars", "mustangs", "mean green", "roadrunners",
+        "hilltoppers",
+    ]
+    noise_words.extend(ncaa_nicknames)
     for word in noise_words:
         team_key = team_key.replace(word, "").strip()
     team_key = " ".join(team_key.split())
