@@ -210,13 +210,29 @@ async def get_ncaa_sports_info(
     """
     # Clean up team name for searching
     team_key = team_name.lower().strip()
+
+    # Map nicknames to state codes for teams with same city name
+    # NCAA uses "Miami (FL)" vs "Miami (OH)", so we need to disambiguate
+    nickname_to_state = {
+        "hurricanes": "fl",      # Miami (FL) Hurricanes
+        "redhawks": "oh",        # Miami (OH) RedHawks
+    }
+
+    # Check if query contains a nickname that needs state disambiguation
+    state_suffix = ""
+    for nickname, state in nickname_to_state.items():
+        if nickname in team_key:
+            state_suffix = state
+            break
+
     noise_words = ["game", "match", "next", "last", "the", "play", "playing",
                    "mens", "womens", "men's", "women's", "basketball", "football",
                    "team", "university", "of", "college", "state"]
     # Also strip NCAA team nicknames since NCAA API uses school names, not nicknames
-    # e.g., "miami hurricanes" -> "miami" to match "Miami" in NCAA data
+    # e.g., "miami hurricanes" -> "miami fl" to match "Miami (FL)" in NCAA data
     ncaa_nicknames = [
-        "hurricanes", "blue devils", "tar heels", "wolfpack", "demon deacons",
+        "hurricanes", "redhawks",  # Miami teams
+        "blue devils", "tar heels", "wolfpack", "demon deacons",
         "yellow jackets", "seminoles", "hokies", "orange", "fighting irish",
         "cardinals", "crimson tide", "volunteers", "razorbacks", "gamecocks",
         "commodores", "aggies", "gators", "rebels", "ole miss", "bulldogs",
@@ -235,6 +251,10 @@ async def get_ncaa_sports_info(
     for word in noise_words:
         team_key = team_key.replace(word, "").strip()
     team_key = " ".join(team_key.split())
+
+    # Add state suffix for disambiguation if needed
+    if state_suffix and state_suffix not in team_key:
+        team_key = f"{team_key} {state_suffix}"
 
     result = {"team": team_name, "source": "ncaa"}
     response_parts = []
