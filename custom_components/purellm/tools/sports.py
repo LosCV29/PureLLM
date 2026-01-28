@@ -307,11 +307,11 @@ async def get_ncaa_sports_info(
                         "is_home": is_home,
                         "venue": venue,
                     }
-                    # Format: "Next game: vs Stanford (home) on Tuesday at 9:00 PM. Playing at Watsco Center"
-                    home_away = "home" if is_home else "away"
-                    next_text = f"Next game: {opponent} ({home_away}) on {date_str}"
+                    # Format response to make opponent impossible to drop
+                    home_away = "home game" if is_home else "away game"
+                    next_text = f"Next game is against {opponent}. {home_away.capitalize()} on {date_str}"
                     if venue:
-                        next_text += f". Location: {venue}"
+                        next_text += f" at {venue}"
                     response_parts.append(next_text)
                     break
 
