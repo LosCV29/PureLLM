@@ -190,17 +190,20 @@ async def get_sports_info(
                                     team_info = division.get("team", {})
                                     if team_info.get("id") == team_id:
                                         stats = {s.get("name"): s.get("displayValue", s.get("value")) for s in division.get("stats", [])}
-                                        wins = stats.get("wins", "0")
-                                        losses = stats.get("losses", "0")
+
+                                        # Prefer 'overall' record if available (college sports), otherwise use wins-losses
+                                        if "overall" in stats:
+                                            record = stats["overall"]
+                                        else:
+                                            wins = stats.get("wins", "0")
+                                            losses = stats.get("losses", "0")
+                                            record = f"{wins}-{losses}"
+                                            if "OTL" in stats or "otLosses" in stats:  # NHL format
+                                                otl = stats.get("OTL", stats.get("otLosses", "0"))
+                                                record = f"{wins}-{losses}-{otl}"
 
                                         # Get conference/division rank if available
                                         conf_rank = stats.get("playoffSeed", stats.get("divisionRank", ""))
-
-                                        # Build standings summary
-                                        record = f"{wins}-{losses}"
-                                        if "OTL" in stats or "otLosses" in stats:  # NHL format
-                                            otl = stats.get("OTL", stats.get("otLosses", "0"))
-                                            record = f"{wins}-{losses}-{otl}"
 
                                         standing_text = f"{full_name} is {record}"
                                         if conf_rank:
@@ -221,11 +224,16 @@ async def get_sports_info(
                                     team_info = entry.get("team", {})
                                     if team_info.get("id") == team_id:
                                         stats = {s.get("name"): s.get("displayValue", s.get("value")) for s in entry.get("stats", [])}
-                                        wins = stats.get("wins", "0")
-                                        losses = stats.get("losses", "0")
                                         conf_rank = stats.get("playoffSeed", stats.get("divisionRank", ""))
 
-                                        record = f"{wins}-{losses}"
+                                        # Prefer 'overall' record if available (college sports)
+                                        if "overall" in stats:
+                                            record = stats["overall"]
+                                        else:
+                                            wins = stats.get("wins", "0")
+                                            losses = stats.get("losses", "0")
+                                            record = f"{wins}-{losses}"
+
                                         standing_text = f"{full_name} is {record}"
                                         if conf_rank:
                                             standing_text += f", #{conf_rank} seed"
