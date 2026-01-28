@@ -28,7 +28,7 @@ async def _fetch_teams_for_league(
     league: str,
 ) -> tuple[str, str, list[dict]]:
     """Fetch teams for a single league. Returns (sport, league, teams_list)."""
-    teams_url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams?limit=500"
+    teams_url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams?limit=1000"
     data, status = await fetch_json(session, teams_url, headers=ESPN_HEADERS, cache_ttl=TEAMS_CACHE_TTL)
     if data and status == 200:
         teams = data.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", [])
