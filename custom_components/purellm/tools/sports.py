@@ -190,17 +190,20 @@ async def get_sports_info(
                                     team_info = division.get("team", {})
                                     if team_info.get("id") == team_id:
                                         stats = {s.get("name"): s.get("displayValue", s.get("value")) for s in division.get("stats", [])}
-                                        wins = stats.get("wins", "0")
-                                        losses = stats.get("losses", "0")
+
+                                        # Prefer 'overall' record if available (college sports), otherwise use wins-losses
+                                        if "overall" in stats:
+                                            record = stats["overall"]
+                                        else:
+                                            wins = stats.get("wins", "0")
+                                            losses = stats.get("losses", "0")
+                                            record = f"{wins}-{losses}"
+                                            if "OTL" in stats or "otLosses" in stats:  # NHL format
+                                                otl = stats.get("OTL", stats.get("otLosses", "0"))
+                                                record = f"{wins}-{losses}-{otl}"
 
                                         # Get conference/division rank if available
                                         conf_rank = stats.get("playoffSeed", stats.get("divisionRank", ""))
-
-                                        # Build standings summary
-                                        record = f"{wins}-{losses}"
-                                        if "OTL" in stats or "otLosses" in stats:  # NHL format
-                                            otl = stats.get("OTL", stats.get("otLosses", "0"))
-                                            record = f"{wins}-{losses}-{otl}"
 
                                         standing_text = f"{full_name} is {record}"
                                         if conf_rank:
@@ -221,11 +224,16 @@ async def get_sports_info(
                                     team_info = entry.get("team", {})
                                     if team_info.get("id") == team_id:
                                         stats = {s.get("name"): s.get("displayValue", s.get("value")) for s in entry.get("stats", [])}
-                                        wins = stats.get("wins", "0")
-                                        losses = stats.get("losses", "0")
                                         conf_rank = stats.get("playoffSeed", stats.get("divisionRank", ""))
 
-                                        record = f"{wins}-{losses}"
+                                        # Prefer 'overall' record if available (college sports)
+                                        if "overall" in stats:
+                                            record = stats["overall"]
+                                        else:
+                                            wins = stats.get("wins", "0")
+                                            losses = stats.get("losses", "0")
+                                            record = f"{wins}-{losses}"
+
                                         standing_text = f"{full_name} is {record}"
                                         if conf_rank:
                                             standing_text += f", #{conf_rank} seed"
@@ -246,8 +254,8 @@ async def get_sports_info(
         try:
             found_sport, found_league = team_leagues[0] if team_leagues else (None, None)
             scoreboards_to_check = [(found_sport, found_league)]
-            # Only check the specified league when user explicitly requests one
-            # Do NOT add other leagues - this caused wrong fixtures being returned
+            _LOGGER.debug("Sports: Checking scoreboard for %s (id=%s, abbrev=%s) in %s/%s",
+                         full_name, team_id, team_abbrev, found_sport, found_league)
 
             for sb_sport, sb_league in scoreboards_to_check:
                 if live_game_from_scoreboard and next_game_from_scoreboard:
@@ -284,8 +292,13 @@ async def get_sports_info(
                                 break
 
                         if not team_match:
+                            # Log what we're checking for debugging
+                            competitor_names = [c.get("team", {}).get("displayName", "?") for c in sb_competitors]
+                            _LOGGER.debug("Sports: Scoreboard event %s - no match (looking for %s)",
+                                         competitor_names, full_name)
                             continue
 
+                        _LOGGER.debug("Sports: Found team match on scoreboard, state=%s", sb_state)
                         home_team_sb = next((c for c in sb_competitors if c.get("homeAway") == "home"), {})
                         away_team_sb = next((c for c in sb_competitors if c.get("homeAway") == "away"), {})
                         home_name = home_team_sb.get("team", {}).get("displayName", "Home")
@@ -514,13 +527,19 @@ async def get_sports_info(
                         now_utc = datetime.now(timezone.utc)
                         next_game = None
                         next_game_date = None
+                        _LOGGER.debug("Sports: Checking schedule for next game, %d events total", len(events))
 
                         for event in events:
                             status_info = event.get("competitions", [{}])[0].get("status", {}).get("type", {})
                             is_completed = status_info.get("completed", False)
                             state = status_info.get("state", "")
+                            event_date = event.get("date", "")[:10]
+                            _LOGGER.debug("Sports: Schedule event date=%s, state=%s, completed=%s",
+                                         event_date, state, is_completed)
 
-                            if not is_completed and state == "pre":
+                            # Accept any game that isn't completed and isn't currently in progress
+                            # College sports may use different states than "pre"
+                            if not is_completed and state != "in" and state != "post":
                                 game_date_str = event.get("date", "")
                                 if game_date_str:
                                     try:
