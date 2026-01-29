@@ -16,6 +16,45 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
+# STT mishearing normalization map for Spanish room names
+# Used to fix spoken responses so "salad" becomes "sala"
+ROOM_NORMALIZATION_MAP = {
+    # sala variants (most common mishearing)
+    'salad': 'sala',
+    'salah': 'sala',
+    'salla': 'sala',
+    'sulla': 'sala',
+    'zala': 'sala',
+    # cocina variants
+    'cocinna': 'cocina',
+    'kosina': 'cocina',
+    'cozina': 'cocina',
+    # baño variants
+    'banyo': 'baño',
+    'bunyo': 'baño',
+    'bano': 'baño',
+}
+
+
+def _normalize_spanish_room_names(text: str) -> str:
+    """Normalize STT mishearings of Spanish room names in response text.
+
+    Converts common mishearings like 'salad' → 'sala' for proper spoken responses.
+    Uses word boundary matching to avoid false positives.
+    """
+    if not text:
+        return text
+
+    result = text
+    for mishearing, correct in ROOM_NORMALIZATION_MAP.items():
+        # Use word boundary regex to only replace whole words
+        # Case-insensitive, preserves original case style
+        pattern = re.compile(r'\b' + re.escape(mishearing) + r'\b', re.IGNORECASE)
+        result = pattern.sub(correct, result)
+
+    return result
+
+
 async def check_device_status(
     arguments: dict[str, Any],
     hass: "HomeAssistant",
@@ -559,9 +598,9 @@ async def control_device(
                     is_open = sensor_state.state == "on"  # binary_sensor: on = open, off = closed
 
                     if entity_id == open_script and is_open:
-                        return {"response_text": f"The {trigger_name} is already open."}
+                        return {"response_text": _normalize_spanish_room_names(f"The {trigger_name} is already open.")}
                     elif entity_id == close_script and not is_open:
-                        return {"response_text": f"The {trigger_name} is already closed."}
+                        return {"response_text": _normalize_spanish_room_names(f"The {trigger_name} is already closed.")}
                 break
 
     # Build service calls first, then execute in parallel
@@ -604,9 +643,9 @@ async def control_device(
 
                 # Check if already in desired state
                 if current_state == "playing" and action in ("play", "resume"):
-                    return {"success": True, "response_text": f"The {friendly_name} is already playing."}
+                    return {"success": True, "response_text": _normalize_spanish_room_names(f"The {friendly_name} is already playing.")}
                 elif current_state == "paused" and action == "pause":
-                    return {"success": True, "response_text": f"The {friendly_name} is already paused."}
+                    return {"success": True, "response_text": _normalize_spanish_room_names(f"The {friendly_name} is already paused.")}
             if action in ("mute", "unmute"):
                 # Check current mute state if available
                 state = hass.states.get(entity_id)
@@ -614,9 +653,9 @@ async def control_device(
 
                 # Only skip if we know the current state for sure
                 if is_currently_muted is True and action == "mute":
-                    return {"success": True, "response_text": f"The {friendly_name} is already muted."}
+                    return {"success": True, "response_text": _normalize_spanish_room_names(f"The {friendly_name} is already muted.")}
                 elif is_currently_muted is False and action == "unmute":
-                    return {"success": True, "response_text": f"The {friendly_name} is already unmuted."}
+                    return {"success": True, "response_text": _normalize_spanish_room_names(f"The {friendly_name} is already unmuted.")}
 
                 # Explicitly set mute state
                 service_data["is_volume_muted"] = (action == "mute")
@@ -725,6 +764,9 @@ async def control_device(
             if len(controlled) > 5:
                 response += f" and {len(controlled) - 5} more"
             response += "."
+
+        # Normalize Spanish room name mishearings in response (salad → sala, etc.)
+        response = _normalize_spanish_room_names(response)
 
         result = {
             "success": True,
