@@ -8,10 +8,15 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
+
+# Conversation history settings
+CONVERSATION_TIMEOUT_SECONDS = 300  # 5 minutes - conversations expire after this
+MAX_CONVERSATION_HISTORY = 10  # Max message pairs to keep per conversation
 
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ChatLog, ConversationEntity
@@ -185,6 +190,9 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Current user_input for tool execution
         self._current_user_input: conversation.ConversationInput | None = None
+
+        # Conversation history storage: {conversation_id: {"messages": [...], "last_access": timestamp}}
+        self._conversation_history: dict[str, dict[str, Any]] = {}
 
         # Initialize config
         self._update_from_config({**config_entry.data, **config_entry.options})
@@ -465,6 +473,80 @@ class PureLLMConversationEntity(ConversationEntity):
         self._tools = build_tools(ToolConfig(self))
         return self._tools
 
+    def _cleanup_expired_conversations(self) -> None:
+        """Remove expired conversations from history."""
+        now = time.time()
+        expired = [
+            conv_id for conv_id, data in self._conversation_history.items()
+            if now - data.get("last_access", 0) > CONVERSATION_TIMEOUT_SECONDS
+        ]
+        for conv_id in expired:
+            del self._conversation_history[conv_id]
+            _LOGGER.debug("Expired conversation %s", conv_id)
+
+    def _get_conversation_history(self, conversation_id: str | None) -> list[dict]:
+        """Get message history for a conversation, or empty list if none/expired."""
+        if not conversation_id:
+            return []
+
+        self._cleanup_expired_conversations()
+
+        if conversation_id in self._conversation_history:
+            data = self._conversation_history[conversation_id]
+            data["last_access"] = time.time()
+            return data.get("messages", [])
+
+        return []
+
+    def _save_conversation_turn(
+        self,
+        conversation_id: str,
+        user_message: str,
+        assistant_message: str,
+        extra_system_prompt: str | None = None,
+    ) -> None:
+        """Save a conversation turn to history."""
+        if conversation_id not in self._conversation_history:
+            self._conversation_history[conversation_id] = {
+                "messages": [],
+                "last_access": time.time(),
+                "extra_system_prompt": extra_system_prompt,
+            }
+
+        data = self._conversation_history[conversation_id]
+        data["last_access"] = time.time()
+
+        # Store extra_system_prompt if provided (for continuing conversations)
+        if extra_system_prompt:
+            data["extra_system_prompt"] = extra_system_prompt
+
+        messages = data["messages"]
+        messages.append({"role": "user", "content": user_message})
+        messages.append({"role": "assistant", "content": assistant_message})
+
+        # Trim to max history (keep most recent)
+        max_messages = MAX_CONVERSATION_HISTORY * 2  # pairs of user/assistant
+        if len(messages) > max_messages:
+            data["messages"] = messages[-max_messages:]
+
+        _LOGGER.debug(
+            "Saved conversation turn for %s (history: %d messages)",
+            conversation_id, len(data["messages"])
+        )
+
+    def _get_extra_system_prompt(self, conversation_id: str | None, chat_log: ChatLog) -> str | None:
+        """Get extra system prompt from chat_log or stored conversation."""
+        # First check if there's an extra_system_prompt in the chat_log
+        # This is set by start_conversation action
+        if hasattr(chat_log, 'extra_system_prompt') and chat_log.extra_system_prompt:
+            return chat_log.extra_system_prompt
+
+        # Check if we have a stored extra_system_prompt for this conversation
+        if conversation_id and conversation_id in self._conversation_history:
+            return self._conversation_history[conversation_id].get("extra_system_prompt")
+
+        return None
+
     async def _async_handle_message(
         self,
         user_input: conversation.ConversationInput,
@@ -474,16 +556,33 @@ class PureLLMConversationEntity(ConversationEntity):
 
         Uses streaming for local models (LM Studio/vLLM) for faster first-token response.
         Uses simple non-streaming calls for cloud providers (more reliable).
+        Supports continuing conversations with conversation_id tracking.
         """
         user_text = user_input.text.strip()
         self._current_user_query = user_text
         self._current_user_input = user_input
 
-        _LOGGER.info("PureLLM processing: '%s' provider=%s streaming=%s",
-                     user_text, self.provider, self.provider == PROVIDER_LM_STUDIO)
+        # Get or create conversation_id for tracking
+        conversation_id = user_input.conversation_id or str(uuid.uuid4())
+
+        # Get conversation history (empty for new conversations)
+        history = self._get_conversation_history(user_input.conversation_id)
+
+        # Get extra_system_prompt (from start_conversation action or stored)
+        extra_system_prompt = self._get_extra_system_prompt(user_input.conversation_id, chat_log)
+
+        _LOGGER.info(
+            "PureLLM processing: '%s' provider=%s conversation_id=%s history_turns=%d extra_prompt=%s",
+            user_text, self.provider, conversation_id[:8] if conversation_id else "new",
+            len(history) // 2, bool(extra_system_prompt)
+        )
 
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
+
+        # Append extra_system_prompt if provided (from start_conversation)
+        if extra_system_prompt:
+            system_prompt = f"{system_prompt}\n\nAdditional context:\n{extra_system_prompt}"
 
         max_tokens = self._calculate_max_tokens(user_text)
 
@@ -491,7 +590,9 @@ class PureLLMConversationEntity(ConversationEntity):
             if self.provider == PROVIDER_LM_STUDIO:
                 # Use streaming for local models - faster first-token response
                 _LOGGER.debug("Using streaming for local provider: %s", self.provider)
-                stream = self._stream_openai_compatible(user_text, tools, system_prompt, max_tokens)
+                stream = self._stream_openai_compatible(
+                    user_text, tools, system_prompt, max_tokens, history
+                )
 
                 # Collect streaming response
                 final_response = ""
@@ -500,11 +601,18 @@ class PureLLMConversationEntity(ConversationEntity):
                         final_response += delta["content"]
 
             elif self.provider == PROVIDER_GOOGLE:
-                final_response = await self._call_google(user_text, tools, system_prompt, max_tokens)
+                final_response = await self._call_google(
+                    user_text, tools, system_prompt, max_tokens, history
+                )
             else:
                 final_response = "Unknown provider."
 
             _LOGGER.info("PureLLM response (%d chars): %s", len(final_response) if final_response else 0, (final_response or "")[:100])
+
+            # Save this turn to conversation history
+            self._save_conversation_turn(
+                conversation_id, user_text, final_response or "", extra_system_prompt
+            )
 
         except Exception as err:
             _LOGGER.error("PureLLM error: %s", err, exc_info=True)
@@ -515,11 +623,18 @@ class PureLLMConversationEntity(ConversationEntity):
 
         return conversation.ConversationResult(
             response=response,
-            conversation_id=str(uuid.uuid4()),
+            conversation_id=conversation_id,  # Return same ID for continuing conversations
         )
 
-    async def _call_google(self, user_text: str, tools: list, system_prompt: str, max_tokens: int) -> str:
-        """Simple non-streaming Google Gemini call."""
+    async def _call_google(
+        self,
+        user_text: str,
+        tools: list,
+        system_prompt: str,
+        max_tokens: int,
+        history: list[dict] | None = None,
+    ) -> str:
+        """Simple non-streaming Google Gemini call with conversation history support."""
         function_declarations = []
         for tool in tools:
             func = tool.get("function", {})
@@ -532,8 +647,16 @@ class PureLLMConversationEntity(ConversationEntity):
         contents = [
             {"role": "user", "parts": [{"text": f"System: {system_prompt}"}]},
             {"role": "model", "parts": [{"text": "Understood."}]},
-            {"role": "user", "parts": [{"text": user_text}]},
         ]
+
+        # Add conversation history if present
+        if history:
+            for msg in history:
+                role = "model" if msg["role"] == "assistant" else "user"
+                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+
+        # Add current user message
+        contents.append({"role": "user", "parts": [{"text": user_text}]})
 
         for iteration in range(5):
             payload = {
@@ -608,12 +731,19 @@ class PureLLMConversationEntity(ConversationEntity):
         tools: list[dict],
         system_prompt: str,
         max_tokens: int,
+        history: list[dict] | None = None,
     ) -> AsyncGenerator[ContentDelta, None]:
-        """Stream from OpenAI-compatible API with tool support."""
+        """Stream from OpenAI-compatible API with tool support and conversation history."""
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_text},
         ]
+
+        # Add conversation history if present
+        if history:
+            messages.extend(history)
+
+        # Add current user message
+        messages.append({"role": "user", "content": user_text})
 
         called_tools: set[str] = set()
 
