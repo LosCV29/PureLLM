@@ -776,6 +776,8 @@ async def control_device(
 
         # Normalize Spanish room name mishearings in response (salad → sala, etc.)
         response = _normalize_spanish_room_names(response)
+        # Also normalize the controlled devices list so LLM doesn't use raw names
+        controlled = [_normalize_spanish_room_names(name) for name in controlled]
 
         result = {
             "success": True,
