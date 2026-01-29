@@ -208,6 +208,20 @@ async def get_weather_forecast(
                     _LOGGER.info("Today's high/low from One Call API: %s/%s",
                                 result["current"]["todays_high"], result["current"]["todays_low"])
 
+                    # Format tomorrow's forecast (when user asks about tomorrow)
+                    if forecast_type == "tomorrow" and len(daily) > 1:
+                        tomorrow = daily[1]
+                        tomorrow_dt = datetime.fromtimestamp(tomorrow.get("dt", 0))
+                        result["tomorrow"] = {
+                            "day": tomorrow_dt.strftime("%A"),
+                            "date": tomorrow_dt.strftime("%B %d"),
+                            "high": round(tomorrow.get("temp", {}).get("max", 0)),
+                            "low": round(tomorrow.get("temp", {}).get("min", 0)),
+                            "conditions": tomorrow.get("weather", [{}])[0].get("description", "Unknown").title(),
+                            "rain_chance": round(tomorrow.get("pop", 0) * 100)
+                        }
+                        _LOGGER.info("Tomorrow's forecast: %s", result["tomorrow"])
+
                     # Format weekly forecast (only if requested)
                     if forecast_type in ["weekly", "both"]:
                         forecast_list = []
