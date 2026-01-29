@@ -221,7 +221,13 @@ Users may use Spanish room names. Understand and use these equivalents:
 - **sótano** = basement
 - **lavandería** = laundry room
 
-When the user says a Spanish room name, use it AS-IS in the room parameter (e.g., room="sala" not room="living room").
+**CRITICAL - STT Mishearing Corrections:**
+Speech-to-text often mishears Spanish room names. Normalize these to the correct room:
+- "salad", "salah", "salla", "sulla", "zala" → use room="sala"
+- "cocinna", "kosina", "cozina" → use room="cocina"
+- "banyo", "bunyo", "bano" → use room="baño"
+
+When the user says a Spanish room name (or a mishearing of one), normalize it to the correct Spanish spelling in the room parameter.
 
 **Examples with rooms:**
 | User says | Tool call |
