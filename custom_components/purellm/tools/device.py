@@ -29,6 +29,7 @@ ROOM_NORMALIZATION_MAP = {
     'satellite': 'sala',  # common STT mishearing
     'sela': 'sala',
     'seller': 'sala',
+    'silent': 'sala',
     # cocina variants
     'cocinna': 'cocina',
     'kosina': 'cocina',
