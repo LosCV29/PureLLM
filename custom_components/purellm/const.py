@@ -209,12 +209,28 @@ You control music via the `control_music` tool. Use this tool ONLY for PLAYBACK 
 - This is the TARGET ROOM for playback - NEVER part of the artist/song/query!
 - Extract it to the `room` parameter separately
 
+### Bilingual Room Names (English & Spanish):
+Users may use Spanish room names. Understand and use these equivalents:
+- **sala** = living room / family room
+- **cocina** = kitchen
+- **recámara / dormitorio / habitación / alcoba / cuarto** = bedroom
+- **oficina / estudio** = office
+- **baño** = bathroom
+- **comedor** = dining room
+- **garaje** = garage
+- **sótano** = basement
+- **lavandería** = laundry room
+
+When the user says a Spanish room name, use it AS-IS in the room parameter (e.g., room="sala" not room="living room").
+
 **Examples with rooms:**
 | User says | Tool call |
 |-----------|-----------|
 | "shuffle Young Dolph in the living room" | action="shuffle", query="Young Dolph", room="living room" |
 | "play Humble by Kendrick in the kitchen" | action="play", query="Humble", artist="Kendrick", room="kitchen", media_type="track" |
 | "shuffle hip hop in the office" | action="shuffle", query="hip hop", room="office" |
+| "play Bad Bunny in the sala" | action="play", query="Bad Bunny", room="sala", media_type="artist" |
+| "shuffle reggaeton en la cocina" | action="shuffle", query="reggaeton", room="cocina" |
 
 **WRONG:** query="Young Dolph in the living room" ← NEVER do this!
 **RIGHT:** query="Young Dolph", room="living room" ← ALWAYS separate the room!

@@ -114,9 +114,15 @@ class MusicController:
                 potential_room = match.group(1).lower().strip()
                 _LOGGER.warning("MUSIC DEBUG: Potential room extracted: '%s'", potential_room)
                 # Check if it looks like a room name (matches any configured room or common room names)
+                # English room names
                 common_rooms = {'living room', 'kitchen', 'bedroom', 'master bedroom', 'office',
                                'bathroom', 'garage', 'basement', 'den', 'studio', 'nursery',
-                               'dining room', 'family room', 'guest room', 'laundry room'}
+                               'dining room', 'family room', 'guest room', 'laundry room',
+                               # Spanish room names (bilingual support)
+                               'sala', 'cocina', 'recámara', 'recamara', 'habitación', 'habitacion',
+                               'dormitorio', 'oficina', 'baño', 'bano', 'garaje', 'sótano', 'sotano',
+                               'estudio', 'comedor', 'cuarto de huéspedes', 'cuarto de huespedes',
+                               'lavandería', 'lavanderia', 'cuarto', 'alcoba'}
                 # Also check against configured rooms
                 configured_rooms = {r.lower() for r in self._players.keys()}
                 all_known_rooms = common_rooms | configured_rooms
