@@ -58,6 +58,36 @@ def _normalize_unicode(text: str | None) -> str:
     return text
 
 
+# STT mishearing normalization map for Spanish room names
+ROOM_NORMALIZATION_MAP = {
+    # sala variants
+    'salad': 'sala',
+    'salah': 'sala',
+    'salla': 'sala',
+    'sulla': 'sala',
+    'zala': 'sala',
+    # cocina variants
+    'cocinna': 'cocina',
+    'kosina': 'cocina',
+    'cozina': 'cocina',
+    # baño variants
+    'banyo': 'baño',
+    'bunyo': 'baño',
+    'bano': 'baño',
+}
+
+
+def _normalize_room_name(room: str) -> str:
+    """Normalize STT mishearings of Spanish room names.
+
+    Converts common mishearings like 'salad' → 'sala' for proper display.
+    """
+    if not room:
+        return room
+    room_lower = room.lower().strip()
+    return ROOM_NORMALIZATION_MAP.get(room_lower, room)
+
+
 class MusicController:
     """Controller for music playback operations.
 
@@ -91,7 +121,8 @@ class MusicController:
         action = arguments.get("action", "").lower()
         query = arguments.get("query", "")
         media_type = arguments.get("media_type", "artist")
-        room = arguments.get("room", "").lower() if arguments.get("room") else ""
+        raw_room = arguments.get("room", "").lower() if arguments.get("room") else ""
+        room = _normalize_room_name(raw_room)  # Normalize STT mishearings (salad → sala)
         shuffle = arguments.get("shuffle", False)
         artist = arguments.get("artist", "")
         album = arguments.get("album", "")
@@ -99,7 +130,7 @@ class MusicController:
 
         # DEBUG: Log raw arguments received from LLM
         _LOGGER.warning("MUSIC DEBUG: Raw arguments from LLM: %s", arguments)
-        _LOGGER.warning("MUSIC DEBUG: Extracted - action='%s', query='%s', room='%s'", action, query, room)
+        _LOGGER.warning("MUSIC DEBUG: Extracted - action='%s', query='%s', room='%s' (raw='%s')", action, query, room, raw_room)
 
         # DEFENSIVE: ALWAYS strip room phrases from query - LLM often includes them
         # This handles cases like query="Young Dolph in the living room"
@@ -138,7 +169,7 @@ class MusicController:
                     original_query = query
                     query = re.sub(room_strip_pattern, '', query, flags=re.IGNORECASE).strip()
                     if not room:
-                        room = potential_room
+                        room = _normalize_room_name(potential_room)  # Normalize STT mishearings
                     _LOGGER.warning("MUSIC DEBUG: Stripped room - query='%s' → '%s', room='%s'", original_query, query, room)
 
         _LOGGER.warning("MUSIC DEBUG: Final - action='%s', query='%s', room='%s'", action, query, room)
