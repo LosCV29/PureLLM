@@ -122,7 +122,12 @@ class MusicController:
                                'sala', 'cocina', 'recámara', 'recamara', 'habitación', 'habitacion',
                                'dormitorio', 'oficina', 'baño', 'bano', 'garaje', 'sótano', 'sotano',
                                'estudio', 'comedor', 'cuarto de huéspedes', 'cuarto de huespedes',
-                               'lavandería', 'lavanderia', 'cuarto', 'alcoba'}
+                               'lavandería', 'lavanderia', 'cuarto', 'alcoba',
+                               # Common STT mishearings of Spanish room names
+                               'salad', 'salah', 'salla', 'sulla', 'zala',  # sala
+                               'cocinna', 'kosina', 'cozina',  # cocina
+                               'bano', 'banyo', 'bunyo'  # baño
+                               }
                 # Also check against configured rooms
                 configured_rooms = {r.lower() for r in self._players.keys()}
                 all_known_rooms = common_rooms | configured_rooms
