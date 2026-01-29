@@ -223,9 +223,9 @@ Users may use Spanish room names. Understand and use these equivalents:
 
 **CRITICAL - STT Mishearing Corrections:**
 Speech-to-text often mishears Spanish room names. Normalize these to the correct room:
-- "salad", "salah", "salla", "sulla", "zala" → use room="sala"
-- "cocinna", "kosina", "cozina" → use room="cocina"
-- "banyo", "bunyo", "bano" → use room="baño"
+- "salad", "salah", "salla", "sulla", "zala", "salat", "satellite", "sela", "seller" → use "sala"
+- "cocinna", "kosina", "cozina" → use "cocina"
+- "banyo", "bunyo", "bano" → use "baño"
 
 When the user says a Spanish room name (or a mishearing of one), normalize it to the correct Spanish spelling in the room parameter.
 

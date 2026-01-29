@@ -17,7 +17,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 # STT mishearing normalization map for Spanish room names
-# Used to fix spoken responses so "salad" becomes "sala"
+# Used to fix device lookups and spoken responses (e.g., "salad" → "sala")
 ROOM_NORMALIZATION_MAP = {
     # sala variants (most common mishearing)
     'salad': 'sala',
@@ -25,6 +25,10 @@ ROOM_NORMALIZATION_MAP = {
     'salla': 'sala',
     'sulla': 'sala',
     'zala': 'sala',
+    'salat': 'sala',      # common STT mishearing
+    'satellite': 'sala',  # common STT mishearing
+    'sela': 'sala',
+    'seller': 'sala',
     # cocina variants
     'cocinna': 'cocina',
     'kosina': 'cocina',
@@ -397,7 +401,11 @@ async def control_device(
     entity_ids_list = arguments.get("entity_ids", [])
     area_name = arguments.get("area", "").strip()
     domain_filter = arguments.get("domain", "").strip().lower()
-    device_name = arguments.get("device", "").strip()
+    device_name_raw = arguments.get("device", "").strip()
+    # Normalize STT mishearings of Spanish room names in device name (salat → sala, etc.)
+    device_name = _normalize_spanish_room_names(device_name_raw)
+    if device_name != device_name_raw:
+        _LOGGER.info("Normalized device name: '%s' → '%s'", device_name_raw, device_name)
 
     _LOGGER.debug("control_device: entity=%s, device=%s, area=%s, action=%s",
                   direct_entity_id or entity_ids_list, device_name, area_name, action)

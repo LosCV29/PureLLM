@@ -124,7 +124,7 @@ class MusicController:
                                'estudio', 'comedor', 'cuarto de huéspedes', 'cuarto de huespedes',
                                'lavandería', 'lavanderia', 'cuarto', 'alcoba',
                                # Common STT mishearings of Spanish room names
-                               'salad', 'salah', 'salla', 'sulla', 'zala',  # sala
+                               'salad', 'salah', 'salla', 'sulla', 'zala', 'salat', 'satellite', 'sela', 'seller',  # sala
                                'cocinna', 'kosina', 'cozina',  # cocina
                                'bano', 'banyo', 'bunyo'  # baño
                                }
