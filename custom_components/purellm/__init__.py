@@ -1,12 +1,18 @@
 """The PolyVoice integration."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import re
+import time
 from typing import Any
+
+import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, Event, callback
+from homeassistant.core import HomeAssistant, Event, callback, ServiceCall
+from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
 from .tools.timer import get_registered_timer, unregister_timer
@@ -17,6 +23,23 @@ PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.UPDATE]
 
 # Key for storing the timer listener unsub function
 TIMER_LISTENER_KEY = "timer_finished_listener"
+
+# Key for storing pending questions
+PENDING_QUESTIONS_KEY = "pending_questions"
+
+# Schema for ask_question service
+ANSWER_SCHEMA = vol.Schema({
+    vol.Required("id"): cv.string,
+    vol.Required("sentences"): vol.All(cv.ensure_list, [cv.string]),
+})
+
+ASK_QUESTION_SCHEMA = vol.Schema({
+    vol.Required("entity_id"): cv.entity_id,
+    vol.Required("question"): cv.string,
+    vol.Required("answers"): vol.All(cv.ensure_list, [ANSWER_SCHEMA]),
+    vol.Optional("preannounce", default=True): cv.boolean,
+    vol.Optional("timeout", default=30): vol.Coerce(int),
+})
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
@@ -148,6 +171,190 @@ async def _announce_timer_finished(
             blocking=False
         )
         _LOGGER.debug("Created persistent notification for timer (no TTS available)")
+
+
+def _normalize_text(text: str) -> str:
+    """Normalize text for matching - lowercase and remove punctuation."""
+    return re.sub(r'[^\w\s]', '', text.lower().strip())
+
+
+def _match_answer(text: str, answers: list[dict]) -> dict | None:
+    """Match text against expected answer sentences.
+
+    Returns the matched answer dict with 'id' or None if no match.
+    """
+    normalized_text = _normalize_text(text)
+
+    for answer in answers:
+        for sentence in answer.get("sentences", []):
+            if _normalize_text(sentence) == normalized_text:
+                return {"id": answer["id"], "matched_sentence": sentence}
+
+    # Try partial matching (text contains or is contained by a sentence)
+    for answer in answers:
+        for sentence in answer.get("sentences", []):
+            norm_sentence = _normalize_text(sentence)
+            if norm_sentence in normalized_text or normalized_text in norm_sentence:
+                return {"id": answer["id"], "matched_sentence": sentence}
+
+    return None
+
+
+def get_pending_question(hass: HomeAssistant, device_id: str | None = None) -> dict | None:
+    """Get pending question for a device (or any device if device_id is None).
+
+    Returns the pending question dict or None.
+    """
+    pending = hass.data.get(DOMAIN, {}).get(PENDING_QUESTIONS_KEY, {})
+
+    if device_id and device_id in pending:
+        question = pending[device_id]
+        # Check if not expired
+        if time.time() < question.get("expires_at", 0):
+            return question
+        # Expired - clean up
+        pending.pop(device_id, None)
+        return None
+
+    # If no device_id specified, return any non-expired pending question
+    for dev_id, question in list(pending.items()):
+        if time.time() < question.get("expires_at", 0):
+            return question
+        # Expired - clean up
+        pending.pop(dev_id, None)
+
+    return None
+
+
+def clear_pending_question(hass: HomeAssistant, device_id: str) -> None:
+    """Clear a pending question for a device."""
+    pending = hass.data.get(DOMAIN, {}).get(PENDING_QUESTIONS_KEY, {})
+    pending.pop(device_id, None)
+
+
+def match_pending_question(hass: HomeAssistant, text: str, device_id: str | None = None) -> dict | None:
+    """Check if text matches a pending question's answers.
+
+    Returns {"id": answer_id, "matched": True} or None if no match.
+    """
+    question = get_pending_question(hass, device_id)
+    if not question:
+        return None
+
+    match = _match_answer(text, question.get("answers", []))
+    if match:
+        # Clear the pending question after a match
+        actual_device_id = device_id or question.get("device_id")
+        if actual_device_id:
+            clear_pending_question(hass, actual_device_id)
+        return match
+
+    return None
+
+
+async def _async_ask_question_service(hass: HomeAssistant, call: ServiceCall) -> dict:
+    """Handle purellm.ask_question service call.
+
+    This service:
+    1. Stores the expected answers in memory
+    2. Announces the question via assist_satellite.announce
+    3. Triggers the satellite to start listening
+    4. Waits for a matching response
+    5. Returns the matched answer ID
+    """
+    entity_id = call.data["entity_id"]
+    question = call.data["question"]
+    answers = call.data["answers"]
+    preannounce = call.data.get("preannounce", True)
+    timeout = call.data.get("timeout", 30)
+
+    _LOGGER.info(
+        "purellm.ask_question called: entity=%s, question='%s', answers=%s, timeout=%d",
+        entity_id, question, [a["id"] for a in answers], timeout
+    )
+
+    # Extract device identifier from entity_id
+    # e.g., assist_satellite.home_assistant_voice_099fca_assist_satellite -> home_assistant_voice_099fca
+    device_id = entity_id.replace("assist_satellite.", "").replace("_assist_satellite", "")
+
+    # Initialize pending questions storage
+    hass.data[DOMAIN].setdefault(PENDING_QUESTIONS_KEY, {})
+
+    # Create an event to signal when we get an answer
+    answer_event = asyncio.Event()
+    result_holder = {"answer": None}
+
+    # Store the pending question with callback
+    pending_question = {
+        "entity_id": entity_id,
+        "device_id": device_id,
+        "question": question,
+        "answers": answers,
+        "expires_at": time.time() + timeout,
+        "answer_event": answer_event,
+        "result_holder": result_holder,
+    }
+    hass.data[DOMAIN][PENDING_QUESTIONS_KEY][device_id] = pending_question
+
+    try:
+        # Step 1: Announce the question using assist_satellite.announce
+        _LOGGER.debug("Announcing question via assist_satellite.announce")
+        await hass.services.async_call(
+            "assist_satellite",
+            "announce",
+            {
+                "entity_id": entity_id,
+                "message": question,
+                "preannounce": preannounce,
+            },
+            blocking=True,
+        )
+
+        # Step 2: Wait a moment for TTS to complete, then trigger listening
+        # Try to find and call the ESPHome service to start voice assistant
+        await asyncio.sleep(0.5)  # Brief pause after TTS
+
+        # Look for ESPHome voice assistant start service
+        # Format: esphome.<device_name>_start_voice_assistant
+        esphome_service = f"{device_id}_start_voice_assistant"
+        if hass.services.has_service("esphome", esphome_service):
+            _LOGGER.debug("Triggering listening via esphome.%s", esphome_service)
+            await hass.services.async_call(
+                "esphome",
+                esphome_service,
+                {},
+                blocking=False,
+            )
+        else:
+            # Try alternate naming convention
+            alt_service = device_id.replace("home_assistant_voice_", "ha_voice_pe_") + "_start_voice_assistant"
+            if hass.services.has_service("esphome", alt_service):
+                _LOGGER.debug("Triggering listening via esphome.%s", alt_service)
+                await hass.services.async_call("esphome", alt_service, {}, blocking=False)
+            else:
+                _LOGGER.warning(
+                    "Could not find ESPHome service to trigger listening. "
+                    "User will need to use wake word. Tried: esphome.%s",
+                    esphome_service
+                )
+
+        # Step 3: Wait for the answer with timeout
+        _LOGGER.debug("Waiting for answer (timeout=%ds)", timeout)
+        try:
+            await asyncio.wait_for(answer_event.wait(), timeout=timeout)
+            answer = result_holder.get("answer")
+            if answer:
+                _LOGGER.info("Got answer: %s", answer)
+                return {"id": answer.get("id"), "matched_sentence": answer.get("matched_sentence", "")}
+        except asyncio.TimeoutError:
+            _LOGGER.warning("ask_question timed out waiting for answer")
+
+        # No answer received
+        return {"id": None, "error": "no_answer"}
+
+    finally:
+        # Clean up pending question
+        clear_pending_question(hass, device_id)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
