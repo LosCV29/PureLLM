@@ -40,87 +40,6 @@ ROOM_NORMALIZATION_MAP = {
     'bano': 'baño',
 }
 
-# Spanish action word normalization map
-# Maps Spanish commands and common STT mishearings to English actions
-SPANISH_ACTION_MAP = {
-    # turn_on variants
-    'prender': 'turn_on',
-    'prende': 'turn_on',
-    'encender': 'turn_on',
-    'enciende': 'turn_on',
-    'prendela': 'turn_on',      # "préndela" (turn it on)
-    'prendelas': 'turn_on',     # "préndelas" (turn them on)
-    'enciendela': 'turn_on',    # "enciéndela"
-    'prender la': 'turn_on',
-    # turn_off variants
-    'apagar': 'turn_off',
-    'apaga': 'turn_off',
-    'apagala': 'turn_off',      # "apágala"
-    'apagalas': 'turn_off',     # "apágalas"
-    'apagar la': 'turn_off',
-    # open variants (for covers/blinds)
-    'abrir': 'open',
-    'abre': 'open',
-    'abrela': 'open',           # "ábrela"
-    'subir': 'open',            # raise/lift
-    'sube': 'open',
-    'subela': 'open',           # "súbela"
-    # close variants (for covers/blinds)
-    'cerrar': 'close',
-    'cierra': 'close',
-    'cierrala': 'close',        # "ciérrala"
-    'bajar': 'close',           # lower
-    'baja': 'close',
-    'bajala': 'close',          # "bájala"
-    # lock/unlock
-    'bloquear': 'lock',
-    'bloquea': 'lock',
-    'desbloquear': 'unlock',
-    'desbloquea': 'unlock',
-    # media controls
-    'pausar': 'pause',
-    'pausa': 'pause',
-    'detener': 'stop',
-    'deten': 'stop',
-    'siguiente': 'skip_next',
-    'anterior': 'skip_previous',
-    'silenciar': 'mute',
-    'silencia': 'mute',
-}
-
-# Spanish device type normalization map
-# Maps Spanish device names to help with fuzzy matching
-SPANISH_DEVICE_MAP = {
-    # lights
-    'luz': 'light',
-    'luces': 'lights',
-    'foco': 'light',
-    'focos': 'lights',
-    'lámpara': 'lamp',
-    'lampara': 'lamp',
-    # fans
-    'ventilador': 'fan',
-    'abanico': 'fan',
-    # covers/blinds
-    'persiana': 'shade',
-    'persianas': 'shades',
-    'cortina': 'curtain',
-    'cortinas': 'curtains',
-    # locks
-    'cerradura': 'lock',
-    'chapa': 'lock',
-    # climate
-    'termostato': 'thermostat',
-    'clima': 'climate',
-    'aire': 'air conditioner',
-    # media
-    'televisión': 'tv',
-    'television': 'tv',
-    'tele': 'tv',
-    'bocina': 'speaker',
-    'altavoz': 'speaker',
-}
-
 
 def _normalize_spanish_room_names(text: str) -> str:
     """Normalize STT mishearings of Spanish room names in response text.
@@ -137,39 +56,6 @@ def _normalize_spanish_room_names(text: str) -> str:
         # Case-insensitive, preserves original case style
         pattern = re.compile(r'\b' + re.escape(mishearing) + r'\b', re.IGNORECASE)
         result = pattern.sub(correct, result)
-
-    return result
-
-
-def _normalize_spanish_action(action: str) -> str:
-    """Normalize Spanish action words to English equivalents.
-
-    Converts Spanish commands like 'prender' → 'turn_on', 'apagar' → 'turn_off'.
-    """
-    if not action:
-        return action
-
-    action_lower = action.lower().strip()
-    return SPANISH_ACTION_MAP.get(action_lower, action_lower)
-
-
-def _normalize_spanish_device_name(device_name: str) -> str:
-    """Normalize Spanish device type names in device queries.
-
-    Helps with fuzzy matching by converting Spanish device types.
-    E.g., "luz de la sala" keeps "sala" but helps match "luz" to lights.
-    """
-    if not device_name:
-        return device_name
-
-    result = device_name.lower().strip()
-
-    # Try to find Spanish device types and add English equivalent for better matching
-    for spanish, english in SPANISH_DEVICE_MAP.items():
-        if spanish in result:
-            # Don't replace, but log for debugging - the fuzzy matcher will handle it
-            _LOGGER.debug("Spanish device type detected: '%s' (%s)", spanish, english)
-            break
 
     return result
 
@@ -490,11 +376,7 @@ async def control_device(
     _LOGGER.warning("DEBUG control_device called with: %s", arguments)
     _LOGGER.warning("DEBUG device_aliases: %s", device_aliases)
 
-    action_raw = arguments.get("action", "").strip().lower()
-    # Normalize Spanish action words (prender → turn_on, apagar → turn_off, etc.)
-    action = _normalize_spanish_action(action_raw)
-    if action != action_raw:
-        _LOGGER.info("Normalized Spanish action: '%s' → '%s'", action_raw, action)
+    action = arguments.get("action", "").strip().lower()
     brightness = arguments.get("brightness")
     position = arguments.get("position")
     color = arguments.get("color", "").strip().lower()
