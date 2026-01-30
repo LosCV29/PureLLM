@@ -238,7 +238,7 @@ class MusicController:
                 return active_queue
 
         # Always return the MA wrapper entity - never strip suffix
-        # Raw DLNA entities don't support pause/stop/shuffle
+        # Raw media player entities may not support all playback controls
         return entity_id
 
     def _get_room_name(self, entity_id: str) -> str:
@@ -272,7 +272,7 @@ class MusicController:
     async def _wait_for_playback_start(self, player: str, timeout: float = 3.0) -> bool:
         """Wait for player to reach 'playing' state after play_media call.
 
-        DLNA players often need extra time to initialize after receiving a play command.
+        Some media players need extra time to initialize after receiving a play command.
         This method polls the player state to ensure playback has actually started.
 
         Args:
@@ -300,52 +300,25 @@ class MusicController:
                        player, timeout, current_state)
         return False
 
-    async def _play_media_with_retry(
+    async def _play_media(
         self,
         player: str,
         media_id: str,
-        media_type: str,
-        max_retries: int = 2
+        media_type: str
     ) -> bool:
-        """Play media with proper wake-up for Pioneer receiver.
+        """Play media via Music Assistant.
 
         Args:
             player: The media_player entity_id
             media_id: The URI/ID of the media to play
             media_type: The type of media (track, album, artist, playlist)
-            max_retries: Maximum number of attempts (default 2)
 
         Returns:
             True if command was sent successfully
         """
-        # Check if this is the Pioneer receiver
-        is_pioneer = "pioneer" in player.lower()
+        _LOGGER.info("Playing media: uri='%s', type='%s' on %s",
+                    media_id, media_type, player)
 
-        _LOGGER.info("Playing media: uri='%s', type='%s' on %s (is_pioneer: %s)",
-                    media_id, media_type, player, is_pioneer)
-
-        # Pioneer receiver: always turn on + select NETWORK source first
-        if is_pioneer:
-            try:
-                _LOGGER.info("Pioneer wake-up: turn_on + select NETWORK")
-                await self._hass.services.async_call(
-                    "media_player", "turn_on",
-                    {},
-                    target={"entity_id": "media_player.pioneer_zone_1"},
-                    blocking=True
-                )
-                await asyncio.sleep(2.0)
-                await self._hass.services.async_call(
-                    "media_player", "select_source",
-                    {"source": "NETWORK"},
-                    target={"entity_id": "media_player.pioneer_zone_1"},
-                    blocking=True
-                )
-                await asyncio.sleep(2.0)
-            except Exception as e:
-                _LOGGER.warning("Pioneer wake-up failed: %s", e)
-
-        # Play command
         await self._hass.services.async_call(
             "music_assistant", "play_media",
             {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
@@ -490,7 +463,7 @@ class MusicController:
                                 # If we have a URI, play directly
                                 if album_uri:
                                     for player in target_players:
-                                        await self._play_media_with_retry(player, album_uri, "album")
+                                        await self._play_media(player, album_uri, "album")
                                         # Albums always play sequentially - disable shuffle for album playback
                                         await self._hass.services.async_call(
                                             "media_player", "shuffle_set",
@@ -519,7 +492,7 @@ class MusicController:
                                         found_album_uri = found_album.get("uri") or found_album.get("media_id")
 
                                         for player in target_players:
-                                            await self._play_media_with_retry(player, found_album_uri, "album")
+                                            await self._play_media(player, found_album_uri, "album")
                                             # Albums always play sequentially - disable shuffle for album playback
                                             await self._hass.services.async_call(
                                                 "media_player", "shuffle_set",
@@ -611,7 +584,7 @@ class MusicController:
 
                             # Play it
                             for player in target_players:
-                                await self._play_media_with_retry(player, found_uri, "album")
+                                await self._play_media(player, found_uri, "album")
                                 # Albums always play sequentially - disable shuffle for album playback
                                 await self._hass.services.async_call(
                                     "media_player", "shuffle_set",
@@ -734,7 +707,7 @@ class MusicController:
 
             # Play the found media
             for player in target_players:
-                await self._play_media_with_retry(player, found_uri, found_type)
+                await self._play_media(player, found_uri, found_type)
 
                 # Albums always play sequentially from track 1 - never shuffle albums
                 # Shuffle is only applied to playlists via the dedicated shuffle action
@@ -1085,7 +1058,7 @@ class MusicController:
             player = target_players[0]
             _LOGGER.info("Playing playlist '%s' shuffled on %s", playlist_name, player)
 
-            await self._play_media_with_retry(player, playlist_uri, "playlist")
+            await self._play_media(player, playlist_uri, "playlist")
 
             await self._hass.services.async_call(
                 "media_player", "shuffle_set",
