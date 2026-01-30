@@ -491,12 +491,12 @@ class MusicController:
                                 if album_uri:
                                     for player in target_players:
                                         await self._play_media_with_retry(player, album_uri, "album")
-                                        if shuffle:
-                                            await self._hass.services.async_call(
-                                                "media_player", "shuffle_set",
-                                                {"entity_id": player, "shuffle": True},
-                                                blocking=True
-                                            )
+                                        # Albums always play sequentially - disable shuffle for album playback
+                                        await self._hass.services.async_call(
+                                            "media_player", "shuffle_set",
+                                            {"entity_id": player, "shuffle": False},
+                                            blocking=True
+                                        )
                                     return {"status": "playing", "message": f"Playing {album_name} by {found_artist} in the {room}"}
 
                                 # Otherwise search for the album by name
@@ -520,12 +520,12 @@ class MusicController:
 
                                         for player in target_players:
                                             await self._play_media_with_retry(player, found_album_uri, "album")
-                                            if shuffle:
-                                                await self._hass.services.async_call(
-                                                    "media_player", "shuffle_set",
-                                                    {"entity_id": player, "shuffle": True},
-                                                    blocking=True
-                                                )
+                                            # Albums always play sequentially - disable shuffle for album playback
+                                            await self._hass.services.async_call(
+                                                "media_player", "shuffle_set",
+                                                {"entity_id": player, "shuffle": False},
+                                                blocking=True
+                                            )
                                         return {"status": "playing", "message": f"Playing {found_album_name} by {found_artist} in the {room}"}
 
                 return {"error": f"Could not find album containing '{song_on_album}'" + (f" by {artist}" if artist else "")}
@@ -612,12 +612,12 @@ class MusicController:
                             # Play it
                             for player in target_players:
                                 await self._play_media_with_retry(player, found_uri, "album")
-                                if shuffle:
-                                    await self._hass.services.async_call(
-                                        "media_player", "shuffle_set",
-                                        {"entity_id": player, "shuffle": True},
-                                        blocking=True
-                                    )
+                                # Albums always play sequentially - disable shuffle for album playback
+                                await self._hass.services.async_call(
+                                    "media_player", "shuffle_set",
+                                    {"entity_id": player, "shuffle": False},
+                                    blocking=True
+                                )
 
                             return {"status": "playing", "message": f"Playing {found_name} by {found_artist} in the {room}"}
 
@@ -736,7 +736,16 @@ class MusicController:
             for player in target_players:
                 await self._play_media_with_retry(player, found_uri, found_type)
 
-                if shuffle:
+                # Albums always play sequentially from track 1 - never shuffle albums
+                # Shuffle is only applied to playlists via the dedicated shuffle action
+                if found_type == "album":
+                    await self._hass.services.async_call(
+                        "media_player", "shuffle_set",
+                        {"entity_id": player, "shuffle": False},
+                        blocking=True
+                    )
+                elif shuffle:
+                    # Only allow shuffle for non-album media types (tracks, artists)
                     await self._hass.services.async_call(
                         "media_player", "shuffle_set",
                         {"entity_id": player, "shuffle": True},
