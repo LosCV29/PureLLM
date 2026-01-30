@@ -21,6 +21,53 @@ PAUSE_FEATURE = MediaPlayerEntityFeature.PAUSE
 STOP_FEATURE = MediaPlayerEntityFeature.STOP
 PLAY_FEATURE = MediaPlayerEntityFeature.PLAY
 
+# Spanish music action normalization map
+SPANISH_MUSIC_ACTION_MAP = {
+    # play variants
+    'reproducir': 'play',
+    'pon': 'play',
+    'ponme': 'play',
+    'tocar': 'play',
+    'toca': 'play',
+    # pause variants
+    'pausar': 'pause',
+    'pausa': 'pause',
+    # resume variants
+    'continuar': 'resume',
+    'continua': 'resume',
+    'reanudar': 'resume',
+    'reanuda': 'resume',
+    # stop variants
+    'detener': 'stop',
+    'deten': 'stop',
+    'parar': 'stop',
+    'para': 'stop',
+    # skip next variants
+    'siguiente': 'skip_next',
+    'brinca': 'skip_next',
+    'salta': 'skip_next',
+    # skip previous variants
+    'anterior': 'skip_previous',
+    'atrás': 'skip_previous',
+    'atras': 'skip_previous',
+    # restart variants
+    'reiniciar': 'restart_track',
+    'reinicia': 'restart_track',
+    # what's playing variants
+    'qué suena': 'what_playing',
+    'que suena': 'what_playing',
+    'qué canción': 'what_playing',
+    'que cancion': 'what_playing',
+    # shuffle variants
+    'mezclar': 'shuffle',
+    'mezcla': 'shuffle',
+    'aleatorio': 'shuffle',
+    # transfer variants
+    'transferir': 'transfer',
+    'mover': 'transfer',
+    'mueve': 'transfer',
+}
+
 
 def _normalize_unicode(text: str | None) -> str:
     """Normalize Unicode strings to ensure proper character display.
@@ -88,7 +135,11 @@ class MusicController:
         Returns:
             Result dict
         """
-        action = arguments.get("action", "").lower()
+        action_raw = arguments.get("action", "").lower()
+        # Normalize Spanish action words (pausar → pause, siguiente → skip_next, etc.)
+        action = SPANISH_MUSIC_ACTION_MAP.get(action_raw, action_raw)
+        if action != action_raw:
+            _LOGGER.info("Normalized Spanish music action: '%s' → '%s'", action_raw, action)
         query = arguments.get("query", "")
         media_type = arguments.get("media_type", "artist")
         room = arguments.get("room", "").lower() if arguments.get("room") else ""
