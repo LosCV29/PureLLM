@@ -160,6 +160,53 @@ async def manage_list(
                 "message": f"Removed '{matched_item}' from {list_friendly}"
             }
 
+        elif action == "remove_all" or action == "delete_all":
+            if not item:
+                return {"error": "Please specify an item to remove"}
+
+            # Get all items from the list
+            result = await hass.services.async_call(
+                "todo", "get_items",
+                {"entity_id": target_list},
+                blocking=True,
+                return_response=True
+            )
+
+            items = []
+            if result and target_list in result:
+                items = result[target_list].get("items", [])
+
+            # Find ALL matching items
+            item_lower = item.lower()
+            matched_items = []
+            for list_item in items:
+                summary = list_item.get("summary", "").lower()
+                if item_lower in summary or summary in item_lower:
+                    matched_items.append(list_item.get("summary"))
+
+            if not matched_items:
+                return {"error": f"Could not find '{item}' on the list"}
+
+            # Remove all matching items
+            for matched_item in matched_items:
+                await hass.services.async_call(
+                    "todo", "remove_item",
+                    {"entity_id": target_list, "item": matched_item},
+                    blocking=True
+                )
+
+            list_friendly = hass.states.get(target_list).attributes.get("friendly_name", "list")
+            count = len(matched_items)
+            return {
+                "success": True,
+                "action": "removed_all",
+                "item": item,
+                "count": count,
+                "removed_items": matched_items,
+                "list": list_friendly,
+                "message": f"Removed {count} '{item}' item{'s' if count != 1 else ''} from {list_friendly}"
+            }
+
         elif action == "show" or action == "get" or action == "read":
             # Check if user wants completed items
             show_completed = arguments.get("status", "").lower() in ("completed", "done", "checked")
@@ -324,7 +371,7 @@ async def manage_list(
             }
 
         else:
-            return {"error": f"Unknown list action: {action}. Use add, complete, remove, show, or clear."}
+            return {"error": f"Unknown list action: {action}. Use add, complete, remove, remove_all, show, or clear."}
 
     except Exception as err:
         _LOGGER.error("Error managing list: %s", err, exc_info=True)

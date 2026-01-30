@@ -325,12 +325,12 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== LISTS (always enabled) =====
     tools.append(_tool(
         "manage_list",
-        "Manage shopping lists and to-do lists. Use for: 'add milk to shopping list', 'what's on my list', 'complete eggs', 'clear the list', 'sort the list', 'show completed items', 'sort my completed items'.",
+        "Manage shopping lists and to-do lists. Use for: 'add milk to shopping list', 'what's on my list', 'complete eggs', 'clear the list', 'sort the list', 'show completed items', 'sort my completed items', 'remove all milk' (removes duplicates).",
         {
             "action": {
                 "type": "string",
-                "enum": ["add", "complete", "remove", "show", "clear", "sort", "list_all"],
-                "description": "'add' item, 'complete' (check off), 'remove' (delete), 'show' items, 'clear' all, 'sort' to alphabetize, 'list_all' available lists"
+                "enum": ["add", "complete", "remove", "remove_all", "show", "clear", "sort", "list_all"],
+                "description": "'add' item, 'complete' (check off), 'remove' (delete single item), 'remove_all' (delete ALL matching items/duplicates), 'show' items, 'clear' all, 'sort' to alphabetize, 'list_all' available lists"
             },
             "item": {
                 "type": "string",
