@@ -499,52 +499,82 @@ async def control_device(
 
     # Method 3: Area-based control
     elif area_name:
-        ent_reg = er.async_get(hass)
-        area_reg = ar.async_get(hass)
-        dev_reg = dr.async_get(hass)
+        # First, check if area_name matches a device alias (e.g., "downstairs" -> light.downstairs_group)
+        # This allows users to create aliases for light groups that the LLM might call as "areas"
+        area_alias_entity = None
+        area_name_lower = area_name.lower().strip()
 
-        target_area_id = None
-        for area in area_reg.async_list_areas():
-            if area.name.lower() == area_name.lower():
-                target_area_id = area.id
-                break
+        # Check device aliases for exact match on area name
+        if area_name_lower in device_aliases:
+            area_alias_entity = device_aliases[area_name_lower]
+            _LOGGER.info("Area name '%s' matched device alias -> %s", area_name, area_alias_entity)
+        else:
+            # Check for partial matches (e.g., "downstairs lights" might match "all downstairs lights" alias)
+            for alias, entity_id in device_aliases.items():
+                # Check if area name is contained in alias or vice versa
+                if area_name_lower in alias or alias in area_name_lower:
+                    area_alias_entity = entity_id
+                    _LOGGER.info("Area name '%s' partially matched alias '%s' -> %s", area_name, alias, entity_id)
+                    break
 
-        if not target_area_id:
+        # If we found a device alias match, use it as a single entity instead of area control
+        if area_alias_entity:
+            state = hass.states.get(area_alias_entity)
+            if state:
+                friendly_name = state.attributes.get("friendly_name", area_alias_entity)
+                entities_to_control.append((area_alias_entity, friendly_name))
+            else:
+                _LOGGER.warning("Device alias entity '%s' not found in HA, falling back to area lookup", area_alias_entity)
+                area_alias_entity = None  # Reset to try area lookup
+
+        # If no alias match found (or alias entity doesn't exist), proceed with area registry lookup
+        if not area_alias_entity:
+            ent_reg = er.async_get(hass)
+            area_reg = ar.async_get(hass)
+            dev_reg = dr.async_get(hass)
+
+            target_area_id = None
             for area in area_reg.async_list_areas():
-                if area_name.lower() in area.name.lower() or area.name.lower() in area_name.lower():
+                if area.name.lower() == area_name.lower():
                     target_area_id = area.id
                     break
 
-        if not target_area_id:
-            return {"error": f"Could not find area '{area_name}'."}
+            if not target_area_id:
+                for area in area_reg.async_list_areas():
+                    if area_name.lower() in area.name.lower() or area.name.lower() in area_name.lower():
+                        target_area_id = area.id
+                        break
 
-        device_areas = {device.id: True for device in dev_reg.devices.values() if device.area_id == target_area_id}
+            if not target_area_id:
+                return {"error": f"Could not find area '{area_name}'."}
 
-        controllable_domains = ["light", "switch", "fan", "lock", "cover", "media_player", "vacuum", "scene", "script", "input_boolean"]
-        if domain_filter and domain_filter != "all":
-            controllable_domains = [domain_filter]
+            device_areas = {device.id: True for device in dev_reg.devices.values() if device.area_id == target_area_id}
 
-        for state in hass.states.async_all():
-            eid = state.entity_id
-            domain = eid.split(".")[0]
+            controllable_domains = ["light", "switch", "fan", "lock", "cover", "media_player", "vacuum", "scene", "script", "input_boolean"]
+            if domain_filter and domain_filter != "all":
+                controllable_domains = [domain_filter]
 
-            if domain not in controllable_domains:
-                continue
-            if state.state in ("unavailable", "unknown"):
-                continue
+            for state in hass.states.async_all():
+                eid = state.entity_id
+                domain = eid.split(".")[0]
 
-            entity_entry = ent_reg.async_get(eid)
-            if not entity_entry:
-                continue
+                if domain not in controllable_domains:
+                    continue
+                if state.state in ("unavailable", "unknown"):
+                    continue
 
-            in_area = entity_entry.area_id == target_area_id or (entity_entry.device_id and entity_entry.device_id in device_areas)
+                entity_entry = ent_reg.async_get(eid)
+                if not entity_entry:
+                    continue
 
-            if in_area:
-                friendly_name = state.attributes.get("friendly_name", eid)
-                entities_to_control.append((eid, friendly_name))
+                in_area = entity_entry.area_id == target_area_id or (entity_entry.device_id and entity_entry.device_id in device_areas)
 
-        if not entities_to_control:
-            return {"error": f"No controllable devices found in area '{area_name}'."}
+                if in_area:
+                    friendly_name = state.attributes.get("friendly_name", eid)
+                    entities_to_control.append((eid, friendly_name))
+
+            if not entities_to_control:
+                return {"error": f"No controllable devices found in area '{area_name}'."}
 
     # Method 4: Device name matching (uses fuzzy matching with aliases)
     elif device_name:
