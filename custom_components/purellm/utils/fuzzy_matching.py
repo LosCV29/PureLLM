@@ -4,7 +4,6 @@ This module handles device name matching with:
 - Synonym expansion (blind/shade/curtain/cover are interchangeable)
 - Stopword removal
 - Direct entity matching (NO room fuzzy logic - causes cross-room confusion)
-- Stateless design (no caching - fresh lookups every time)
 """
 from __future__ import annotations
 
@@ -211,7 +210,7 @@ def find_entity_by_name(
     query: str,
     device_aliases: dict[str, str]
 ) -> tuple[str | None, str | None]:
-    """Search for entity by name - stateless, fresh lookup every time.
+    """Search for entity by name.
 
     Returns (entity_id, friendly_name) or (None, None) if not found.
     """
