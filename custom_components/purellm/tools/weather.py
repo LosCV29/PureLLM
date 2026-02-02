@@ -73,6 +73,7 @@ async def get_weather_forecast(
     latitude: float,
     longitude: float,
     track_api_call: callable,
+    user_query: str = "",
 ) -> dict[str, Any]:
     """Get weather forecast from OpenWeatherMap.
 
@@ -83,6 +84,7 @@ async def get_weather_forecast(
         latitude: Default latitude
         longitude: Default longitude
         track_api_call: Callback to track API usage
+        user_query: Original user query for validation
 
     Returns:
         Weather data dict
@@ -92,6 +94,21 @@ async def get_weather_forecast(
 
     if not api_key:
         return {"error": "OpenWeatherMap API key not configured. Add it in Settings → PolyVoice → API Keys."}
+
+    # Validate that the location was actually mentioned by the user
+    # This prevents models from hallucinating locations like "New York" when none was specified
+    if location_query:
+        user_query_lower = user_query.lower()
+        location_lower = location_query.lower()
+        # Extract just the city name (before any comma)
+        city_name = location_lower.split(",")[0].strip()
+        # Check if any part of the location appears in the user's query
+        if city_name not in user_query_lower and location_lower not in user_query_lower:
+            _LOGGER.warning(
+                "Ignoring hallucinated location '%s' - not found in user query: '%s'",
+                location_query, user_query
+            )
+            location_query = ""  # Reset to use default coordinates
 
     location_name = None
 
