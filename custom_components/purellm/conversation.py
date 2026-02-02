@@ -547,6 +547,18 @@ class PureLLMConversationEntity(ConversationEntity):
 
         return None
 
+    async def async_process(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: ChatLog,
+    ) -> conversation.ConversationResult:
+        """Process a conversation input from Home Assistant.
+
+        This is the main entry point called by Home Assistant's conversation
+        framework, including voice pipelines and assist_satellite.ask_question.
+        """
+        return await self._async_handle_message(user_input, chat_log)
+
     async def _async_handle_message(
         self,
         user_input: conversation.ConversationInput,
