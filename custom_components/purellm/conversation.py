@@ -1193,7 +1193,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Weather & Info
                 "get_weather_forecast": lambda: weather_tool.get_weather_forecast(
                     arguments, self._session, self.openweathermap_api_key,
-                    latitude, longitude, self._track_api_call
+                    latitude, longitude, self._track_api_call, self._current_user_query
                 ),
                 "get_calendar_events": lambda: calendar_tool.get_calendar_events(
                     arguments, self.hass, self.calendar_entities, hass_tz
