@@ -566,12 +566,9 @@ class PureLLMConversationEntity(ConversationEntity):
         conversation_id = user_input.conversation_id or str(uuid.uuid4())
 
         # Get extra_system_prompt (from start_conversation action or stored)
-        # IMPORTANT: Only use conversation history when extra_system_prompt is present
-        # This keeps normal voice commands stateless while supporting start_conversation
         extra_system_prompt = self._get_extra_system_prompt(user_input.conversation_id, chat_log)
 
         # Only get conversation history if this is a start_conversation call (has extra_system_prompt)
-        # Normal voice commands remain completely stateless
         history = self._get_conversation_history(user_input.conversation_id) if extra_system_prompt else []
 
         _LOGGER.info(
@@ -613,7 +610,6 @@ class PureLLMConversationEntity(ConversationEntity):
             _LOGGER.info("PureLLM response (%d chars): %s", len(final_response) if final_response else 0, (final_response or "")[:100])
 
             # Only save conversation history for start_conversation calls (when extra_system_prompt exists)
-            # Normal voice commands remain completely stateless - no history saved
             if extra_system_prompt:
                 self._save_conversation_turn(
                     conversation_id, user_text, final_response or "", extra_system_prompt
