@@ -224,6 +224,15 @@ CONF_SOFABATON_ACTIVITIES: Final = "sofabaton_activities"
 DEFAULT_SOFABATON_ACTIVITIES: Final = "[]"
 
 # =============================================================================
+# CAST/CHROMECAST SETTINGS - Wake cast screen before playing music
+# =============================================================================
+CONF_WAKE_CAST_BEFORE_PLAY: Final = "wake_cast_before_play"
+
+# Default: enabled - calls media_player.turn_on before playing to wake Chromecast UI
+# This fixes the issue where Chromecast screen doesn't show after pressing Home/Back
+DEFAULT_WAKE_CAST_BEFORE_PLAY: Final = True
+
+# =============================================================================
 # API TIMEOUT - Shared timeout for external API calls
 # =============================================================================
 API_TIMEOUT: Final = 15  # seconds

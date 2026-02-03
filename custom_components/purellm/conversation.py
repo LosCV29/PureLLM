@@ -75,6 +75,8 @@ from .const import (
     DEFAULT_CAMERA_FRIENDLY_NAMES,
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
+    CONF_WAKE_CAST_BEFORE_PLAY,
+    DEFAULT_WAKE_CAST_BEFORE_PLAY,
     DEFAULT_API_KEY,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
@@ -321,6 +323,10 @@ class PureLLMConversationEntity(ConversationEntity):
         except (json.JSONDecodeError, TypeError):
             self.sofabaton_activities = []
 
+        # Cast/Chromecast settings
+        # When enabled, calls media_player.turn_on before playing to wake Chromecast screen
+        self.wake_cast_before_play = config.get(CONF_WAKE_CAST_BEFORE_PLAY, DEFAULT_WAKE_CAST_BEFORE_PLAY)
+
         # Clear caches on config update
         self._tools = None
         self._cached_system_prompt = None
@@ -396,7 +402,11 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Initialize music controller
         if self.enable_music and self.room_player_mapping:
-            self._music_controller = MusicController(self.hass, self.room_player_mapping)
+            self._music_controller = MusicController(
+                self.hass,
+                self.room_player_mapping,
+                wake_cast_before_play=self.wake_cast_before_play
+            )
 
         # Warm up provider connection in background (pre-establish SSL handshake)
         # This saves 100-300ms on the first real query

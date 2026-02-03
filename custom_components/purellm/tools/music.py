@@ -382,15 +382,18 @@ class MusicController:
     and handles all music control operations via Music Assistant.
     """
 
-    def __init__(self, hass: "HomeAssistant", room_player_mapping: dict[str, str]):
+    def __init__(self, hass: "HomeAssistant", room_player_mapping: dict[str, str], wake_cast_before_play: bool = True):
         """Initialize the music controller.
 
         Args:
             hass: Home Assistant instance
             room_player_mapping: Dict of room name -> media_player entity_id
+            wake_cast_before_play: If True, call media_player.turn_on before playing
+                to wake Chromecast/cast screen (fixes UI not showing after Home/Back)
         """
         self._hass = hass
         self._players = room_player_mapping
+        self._wake_cast_before_play = wake_cast_before_play
         self._last_paused_player: str | None = None
         self._last_music_command: str | None = None
         self._last_music_command_time: datetime | None = None
@@ -635,6 +638,23 @@ class MusicController:
         """
         _LOGGER.info("Playing media: uri='%s', type='%s' on %s",
                     media_id, media_type, player)
+
+        # Wake cast screen before playing (fixes Chromecast UI not showing after Home/Back)
+        # This calls media_player.turn_on which activates the cast receiver
+        if self._wake_cast_before_play:
+            _LOGGER.info("Waking cast screen with turn_on for %s", player)
+            try:
+                await self._hass.services.async_call(
+                    "media_player", "turn_on",
+                    {},
+                    target={"entity_id": player},
+                    blocking=True
+                )
+                # Small delay to let the cast screen activate
+                await asyncio.sleep(0.5)
+            except Exception as e:
+                # Don't fail playback if turn_on fails (some players may not support it)
+                _LOGGER.debug("Wake cast turn_on failed for %s (non-fatal): %s", player, e)
 
         await self._hass.services.async_call(
             "music_assistant", "play_media",
