@@ -653,20 +653,20 @@ class MusicController:
                     media_id, media_type, player, self._wake_cast_before_play, self._wake_cast_adb_entity)
 
         # Wake cast screen before playing (fixes Chromecast UI not showing after Home/Back)
-        # This restarts mediashell via ADB which forces the cast screen to appear
+        # This wakes the display and restarts mediashell via ADB to force the cast screen to appear
         if self._wake_cast_before_play and self._wake_cast_adb_entity:
-            _LOGGER.warning("WAKE CAST: Restarting mediashell via ADB on %s", self._wake_cast_adb_entity)
+            _LOGGER.warning("WAKE CAST: Waking display and restarting mediashell via ADB on %s", self._wake_cast_adb_entity)
             try:
-                # Restart the mediashell service - this stops current playback but
-                # ensures the cast screen will appear when we play next
-                adb_command = "am force-stop com.google.android.apps.mediashell && am startservice -n com.google.android.apps.mediashell/.MediaShellCastReceiverService"
+                # First wake the display, then restart mediashell service
+                # KEYCODE_WAKEUP wakes the screen if it's off/standby
+                adb_command = "input keyevent KEYCODE_WAKEUP && am force-stop com.google.android.apps.mediashell && am startservice -n com.google.android.apps.mediashell/.MediaShellCastReceiverService"
                 await self._hass.services.async_call(
                     "androidtv", "adb_command",
                     {"command": adb_command},
                     target={"entity_id": self._wake_cast_adb_entity},
                     blocking=True
                 )
-                _LOGGER.warning("WAKE CAST: mediashell restart completed via %s", self._wake_cast_adb_entity)
+                _LOGGER.warning("WAKE CAST: Display wake + mediashell restart completed via %s", self._wake_cast_adb_entity)
                 # Wait for the cast service to restart before playing
                 await asyncio.sleep(3.0)
             except Exception as e:
