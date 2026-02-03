@@ -652,6 +652,21 @@ class MusicController:
                 if not results:
                     continue
 
+                # Filter by album name if specified (e.g., "christmas" for christmas albums)
+                if album and try_type == "album":
+                    album_filter = album.lower()
+                    filtered_results = [
+                        r for r in results
+                        if album_filter in (r.get("name") or r.get("title") or "").lower()
+                    ]
+                    if filtered_results:
+                        _LOGGER.info("Filtered %d albums to %d matching '%s'",
+                                    len(results), len(filtered_results), album)
+                        results = filtered_results
+                    else:
+                        _LOGGER.warning("No albums matched filter '%s', using all %d results",
+                                       album, len(results))
+
                 query_lower = query.lower()
                 artist_lower = artist.lower() if artist else ""
 
