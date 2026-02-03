@@ -141,7 +141,8 @@
           "room_player": "Media Player",
           "room_name": "Room Name (e.g., living room, kitchen)",
           "action": "Action",
-          "wake_cast_before_play": "Wake Chromecast before playing (fixes TV cast screen not showing)"
+          "wake_cast_before_play": "Wake Chromecast before playing (fixes TV cast screen not showing)",
+          "wake_cast_adb_entity": "ADB Entity for Wake Cast (e.g., media_player.android_tv_bridge)"
         }
       },
       "notifications": {

@@ -392,18 +392,21 @@ class MusicController:
     and handles all music control operations via Music Assistant.
     """
 
-    def __init__(self, hass: "HomeAssistant", room_player_mapping: dict[str, str], wake_cast_before_play: bool = True):
+    def __init__(self, hass: "HomeAssistant", room_player_mapping: dict[str, str], wake_cast_before_play: bool = True, wake_cast_adb_entity: str = ""):
         """Initialize the music controller.
 
         Args:
             hass: Home Assistant instance
             room_player_mapping: Dict of room name -> media_player entity_id
-            wake_cast_before_play: If True, call media_player.turn_on before playing
+            wake_cast_before_play: If True, restart mediashell via ADB before playing
                 to wake Chromecast/cast screen (fixes UI not showing after Home/Back)
+            wake_cast_adb_entity: The ADB media_player entity to use for wake cast
+                (e.g., media_player.android_tv_bridge)
         """
         self._hass = hass
         self._players = room_player_mapping
         self._wake_cast_before_play = wake_cast_before_play
+        self._wake_cast_adb_entity = wake_cast_adb_entity
         self._last_paused_player: str | None = None
         self._last_music_command: str | None = None
         self._last_music_command_time: datetime | None = None
@@ -646,26 +649,29 @@ class MusicController:
         Returns:
             True if command was sent successfully
         """
-        _LOGGER.info("Playing media: uri='%s', type='%s' on %s (wake_cast=%s)",
-                    media_id, media_type, player, self._wake_cast_before_play)
+        _LOGGER.info("Playing media: uri='%s', type='%s' on %s (wake_cast=%s, adb_entity=%s)",
+                    media_id, media_type, player, self._wake_cast_before_play, self._wake_cast_adb_entity)
 
         # Wake cast screen before playing (fixes Chromecast UI not showing after Home/Back)
-        # This calls media_player.turn_on which activates the cast receiver
-        if self._wake_cast_before_play:
-            _LOGGER.warning("WAKE CAST: Calling turn_on for %s", player)
+        # This restarts mediashell via ADB which forces the cast screen to appear
+        if self._wake_cast_before_play and self._wake_cast_adb_entity:
+            _LOGGER.warning("WAKE CAST: Restarting mediashell via ADB on %s", self._wake_cast_adb_entity)
             try:
+                # Restart the mediashell service - this stops current playback but
+                # ensures the cast screen will appear when we play next
+                adb_command = "am force-stop com.google.android.apps.mediashell && am startservice -n com.google.android.apps.mediashell/.MediaShellCastReceiverService"
                 await self._hass.services.async_call(
-                    "media_player", "turn_on",
-                    {},
-                    target={"entity_id": player},
+                    "androidtv", "adb_command",
+                    {"command": adb_command},
+                    target={"entity_id": self._wake_cast_adb_entity},
                     blocking=True
                 )
-                _LOGGER.warning("WAKE CAST: turn_on completed for %s", player)
-                # Small delay to let the cast screen activate
-                await asyncio.sleep(0.5)
+                _LOGGER.warning("WAKE CAST: mediashell restart completed via %s", self._wake_cast_adb_entity)
+                # Small delay to let the cast service restart
+                await asyncio.sleep(1.0)
             except Exception as e:
-                # Don't fail playback if turn_on fails (some players may not support it)
-                _LOGGER.warning("WAKE CAST: turn_on failed for %s: %s", player, e)
+                # Don't fail playback if ADB command fails
+                _LOGGER.warning("WAKE CAST: ADB command failed on %s: %s", self._wake_cast_adb_entity, e)
 
         await self._hass.services.async_call(
             "music_assistant", "play_media",

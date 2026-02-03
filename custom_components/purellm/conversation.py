@@ -408,7 +408,8 @@ class PureLLMConversationEntity(ConversationEntity):
             self._music_controller = MusicController(
                 self.hass,
                 self.room_player_mapping,
-                wake_cast_before_play=self.wake_cast_before_play
+                wake_cast_before_play=self.wake_cast_before_play,
+                wake_cast_adb_entity=self.wake_cast_adb_entity
             )
 
         # Warm up provider connection in background (pre-establish SSL handshake)
