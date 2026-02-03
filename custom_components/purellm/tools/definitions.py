@@ -49,24 +49,17 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== CORE TOOLS (always enabled) =====
     tools.append(_tool(
         "get_current_datetime",
-        "Get the current date and time. Use for 'what day is it', 'what's the date', 'what time is it', or any time/date questions.",
+        "Get current date/time.",
     ))
 
     # ===== WEATHER =====
     if config.enable_weather and config.openweathermap_api_key:
         tools.append(_tool(
             "get_weather_forecast",
-            "Get current weather AND forecast. LOCATION RULES: 1) 'what's the weather' with NO city mentioned = DO NOT pass location (uses user's default). 2) US cities = ALWAYS include state (e.g., 'Austin, TX', 'Miami, FL', 'Portland, OR'). 3) International = ALWAYS include country (e.g., 'Paris, France', 'London, UK', 'Tokyo, Japan').",
+            "Get weather. Omit location for local weather. Include state for US cities (Austin, TX), country for international (Paris, France).",
             {
-                "location": {
-                    "type": "string",
-                    "description": "DO NOT PASS if user says 'what's the weather' without naming a city. For US cities: MUST include state abbreviation (e.g., 'Chicago, IL', 'Seattle, WA'). For international: MUST include country (e.g., 'Berlin, Germany'). This prevents ambiguous matches like Paris, TX vs Paris, France."
-                },
-                "forecast_type": {
-                    "type": "string",
-                    "enum": ["current", "tomorrow", "weekly"],
-                    "description": "Use 'current' for today's weather (default). Use 'tomorrow' when user asks about tomorrow's weather or rain (e.g., 'will it rain tomorrow', 'weather tomorrow'). Use 'weekly' ONLY when user asks for 'weekly forecast', 'this week', or '5-day forecast'."
-                }
+                "location": {"type": "string", "description": "City with state/country. Omit for local."},
+                "forecast_type": {"type": "string", "enum": ["current", "tomorrow", "weekly"], "description": "current=today, tomorrow, weekly=5-day"}
             }
         ))
 
@@ -74,11 +67,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_places and config.google_places_api_key:
         tools.append(_tool(
             "find_nearby_places",
-            "Find nearby places using Google. Use for ALL searches EXCEPT restaurants/food. This includes: 'nearest X', 'closest X', 'where is X', 'find a X', 'best rated X', 'top rated X near me'. Examples: nail salons, hair salons, spas, gas stations, pharmacies, grocery stores, banks, gyms, doctors, dentists, mechanics, dry cleaners, etc. ONLY use get_restaurant_recommendations for RESTAURANTS and FOOD.",
-            {
-                "query": {"type": "string", "description": "What to search for (e.g., 'nail salon', 'gas station', 'pharmacy', 'best rated hair salon')"},
-                "max_results": {"type": "integer", "description": "Max results (default: 5, max: 20)"}
-            },
+            "Find nearby places (NOT restaurants). Use for: salons, gas, pharmacy, gym, etc.",
+            {"query": {"type": "string", "description": "What to search"}, "max_results": {"type": "integer", "description": "Max results (default 5)"}},
             ["query"]
         ))
 
@@ -88,22 +78,11 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         step = config.thermostat_temp_step
         tools.append(_tool(
             "control_thermostat",
-            f"Control or check the thermostat/AC/air. Use 'set_mode' to change HVAC mode (heating/cooling/off). Use 'raise/lower/set' for temperature.",
+            f"Control thermostat. raise/lower=±{step}{temp_unit}, set=specific temp, set_mode=heat/cool/off, check=status.",
             {
-                "action": {
-                    "type": "string",
-                    "enum": ["raise", "lower", "set", "check", "set_mode"],
-                    "description": f"'set_mode' = change HVAC mode (heat/cool/off), 'raise' = +{step}{temp_unit}, 'lower' = -{step}{temp_unit}, 'set' = specific temp, 'check' = status"
-                },
-                "temperature": {
-                    "type": "number",
-                    "description": f"Target temperature in {temp_unit} (only for 'set' action)"
-                },
-                "hvac_mode": {
-                    "type": "string",
-                    "enum": ["heat", "heating", "cool", "cooling", "heat_cool", "auto", "off"],
-                    "description": "REQUIRED for 'set_mode' action. Mode: heat, cool, heat_cool (auto), or off"
-                }
+                "action": {"type": "string", "enum": ["raise", "lower", "set", "check", "set_mode"], "description": "Action"},
+                "temperature": {"type": "number", "description": f"Temp in {temp_unit} (for 'set')"},
+                "hvac_mode": {"type": "string", "enum": ["heat", "heating", "cool", "cooling", "heat_cool", "auto", "off"], "description": "Mode (for 'set_mode')"}
             },
             ["action"]
         ))
@@ -112,15 +91,15 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_wikipedia:
         tools.append(_tool(
             "calculate_age",
-            "REQUIRED for 'how old is [person]' questions. Looks up birthdate from Wikidata and calculates current age. NEVER guess ages - ALWAYS use this tool.",
-            {"person_name": {"type": "string", "description": "The person's name (e.g., 'LeBron James', 'Taylor Swift')"}},
+            "Get person's age. Never guess - always use this.",
+            {"person_name": {"type": "string", "description": "Person's name"}},
             ["person_name"]
         ))
 
         tools.append(_tool(
             "get_wikipedia_summary",
-            "Get information from Wikipedia. Use for 'who is', 'what is', 'tell me about' questions about people, places, events, concepts.",
-            {"topic": {"type": "string", "description": "The topic to look up (e.g., 'Albert Einstein', 'World War II', 'Taylor Swift')"}},
+            "Get Wikipedia info about people, places, events.",
+            {"topic": {"type": "string", "description": "Topic to look up"}},
             ["topic"]
         ))
 
@@ -128,64 +107,31 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_sports:
         tools.append(_tool(
             "get_sports_info",
-            "Get info about a SPECIFIC TEAM. ALWAYS use this when user mentions a team name! Use for: 'do the Kings play today', 'did Lakers win', 'when is the next Cowboys game', 'Celtics score', 'does [team] play'. This looks up the team's schedule and results.",
+            "Get team info (schedule, scores). For college: include sport (e.g., 'Alabama football').",
             {
-                "team_name": {
-                    "type": "string",
-                    "description": "Team name. CRITICAL for COLLEGE teams: Include 'football' or 'basketball' to distinguish sports! Examples: 'Miami Hurricanes football', 'Ohio State basketball', 'Alabama football'. Pro teams don't need sport: 'Miami Heat', 'Dallas Cowboys'"
-                },
-                "query_type": {
-                    "type": "string",
-                    "enum": ["last_game", "next_game", "standings", "both"],
-                    "description": "What info to get: 'last_game' for recent result, 'next_game' for upcoming, 'standings' for league position, 'both' for last and next games (default)"
-                }
+                "team_name": {"type": "string", "description": "Team name. College: include sport."},
+                "query_type": {"type": "string", "enum": ["last_game", "next_game", "standings", "both"], "description": "last_game, next_game, standings, or both (default)"}
             },
             ["team_name"]
         ))
 
         tools.append(_tool(
             "get_ufc_info",
-            "Get UFC/MMA fight information. Use for: 'next UFC event', 'when is UFC', 'upcoming UFC fights'.",
-            {
-                "query_type": {
-                    "type": "string",
-                    "enum": ["next_event", "upcoming"],
-                    "description": "What info to get: 'next_event' for the next UFC event, 'upcoming' for list of upcoming events"
-                }
-            }
+            "Get UFC event info.",
+            {"query_type": {"type": "string", "enum": ["next_event", "upcoming"], "description": "next_event or upcoming"}}
         ))
 
         tools.append(_tool(
             "check_league_games",
-            "Check IF there are games in a LEAGUE (count only, NO team names). ONLY use when user asks about an entire league without mentioning a team. Use for: 'any NFL games today?', 'is there NBA tonight?'. Do NOT use for team-specific questions like 'do the Kings play' - use get_sports_info instead.",
-            {
-                "league": {
-                    "type": "string",
-                    "description": "NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League"
-                },
-                "date": {
-                    "type": "string",
-                    "enum": ["today", "tomorrow"],
-                    "description": "Which day (default: today)"
-                }
-            },
+            "Check if league has games (count only). For specific teams use get_sports_info.",
+            {"league": {"type": "string", "description": "NFL, NBA, MLB, NHL, MLS, etc."}, "date": {"type": "string", "enum": ["today", "tomorrow"], "description": "Day (default: today)"}},
             ["league"]
         ))
 
         tools.append(_tool(
             "list_league_games",
-            "List ALL games in a league with matchups/times. Use for: 'what NFL games are on today?', 'show me all NBA games'. Do NOT use for team-specific questions.",
-            {
-                "league": {
-                    "type": "string",
-                    "description": "NFL, NBA, MLB, NHL, MLS, Premier League, La Liga, Champions League"
-                },
-                "date": {
-                    "type": "string",
-                    "enum": ["today", "tomorrow"],
-                    "description": "Which day (default: today)"
-                }
-            },
+            "List all games in league with matchups/times.",
+            {"league": {"type": "string", "description": "NFL, NBA, MLB, NHL, MLS, etc."}, "date": {"type": "string", "enum": ["today", "tomorrow"], "description": "Day (default: today)"}},
             ["league"]
         ))
 
@@ -193,40 +139,33 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_calendar and config.calendar_entities:
         tools.append(_tool(
             "get_calendar_events",
-            "Get upcoming calendar events. Use for 'what's on my calendar', 'any events today', 'my schedule'.",
-            {"days_ahead": {"type": "integer", "description": "Number of days to look ahead (default: 7, max: 30)"}}
+            "Get calendar events.",
+            {"days_ahead": {"type": "integer", "description": "Days ahead (default 7, max 30)"}}
         ))
 
     # ===== RESTAURANTS =====
     if config.enable_restaurants and config.google_places_api_key:
         tools.append(_tool(
             "get_restaurant_recommendations",
-            "Get RESTAURANT recommendations using Google Places. ONLY use for RESTAURANTS, FOOD, and DINING - nothing else! Examples: 'find me sushi', 'best Italian restaurant', 'top rated Mexican food', 'good steakhouse'. Do NOT use for non-food businesses like nail salons, hair salons, spas, gyms, etc. - use find_nearby_places for those. SORTING: 'best'/'top rated' = rating, 'popular'/'most reviewed' = review_count. DO NOT use for booking - use book_restaurant instead.",
+            "Find restaurants. For non-food places use find_nearby_places.",
             {
-                "query": {"type": "string", "description": "What type of food or restaurant to search for"},
-                "sort_by": {
-                    "type": "string",
-                    "enum": ["rating", "review_count", "distance"],
-                    "description": "How to sort: 'rating' for highest rated (default), 'review_count' for most popular/reviewed, 'distance' for closest"
-                },
-                "price": {
-                    "type": "string",
-                    "description": "Price filter: '1' for $, '2' for $$, '3' for $$$, '4' for $$$$. Can combine like '1,2' for $ and $$. Use '3,4' for expensive/upscale, '1,2' for cheap/budget."
-                },
-                "max_results": {"type": "integer", "description": "Number of results to return (default: 3, max: 10)"}
+                "query": {"type": "string", "description": "Food/restaurant type"},
+                "sort_by": {"type": "string", "enum": ["rating", "review_count", "distance"], "description": "Sort by (default: rating)"},
+                "price": {"type": "string", "description": "1=$, 2=$$, 3=$$$, 4=$$$$. Combine: '1,2'"},
+                "max_results": {"type": "integer", "description": "Results (default 3)"}
             },
             ["query"]
         ))
 
         tools.append(_tool(
             "book_restaurant",
-            "Get a reservation link for a SPECIFIC restaurant the user already knows. Use for: 'book Uchi', 'make a reservation at Olive Garden', 'reserve a table at Fleming's in Miami'. This searches for the restaurant and provides a Google search link to find reservation options.",
+            "Get reservation link for specific restaurant.",
             {
-                "restaurant_name": {"type": "string", "description": "The exact restaurant name to book (e.g., 'Uchi', 'Olive Garden')"},
-                "location": {"type": "string", "description": "City/area to search in if user specifies one (e.g., 'Miami', 'Downtown Austin'). Omit to use user's current location."},
-                "party_size": {"type": "integer", "description": "Number of guests (default: 2)"},
-                "date": {"type": "string", "description": "Reservation date in YYYY-MM-DD format (e.g., '2024-01-20')"},
-                "time": {"type": "string", "description": "Reservation time - can be natural ('7pm', '7:30 PM') or 24hr ('19:00')"}
+                "restaurant_name": {"type": "string", "description": "Restaurant name"},
+                "location": {"type": "string", "description": "City (optional)"},
+                "party_size": {"type": "integer", "description": "Guests (default 2)"},
+                "date": {"type": "string", "description": "Date YYYY-MM-DD"},
+                "time": {"type": "string", "description": "Time (7pm, 19:00)"}
             },
             ["restaurant_name"]
         ))
@@ -235,18 +174,15 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_cameras:
         tools.append(_tool(
             "check_camera",
-            "Check a camera with AI vision analysis. Returns scene description and activity detection. Use for: 'check the [location] camera', 'what's happening in [location]'.",
-            {
-                "location": {"type": "string", "description": "The camera location to check (e.g., 'garage', 'kitchen', 'driveway')"},
-                "query": {"type": "string", "description": "Optional specific question about what to look for"}
-            },
+            "Check camera with AI analysis.",
+            {"location": {"type": "string", "description": "Camera location"}, "query": {"type": "string", "description": "What to look for (optional)"}},
             ["location"]
         ))
 
         tools.append(_tool(
             "quick_camera_check",
-            "FAST camera check - quickly confirms if anyone is present + one sentence description. Use for: 'is there anyone in [location]'.",
-            {"location": {"type": "string", "description": "The camera location to check"}},
+            "Fast camera check - is anyone present?",
+            {"location": {"type": "string", "description": "Camera location"}},
             ["location"]
         ))
 
@@ -254,18 +190,18 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_device_status:
         tools.append(_tool(
             "check_device_status",
-            "Check the current status of any device, sensor, door, lock, light, switch, or cover. IMPORTANT: Pass the COMPLETE device name exactly as the user said it.",
-            {"device": {"type": "string", "description": "The COMPLETE device name exactly as spoken by the user"}},
+            "Check device status.",
+            {"device": {"type": "string", "description": "Device name as user said it"}},
             ["device"]
         ))
 
         tools.append(_tool(
             "get_device_history",
-            "Get historical state changes for a device. Use for: 'when was the front door last opened', 'how many times was the garage opened today', 'history of the back door'. Returns state change timestamps and counts.",
+            "Get device state history.",
             {
-                "device": {"type": "string", "description": "The device name to get history for (e.g., 'front door', 'garage', 'mailbox')"},
-                "days_back": {"type": "integer", "description": "Number of days of history to retrieve (default: 1, max: 10). Use 1 for 'today', 7 for 'this week'."},
-                "date": {"type": "string", "description": "Specific date in YYYY-MM-DD format (e.g., '2024-01-15'). Use this for 'on January 15th' queries."}
+                "device": {"type": "string", "description": "Device name"},
+                "days_back": {"type": "integer", "description": "Days of history (default 1)"},
+                "date": {"type": "string", "description": "Specific date YYYY-MM-DD"}
             },
             ["device"]
         ))
@@ -275,23 +211,15 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control music PLAYBACK via Music Assistant. Available rooms: {rooms_list}. For pause/stop/resume/skip - NO room needed. For play/shuffle - specify room.",
+            f"Control music. Rooms: {rooms_list}. Room required for play/shuffle.",
             {
-                "action": {
-                    "type": "string",
-                    "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"],
-                    "description": "'play' for songs/albums/artists. 'shuffle' for shuffled playlists by artist/genre."
-                },
-                "query": {"type": "string", "description": "Song title, album name, or smart modifier. For albums: can include 'latest', 'last', 'newest', 'first', 'debut'. Example: 'play bad bunny's latest album' → query='latest', artist='Bad Bunny', media_type='album'."},
-                "artist": {"type": "string", "description": "Artist name. REQUIRED for tracks and albums."},
-                "album": {"type": "string", "description": "Album name. Use when playing a specific track FROM an album."},
-                "song_on_album": {"type": "string", "description": "Use when user wants an album that contains a specific song. Example: 'play the jay-z album with big pimpin' → song_on_album='Big Pimpin', artist='Jay-Z', media_type='album'. The system will find which album contains that song and play it."},
-                "room": {"type": "string", "description": f"Target room: {rooms_list}"},
-                "media_type": {
-                    "type": "string",
-                    "enum": ["artist", "album", "track"],
-                    "description": "'track' = specific song, 'album' = album, 'artist' = play all music by artist."
-                }
+                "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"], "description": "Action"},
+                "query": {"type": "string", "description": "Song/album name, or 'latest'/'first' for albums"},
+                "artist": {"type": "string", "description": "Artist name"},
+                "album": {"type": "string", "description": "Album name"},
+                "song_on_album": {"type": "string", "description": "Song name to find album containing it"},
+                "room": {"type": "string", "description": "Target room"},
+                "media_type": {"type": "string", "enum": ["artist", "album", "track"], "description": "track, album, or artist"}
             },
             ["action"]
         ))
@@ -299,25 +227,12 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== TIMERS (always enabled) =====
     tools.append(_tool(
         "control_timer",
-        "Control timers. Understands natural language like 'half an hour', 'one minute', '2 and a half hours'. Use for: 'set a timer', 'cancel timer', 'how much time left', 'pause', 'add 5 minutes', 'restart the timer'.",
+        "Control timers. Natural language: 'half an hour', '2 and a half hours'.",
         {
-            "action": {
-                "type": "string",
-                "enum": ["start", "cancel", "pause", "resume", "status", "add", "restart", "finish"],
-                "description": "'start' to create, 'cancel' to stop, 'pause'/'resume' to control, 'status' to check, 'add' to extend, 'restart' same duration, 'finish' to complete early"
-            },
-            "duration": {
-                "type": "string",
-                "description": "Natural language duration: '10 minutes', 'half an hour', 'one hour', '90 seconds', '2 and a half hours', or just '15' for 15 minutes"
-            },
-            "name": {
-                "type": "string",
-                "description": "Optional timer name for multi-timer support (e.g., 'pizza', 'laundry', 'eggs')"
-            },
-            "add_time": {
-                "type": "string",
-                "description": "Time to add when action='add' (e.g., '5 minutes', 'another 10')"
-            }
+            "action": {"type": "string", "enum": ["start", "cancel", "pause", "resume", "status", "add", "restart", "finish"], "description": "Action"},
+            "duration": {"type": "string", "description": "Duration: '10 minutes', 'half an hour'"},
+            "name": {"type": "string", "description": "Timer name (optional)"},
+            "add_time": {"type": "string", "description": "Time to add (for 'add' action)"}
         },
         ["action"]
     ))
@@ -325,26 +240,12 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== LISTS (always enabled) =====
     tools.append(_tool(
         "manage_list",
-        "Manage shopping lists and to-do lists. Use for: 'add milk to shopping list', 'what's on my list', 'complete eggs', 'clear the list', 'sort the list', 'show completed items', 'sort my completed items', 'remove all milk' (removes duplicates).",
+        "Manage shopping/to-do lists.",
         {
-            "action": {
-                "type": "string",
-                "enum": ["add", "complete", "remove", "remove_all", "show", "clear", "sort", "list_all"],
-                "description": "'add' item, 'complete' (check off), 'remove' (delete single item), 'remove_all' (delete ALL matching items/duplicates), 'show' items, 'clear' all, 'sort' to alphabetize, 'list_all' available lists"
-            },
-            "item": {
-                "type": "string",
-                "description": "Item to add/complete/remove"
-            },
-            "list_name": {
-                "type": "string",
-                "description": "Optional list name (defaults to shopping list)"
-            },
-            "status": {
-                "type": "string",
-                "enum": ["active", "completed"],
-                "description": "For 'show' or 'sort': 'active' (default) or 'completed' to view/sort checked-off items"
-            }
+            "action": {"type": "string", "enum": ["add", "complete", "remove", "remove_all", "show", "clear", "sort", "list_all"], "description": "Action"},
+            "item": {"type": "string", "description": "Item name"},
+            "list_name": {"type": "string", "description": "List name (optional)"},
+            "status": {"type": "string", "enum": ["active", "completed"], "description": "For show/sort: active or completed"}
         },
         ["action"]
     ))
@@ -352,51 +253,34 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== REMINDERS (always enabled) =====
     tools.append(_tool(
         "create_reminder",
-        "Create reminders. Use for: 'remind me to call mom at 5pm', 'set a reminder for tomorrow'.",
-        {
-            "reminder": {
-                "type": "string",
-                "description": "What to remind about"
-            },
-            "time": {
-                "type": "string",
-                "description": "When to remind (e.g., 'in 30 minutes', 'at 5pm', 'tomorrow at noon')"
-            }
-        },
+        "Create reminder.",
+        {"reminder": {"type": "string", "description": "What to remind"}, "time": {"type": "string", "description": "When (e.g., 'at 5pm', 'tomorrow')"}},
         ["reminder"]
     ))
 
     tools.append(_tool(
         "get_reminders",
-        "Get upcoming reminders. Use for: 'what reminders do I have', 'show my reminders'.",
+        "Get upcoming reminders.",
     ))
 
     # ===== DEVICE CONTROL (always enabled - LLM fallback) =====
     tools.append(_tool(
         "control_device",
-        "Control smart home devices (lights, switches, locks, fans, blinds, shades, covers, media_player, receivers, TVs). Use this when you need to control a device. IMPORTANT: Use the 'device' parameter with the user's spoken name - it does fuzzy matching! For blinds/shades: 'raise/up'=open, 'lower/down'=close, 'stop'=halt. For media players/receivers/TVs: 'pause'=pause playback, 'resume' or 'play'=UNPAUSE/resume playback (NOT unmute!), 'mute'=mute audio, 'unmute'=unmute audio (audio only, NOT for unpausing!).",
+        "Control devices (lights, switches, locks, fans, blinds, covers, media_player). Use device name for fuzzy matching. Blinds: open/close/stop. Media: pause/resume/mute/unmute.",
         {
-            "device": {"type": "string", "description": "PREFERRED: Use the device name the user said - fuzzy matching finds the right entity."},
-            "entity_id": {"type": "string", "description": "Only if you know the exact entity ID. Prefer 'device' for fuzzy matching."},
-            "entity_ids": {"type": "array", "items": {"type": "string"}, "description": "Multiple exact entity IDs"},
-            "area": {"type": "string", "description": "Control all devices in area"},
-            "domain": {
-                "type": "string",
-                "enum": ["light", "switch", "lock", "cover", "fan", "media_player", "climate", "vacuum", "scene", "script", "all"],
-                "description": "Device type filter for area"
-            },
-            "action": {
-                "type": "string",
-                "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "favorite", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "set_hvac_mode", "start", "dock", "locate", "return_home", "activate"],
-                "description": "Action to perform. CLIMATE: Use 'set_hvac_mode' when user wants to change MODE (heating mode, cooling mode, heat/cool mode, turn off AC). Use 'set_temperature' only for setting target temperature degrees. MEDIA: 'pause'=pause, 'resume'/'play'=UNPAUSE. LIGHTS: 'dim' with brightness. BLINDS: 'open'/'close'/'stop'/'preset'."
-            },
-            "brightness": {"type": "integer", "description": "Light brightness 0-100"},
-            "color": {"type": "string", "description": "Light color name (red, blue, warm, cool, etc.)"},
-            "color_temp": {"type": "integer", "description": "Color temperature in Kelvin (2700=warm, 6500=cool)"},
-            "position": {"type": "integer", "description": "Cover position 0-100 (0=closed)"},
-            "volume": {"type": "integer", "description": "Volume level 0-100"},
-            "temperature": {"type": "number", "description": "Target temperature for climate"},
-            "hvac_mode": {"type": "string", "enum": ["heat", "heating", "cool", "cooling", "heat_cool", "auto", "off"], "description": "REQUIRED when action is set_hvac_mode. Use: heat, cool, heat_cool, or off"},
+            "device": {"type": "string", "description": "Device name (fuzzy matched)"},
+            "entity_id": {"type": "string", "description": "Exact entity ID (optional)"},
+            "entity_ids": {"type": "array", "items": {"type": "string"}, "description": "Multiple entity IDs"},
+            "area": {"type": "string", "description": "Control all in area"},
+            "domain": {"type": "string", "enum": ["light", "switch", "lock", "cover", "fan", "media_player", "climate", "vacuum", "scene", "script", "all"], "description": "Device type filter"},
+            "action": {"type": "string", "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "favorite", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "set_hvac_mode", "start", "dock", "locate", "return_home", "activate"], "description": "Action"},
+            "brightness": {"type": "integer", "description": "0-100"},
+            "color": {"type": "string", "description": "Color name"},
+            "color_temp": {"type": "integer", "description": "Kelvin (2700-6500)"},
+            "position": {"type": "integer", "description": "Cover 0-100"},
+            "volume": {"type": "integer", "description": "0-100"},
+            "temperature": {"type": "number", "description": "Target temp"},
+            "hvac_mode": {"type": "string", "enum": ["heat", "heating", "cool", "cooling", "heat_cool", "auto", "off"], "description": "HVAC mode"},
             "fan_speed": {"type": "string", "enum": ["low", "medium", "high", "auto"], "description": "Fan speed"}
         },
         ["action"]
@@ -407,17 +291,10 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         activity_names = [a.get("name", "") for a in config.sofabaton_activities if a.get("name")]
         tools.append(_tool(
             "control_sofabaton",
-            f"Control SofaBaton X2 remote activities. Available activities: {', '.join(activity_names)}. TRIGGER WORDS: Use 'start' action for 'start [activity]' OR 'turn on [activity]'. Use 'stop' action for 'turn off [activity]'. Examples: 'start PC', 'turn on Movie Mode', 'turn off PlayStation'.",
+            f"Control SofaBaton activities: {', '.join(activity_names)}.",
             {
-                "activity": {
-                    "type": "string",
-                    "description": f"Activity name to control. Available: {', '.join(activity_names)}"
-                },
-                "action": {
-                    "type": "string",
-                    "enum": ["start", "stop"],
-                    "description": "'start' when user says 'start X' or 'turn on X'. 'stop' when user says 'turn off X'."
-                }
+                "activity": {"type": "string", "description": "Activity name"},
+                "action": {"type": "string", "enum": ["start", "stop"], "description": "start or stop"}
             },
             ["activity", "action"]
         ))
@@ -426,26 +303,12 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_search and config.tavily_api_key:
         tools.append(_tool(
             "web_search",
-            "PRIORITY: When user says 'search', 'search for', 'look up', or 'google' - ALWAYS use this tool, even for sports queries. Use for: (1) ANY request starting with 'search' or 'search for', (2) college basketball (NCAAB) queries - ESPN is unreliable, (3) movie/TV reviews and ratings, (4) current events and news, (5) product reviews, (6) music info. SMART DOMAINS: Auto-targets sites based on keywords.",
+            "Web search. Use for 'search for', 'google', news, reviews, current events.",
             {
-                "query": {
-                    "type": "string",
-                    "description": "The search query. Include site names for best results (e.g., 'Rotten Tomatoes score for Oppenheimer', 'IMDb rating Dune')"
-                },
-                "days": {
-                    "type": "integer",
-                    "description": "Limit results to last N days. Use 1 for 'today', 7 for 'this week', 30 for 'this month'. Omit for no time limit."
-                },
-                "include_domains": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Target specific domains (e.g., ['rottentomatoes.com']). Usually auto-detected - only use to override."
-                },
-                "exclude_domains": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Exclude specific domains from results (e.g., ['pinterest.com', 'reddit.com'])"
-                }
+                "query": {"type": "string", "description": "Search query"},
+                "days": {"type": "integer", "description": "Limit to last N days (optional)"},
+                "include_domains": {"type": "array", "items": {"type": "string"}, "description": "Target domains (optional)"},
+                "exclude_domains": {"type": "array", "items": {"type": "string"}, "description": "Exclude domains (optional)"}
             },
             ["query"]
         ))

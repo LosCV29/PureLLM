@@ -16,7 +16,7 @@ from typing import Any, TYPE_CHECKING
 
 # Conversation history settings
 CONVERSATION_TIMEOUT_SECONDS = 300  # 5 minutes - conversations expire after this
-MAX_CONVERSATION_HISTORY = 10  # Max message pairs to keep per conversation
+MAX_CONVERSATION_HISTORY = 4  # Max message pairs to keep per conversation (reduced for memory)
 
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ChatLog, ConversationEntity
