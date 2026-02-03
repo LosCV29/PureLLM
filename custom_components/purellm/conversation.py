@@ -590,12 +590,20 @@ class PureLLMConversationEntity(ConversationEntity):
             len(history) // 2, bool(extra_system_prompt)
         )
 
+        # Debug: Log extra_system_prompt details
+        if extra_system_prompt:
+            _LOGGER.warning("DEBUG extra_system_prompt received: %s", extra_system_prompt[:200])
+        else:
+            _LOGGER.warning("DEBUG no extra_system_prompt - checking user_input attributes: %s",
+                          [attr for attr in dir(user_input) if not attr.startswith('_')])
+
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
 
         # Append extra_system_prompt if provided (from start_conversation)
         if extra_system_prompt:
             system_prompt = f"{system_prompt}\n\nAdditional context:\n{extra_system_prompt}"
+            _LOGGER.warning("DEBUG full system prompt length: %d chars", len(system_prompt))
 
         max_tokens = self._calculate_max_tokens(user_text)
 
