@@ -540,6 +540,21 @@ class MusicController:
 
                     matching_albums = [a for a in albums if artist_lower in get_album_artist(a) or get_album_artist(a) in artist_lower]
 
+                    # Filter by album name if specified (e.g., "christmas" for christmas albums)
+                    if album and matching_albums:
+                        album_filter = album.lower()
+                        filtered_albums = [
+                            a for a in matching_albums
+                            if album_filter in (a.get("name") or a.get("title") or "").lower()
+                        ]
+                        if filtered_albums:
+                            _LOGGER.info("Filtered %d albums to %d matching '%s'",
+                                        len(matching_albums), len(filtered_albums), album)
+                            matching_albums = filtered_albums
+                        else:
+                            _LOGGER.warning("No albums matched filter '%s', using all %d albums by artist",
+                                           album, len(matching_albums))
+
                     if matching_albums:
                         # Sort by year (try multiple fields that MA might return)
                         def get_year(alb):
