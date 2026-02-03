@@ -1381,7 +1381,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                         default=current.get(CONF_WAKE_CAST_ADB_ENTITY, DEFAULT_WAKE_CAST_ADB_ENTITY),
                     ): selector.EntitySelector(
                         selector.EntitySelectorConfig(
-                            domain="media_player",
+                            integration="androidtv",
                             multiple=False,
                         )
                     ),
