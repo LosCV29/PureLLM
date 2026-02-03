@@ -714,6 +714,7 @@ class MusicController:
         album_modifier = None
         album_ordinal = None  # For "second", "third", etc.
         album_type_filter = None  # For "studio", "live", "compilation", etc.
+        album_year = None  # For year-based requests like "2020 album"
         query_lower = query.lower()
         latest_keywords = ["latest", "last", "newest", "new", "most recent", "recent", "nuevo", "última", "ultimo", "más reciente"]
         first_keywords = ["first", "oldest", "debut", "earliest", "primero", "primera"]
