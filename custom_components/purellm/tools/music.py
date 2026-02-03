@@ -505,7 +505,7 @@ class MusicController:
 
             # Handle smart album search (latest/first album by artist)
             if album_modifier and artist:
-                _LOGGER.info("Smart album search: finding %s album by '%s'", album_modifier, artist)
+                _LOGGER.warning("MUSIC DEBUG: Smart album search - modifier='%s', artist='%s', album_filter='%s'", album_modifier, artist, album)
 
                 # Search for albums by artist only
                 search_result = await self._hass.services.async_call(
@@ -539,6 +539,7 @@ class MusicController:
                         return ""
 
                     matching_albums = [a for a in albums if artist_lower in get_album_artist(a) or get_album_artist(a) in artist_lower]
+                    _LOGGER.warning("MUSIC DEBUG: Found %d albums, %d match artist '%s'", len(albums), len(matching_albums), artist)
 
                     # Filter by album name if specified (e.g., "christmas" for christmas albums)
                     if album and matching_albums:
@@ -548,11 +549,11 @@ class MusicController:
                             if album_filter in (a.get("name") or a.get("title") or "").lower()
                         ]
                         if filtered_albums:
-                            _LOGGER.info("Filtered %d albums to %d matching '%s'",
+                            _LOGGER.warning("MUSIC DEBUG: Filtered %d albums to %d matching '%s'",
                                         len(matching_albums), len(filtered_albums), album)
                             matching_albums = filtered_albums
                         else:
-                            _LOGGER.warning("No albums matched filter '%s', using all %d albums by artist",
+                            _LOGGER.warning("MUSIC DEBUG: No albums matched filter '%s', using all %d albums by artist",
                                            album, len(matching_albums))
 
                     if matching_albums:
@@ -579,7 +580,7 @@ class MusicController:
                         for alb in matching_albums[:5]:
                             alb_name = alb.get("name") or alb.get("title")
                             alb_year = get_year(alb)
-                            _LOGGER.info("  Album candidate: '%s' (year: %s, raw: %s)",
+                            _LOGGER.warning("MUSIC DEBUG: Album candidate: '%s' (year: %s, raw: %s)",
                                         alb_name, alb_year,
                                         alb.get("year") or alb.get("release_date") or "unknown")
 
@@ -595,7 +596,7 @@ class MusicController:
                             found_type = "album"
 
                             year = albums_with_year[0][0]
-                            _LOGGER.info("Selected %s album: '%s' (year: %d) by '%s'", album_modifier, found_name, year, found_artist)
+                            _LOGGER.warning("MUSIC DEBUG: Selected %s album: '%s' (year: %d) by '%s'", album_modifier, found_name, year, found_artist)
 
                             # Play it
                             for player in target_players:
