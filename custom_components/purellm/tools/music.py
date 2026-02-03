@@ -1505,11 +1505,17 @@ class MusicController:
             all_playlists = []
 
             if detected_holiday:
-                # For holidays, search using multiple related terms to find more playlists
-                for search_term in holiday_search_terms[:3]:  # Limit to 3 searches
+                # For holidays, search using the FULL query first, then fallback to generic terms
+                # This ensures "80s christmas" finds "80s Christmas" playlists, not just generic "Christmas Hits"
+                search_queries = [query]  # Full query first (e.g., "80s christmas music")
+                # Add the primary holiday term if not already the full query
+                if holiday_search_terms[0] != query_lower:
+                    search_queries.append(holiday_search_terms[0])
+
+                for search_query in search_queries:
                     search_result = await self._hass.services.async_call(
                         "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": search_term, "media_type": ["playlist"], "limit": 10},
+                        {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": ["playlist"], "limit": 15},
                         blocking=True, return_response=True
                     )
                     if search_result:
@@ -1517,7 +1523,7 @@ class MusicController:
                             all_playlists.extend(search_result.get("playlists", []))
                         elif isinstance(search_result, list):
                             all_playlists.extend(search_result)
-                _LOGGER.info("Holiday search found %d total playlists", len(all_playlists))
+                _LOGGER.info("Holiday search for '%s' found %d total playlists", query, len(all_playlists))
             else:
                 # Standard search for non-holiday queries
                 search_result = await self._hass.services.async_call(
@@ -1591,18 +1597,37 @@ class MusicController:
                 chosen_playlist = None
 
                 if detected_holiday:
-                    # For holiday playlists, prefer official but accept any matching playlist
-                    official_holiday = [p for p in official_playlists if name_matches_query(p.get("name") or p.get("title") or "")]
-                    if official_holiday:
-                        chosen_playlist = official_holiday[0]
-                        is_official = True
-                        _LOGGER.info("Found official holiday playlist")
-                    elif matching_name_playlists:
-                        # Accept any playlist that matches the holiday theme
-                        chosen_playlist = matching_name_playlists[0]
-                        _LOGGER.info("Found holiday-themed playlist (non-official)")
+                    # For holiday playlists, score by how well they match the FULL query
+                    # "80s christmas music" should prefer "80s Christmas" over generic "Christmas Hits"
+                    query_words = [w for w in query_lower.split() if len(w) >= 3 and w not in ('the', 'and', 'for', 'music', 'playlist', 'in')]
+
+                    def score_holiday_playlist(p):
+                        name = (p.get("name") or p.get("title") or "").lower()
+                        score = 0
+                        # Score for each query word found in playlist name
+                        for word in query_words:
+                            if word in name:
+                                score += 10
+                        # Bonus for official Spotify playlists
+                        if (p.get("owner") or "").lower() == "spotify":
+                            score += 5
+                        return score
+
+                    # Score all playlists
+                    scored_playlists = [(score_holiday_playlist(p), p) for p in non_radio_playlists]
+                    scored_playlists.sort(key=lambda x: x[0], reverse=True)
+
+                    # Log top matches for debugging
+                    for score, p in scored_playlists[:5]:
+                        _LOGGER.info("Holiday playlist score %d: '%s'", score, p.get("name") or p.get("title"))
+
+                    if scored_playlists and scored_playlists[0][0] > 0:
+                        chosen_playlist = scored_playlists[0][1]
+                        is_official = (chosen_playlist.get("owner") or "").lower() == "spotify"
+                        _LOGGER.info("Selected holiday playlist by score: '%s' (score: %d)",
+                                   chosen_playlist.get("name"), scored_playlists[0][0])
                     elif non_radio_playlists:
-                        # Last resort: any playlist from the search
+                        # Last resort: first available playlist from search
                         chosen_playlist = non_radio_playlists[0]
                         _LOGGER.info("Using first available holiday playlist")
                 else:
