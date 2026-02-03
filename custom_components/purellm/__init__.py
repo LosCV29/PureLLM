@@ -22,6 +22,7 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_ASK_AND_ACT = "ask_and_act"
 
 # Schema for ask_and_act service
+# Simplified: LLM handles action execution via its tools
 ANSWER_SCHEMA = vol.Schema({
     vol.Required("id"): cv.string,
     vol.Required("sentences"): vol.All(cv.ensure_list, [cv.string]),
@@ -35,12 +36,8 @@ ANSWER_SCHEMA = vol.Schema({
 
 ASK_AND_ACT_SCHEMA = vol.Schema({
     vol.Required("satellite_entity_id"): cv.entity_id,
-    vol.Required("media_player_entity_id"): cv.entity_id,
-    vol.Required("tts_entity_id"): cv.entity_id,
     vol.Required("question"): cv.string,
     vol.Required("answers"): vol.All(cv.ensure_list, [ANSWER_SCHEMA]),
-    vol.Optional("timeout", default=15): vol.Coerce(int),
-    vol.Optional("tts_delay", default=2.5): vol.Coerce(float),
 })
 
 PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.UPDATE]
@@ -61,155 +58,95 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
-    This service:
-    1. Speaks a question via TTS
-    2. Listens for user response via assist satellite
-    3. Matches response against predefined answers
-    4. Executes the corresponding action
-    5. Speaks confirmation
+    This service leverages the LLM to:
+    1. Speak a question via start_conversation
+    2. Listen for user response
+    3. LLM executes the appropriate action based on response
+    4. LLM speaks confirmation
 
-    Returns a dict with the matched answer info.
+    The LLM handles action execution via its control_device tool.
     """
     satellite_entity_id = call.data["satellite_entity_id"]
-    media_player_entity_id = call.data["media_player_entity_id"]
-    tts_entity_id = call.data["tts_entity_id"]
     question = call.data["question"]
     answers = call.data["answers"]
-    timeout = call.data.get("timeout", 15)
-    tts_delay = call.data.get("tts_delay", 2.5)
 
     _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s", question, satellite_entity_id)
 
-    # Step 1: Speak the question via TTS
-    try:
-        await hass.services.async_call(
-            "tts", "speak",
-            {
-                "entity_id": tts_entity_id,
-                "media_player_entity_id": media_player_entity_id,
-                "message": question,
-            },
-            blocking=True,
-        )
-        _LOGGER.debug("ask_and_act: TTS spoke question")
-    except Exception as err:
-        _LOGGER.error("ask_and_act: TTS failed: %s", err)
-        return {"error": f"TTS failed: {err}"}
+    # Build the extra_system_prompt that instructs the LLM what to do
+    prompt_parts = [
+        f"CONTEXT: You just asked the user: \"{question}\"",
+        "",
+        "INSTRUCTIONS:",
+        "Based on the user's response, you MUST take ONE of the following actions:",
+        "",
+    ]
 
-    # Step 2: Wait for TTS to complete
-    await asyncio.sleep(tts_delay)
+    for answer in answers:
+        answer_id = answer["id"]
+        sentences = answer["sentences"]
+        sentences_str = ", ".join(f'"{s}"' for s in sentences)
 
-    # Step 3: Listen for response using assist_satellite.start_conversation
-    # We use an empty start_message to just listen without speaking again
-    response_text = None
+        prompt_parts.append(f"If user says {sentences_str} (or similar):")
+
+        if "action" in answer:
+            action = answer["action"]
+            service = action["service"]
+            target = action.get("target", {})
+            data = action.get("data", {})
+
+            # Get the entity_id from target
+            entity_id = target.get("entity_id", "")
+
+            # Build action description based on service type
+            if service.startswith("light.turn_on"):
+                brightness = data.get("brightness_pct", 100)
+                color_temp = data.get("color_temp_kelvin", 4000)
+                prompt_parts.append(f"  -> Call control_device with entity_id=\"{entity_id}\", action=\"turn_on\", brightness={brightness}, color_temp={color_temp}")
+            elif service.startswith("light.turn_off"):
+                prompt_parts.append(f"  -> Call control_device with entity_id=\"{entity_id}\", action=\"turn_off\"")
+            elif service.startswith("switch.turn_on"):
+                prompt_parts.append(f"  -> Call control_device with entity_id=\"{entity_id}\", action=\"turn_on\"")
+            elif service.startswith("switch.turn_off"):
+                prompt_parts.append(f"  -> Call control_device with entity_id=\"{entity_id}\", action=\"turn_off\"")
+            else:
+                # Generic service call instruction
+                prompt_parts.append(f"  -> Execute service {service} on {entity_id}")
+
+        if "response" in answer:
+            prompt_parts.append(f"  -> Then say: \"{answer['response']}\"")
+
+        prompt_parts.append("")
+
+    prompt_parts.extend([
+        "IMPORTANT:",
+        "- You MUST call the control_device tool to execute the action",
+        "- Use entity_id parameter (NOT device parameter) when calling control_device",
+        "- Do NOT just describe the action - actually execute it",
+        "- Keep your spoken response brief",
+    ])
+
+    extra_system_prompt = "\n".join(prompt_parts)
+    _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
+
+    # Use start_conversation to speak the question AND listen for response
+    # start_conversation handles: TTS -> STT -> LLM -> TTS response
     try:
-        # Create a simple system prompt that just echoes the user's response
         result = await hass.services.async_call(
             "assist_satellite", "start_conversation",
             {
                 "entity_id": satellite_entity_id,
-                "start_message": "",
-                "extra_system_prompt": "Repeat EXACTLY what the user said, word for word. Nothing else.",
+                "start_message": question,
+                "extra_system_prompt": extra_system_prompt,
                 "preannounce": False,
             },
             blocking=True,
             return_response=True,
         )
-        _LOGGER.debug("ask_and_act: start_conversation result: %s", result)
-
-        # Extract the response text from the result
-        if result and isinstance(result, dict):
-            # Try to get the speech from the response
-            for entity_result in result.values():
-                if isinstance(entity_result, dict):
-                    speech = entity_result.get("response", {}).get("speech", {})
-                    if isinstance(speech, dict):
-                        plain = speech.get("plain", {})
-                        if isinstance(plain, dict):
-                            response_text = plain.get("speech", "")
-                        elif isinstance(plain, str):
-                            response_text = plain
-                    elif isinstance(speech, str):
-                        response_text = speech
-
+        _LOGGER.info("ask_and_act: start_conversation completed, result: %s", result)
+        return {"success": True, "result": result}
     except Exception as err:
-        _LOGGER.error("ask_and_act: Listen failed: %s", err)
-        return {"error": f"Listen failed: {err}"}
-
-    if not response_text:
-        _LOGGER.warning("ask_and_act: No response received")
-        return {"error": "No response received", "matched_id": None}
-
-    _LOGGER.info("ask_and_act: User response: '%s'", response_text)
-
-    # Step 4: Match response against answer patterns
-    matched_answer = None
-    response_lower = response_text.lower().strip()
-
-    for answer in answers:
-        for sentence in answer["sentences"]:
-            # Simple contains match (case-insensitive)
-            sentence_lower = sentence.lower().strip()
-            if sentence_lower in response_lower or response_lower in sentence_lower:
-                matched_answer = answer
-                _LOGGER.info("ask_and_act: Matched answer '%s' with sentence '%s'",
-                           answer["id"], sentence)
-                break
-            # Also try word-by-word match for single words
-            if len(sentence_lower.split()) == 1 and sentence_lower in response_lower.split():
-                matched_answer = answer
-                _LOGGER.info("ask_and_act: Matched answer '%s' with word '%s'",
-                           answer["id"], sentence)
-                break
-        if matched_answer:
-            break
-
-    if not matched_answer:
-        _LOGGER.warning("ask_and_act: No matching answer for response '%s'", response_text)
-        return {"error": "No matching answer", "response": response_text, "matched_id": None}
-
-    # Step 5: Execute the action if specified
-    if "action" in matched_answer:
-        action_config = matched_answer["action"]
-        service_parts = action_config["service"].split(".", 1)
-        if len(service_parts) == 2:
-            domain, service = service_parts
-            service_data = action_config.get("data", {})
-            target = action_config.get("target", {})
-
-            try:
-                await hass.services.async_call(
-                    domain, service,
-                    {**service_data, **target} if target else service_data,
-                    blocking=True,
-                    target=target if target else None,
-                )
-                _LOGGER.info("ask_and_act: Executed action %s.%s", domain, service)
-            except Exception as err:
-                _LOGGER.error("ask_and_act: Action failed: %s", err)
-                return {"error": f"Action failed: {err}", "matched_id": matched_answer["id"]}
-
-    # Step 6: Speak confirmation if specified
-    if "response" in matched_answer and matched_answer["response"]:
-        try:
-            await hass.services.async_call(
-                "tts", "speak",
-                {
-                    "entity_id": tts_entity_id,
-                    "media_player_entity_id": media_player_entity_id,
-                    "message": matched_answer["response"],
-                },
-                blocking=False,
-            )
-            _LOGGER.debug("ask_and_act: Spoke confirmation")
-        except Exception as err:
-            _LOGGER.warning("ask_and_act: Confirmation TTS failed: %s", err)
-
-    return {
-        "matched_id": matched_answer["id"],
-        "response": response_text,
-        "action_executed": "action" in matched_answer,
-    }
+        _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
+        return {"error": f"start_conversation failed: {err}"}
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
