@@ -140,7 +140,8 @@
           "select_room": "",
           "room_player": "Media Player",
           "room_name": "Room Name (e.g., living room, kitchen)",
-          "action": "Action"
+          "action": "Action",
+          "wake_cast_before_play": "Wake Chromecast before playing (fixes TV cast screen not showing)"
         }
       },
       "notifications": {
