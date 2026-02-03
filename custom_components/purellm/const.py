@@ -152,6 +152,7 @@ Use device name from tool result's "controlled_devices" field, not user's reques
 [CURRENT_DATE_WILL_BE_INJECTED_HERE]
 
 SPORTS: Copy response_text VERBATIM - never rephrase dates or restructure.
+When user asks about Champions League/UCL: MUST include 'Champions League' in team_name (e.g., 'Man City Champions League'). Without it, only domestic league games are returned.
 
 MUSIC ROOMS: Extract room separately from query. Spanish: sala=living room, cocina=kitchen, recámara=bedroom.
 STT mishearings: salad/salah/salla→sala, kosina→cocina, banyo→baño.
