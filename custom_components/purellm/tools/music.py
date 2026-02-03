@@ -336,20 +336,8 @@ ALBUM_TYPE_KEYWORDS = {
     "ep": "ep",
 }
 
-# Soundtrack variant keywords - movie vs broadway/theater
-SOUNDTRACK_VARIANT_KEYWORDS = {
-    # Movie/film soundtracks - these terms help find motion picture soundtracks
-    "movie": "motion picture",
-    "film": "motion picture",
-    "motion picture": "motion picture",
-    # Broadway/theater soundtracks - these terms help find cast recordings
-    "broadway": "broadway cast",
-    "original cast": "original cast",
-    "cast recording": "cast recording",
-    "theater": "broadway cast",
-    "theatre": "broadway cast",
-    "stage": "broadway cast",
-}
+# Broadway/cast recording exclusion keywords - filter these out when searching for soundtracks
+BROADWAY_EXCLUSION_KEYWORDS = ["broadway", "original cast", "cast recording", "original broadway", "west end"]
 
 # Holiday keywords for shuffle playlist search
 HOLIDAY_KEYWORDS = {
@@ -750,13 +738,10 @@ class MusicController:
                     _LOGGER.info("Detected album type filter: '%s' (keyword: %s)", type_value, type_keyword)
                     break
 
-            # Check for soundtrack variant keywords (movie vs broadway)
-            soundtrack_variant = None
-            for variant_keyword, variant_value in SOUNDTRACK_VARIANT_KEYWORDS.items():
-                if variant_keyword in query_lower:
-                    soundtrack_variant = variant_value
-                    _LOGGER.info("Detected soundtrack variant: '%s' (keyword: %s)", variant_value, variant_keyword)
-                    break
+            # Check if this is a soundtrack search - always prefer movie soundtracks
+            is_soundtrack_search = album_type_filter == "soundtrack" or "soundtrack" in query_lower or "ost" in query_lower
+            if is_soundtrack_search:
+                _LOGGER.info("Detected soundtrack search - will prefer movie soundtracks and filter out Broadway")
 
             # Check for year-based album requests (e.g., "2020 album", "album from 2019")
             album_year = None
@@ -1143,10 +1128,10 @@ class MusicController:
             # Standard search (non-modifier path)
             search_query = f"{query} {artist}" if artist else query
 
-            # Include soundtrack variant in search query (e.g., "motion picture" for movie soundtracks)
-            if soundtrack_variant and media_type == "album":
-                search_query = f"{search_query} {soundtrack_variant}"
-                _LOGGER.info("Added soundtrack variant to search: '%s'", search_query)
+            # For soundtrack searches, add "motion picture" to prefer movie soundtracks
+            if is_soundtrack_search and media_type == "album":
+                search_query = f"{search_query} motion picture"
+                _LOGGER.info("Added 'motion picture' to soundtrack search: '%s'", search_query)
 
             # NO cascading - search ONLY the requested type
             search_types_to_try = [media_type]
@@ -1200,6 +1185,19 @@ class MusicController:
                     else:
                         _LOGGER.warning("No albums matched filter '%s', using all %d results",
                                        album, len(results))
+
+                # For soundtrack searches, filter out Broadway/cast recordings - only want movie soundtracks
+                if is_soundtrack_search and try_type == "album" and results:
+                    non_broadway_results = [
+                        r for r in results
+                        if not any(kw in (r.get("name") or r.get("title") or "").lower() for kw in BROADWAY_EXCLUSION_KEYWORDS)
+                    ]
+                    if non_broadway_results:
+                        _LOGGER.info("Filtered out Broadway: %d albums -> %d movie soundtracks",
+                                    len(results), len(non_broadway_results))
+                        results = non_broadway_results
+                    else:
+                        _LOGGER.warning("All results were Broadway/cast recordings, using original results")
 
                 query_lower = query.lower()
                 artist_lower = artist.lower() if artist else ""
