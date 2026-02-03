@@ -119,6 +119,78 @@ async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> i
     return 0
 
 
+async def _search_albums_by_tag_musicbrainz(artist_name: str, tag: str) -> list[dict]:
+    """Search MusicBrainz for albums by artist with a specific tag (e.g., christmas, holiday).
+
+    This uses tag-based search which properly identifies albums like "Wrapped in Red"
+    as a Christmas album even though "christmas" isn't in the title.
+
+    Args:
+        artist_name: Name of the artist
+        tag: Tag to search for (e.g., "christmas", "holiday", "live")
+
+    Returns:
+        List of dicts with: name, year, mbid
+    """
+    try:
+        url = "https://musicbrainz.org/ws/2/release-group"
+        # Search using both artist name and tag
+        query = f'artist:"{artist_name}" AND tag:{tag}'
+        params = {
+            "query": query,
+            "fmt": "json",
+            "limit": 25
+        }
+        headers = {
+            "User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    _LOGGER.debug("MusicBrainz tag search returned status %d", response.status)
+                    return []
+
+                data = await response.json()
+                release_groups = data.get("release-groups", [])
+
+                albums = []
+                for rg in release_groups:
+                    # Only include actual albums (not singles/EPs)
+                    primary_type = (rg.get("primary-type") or "").lower()
+                    if primary_type != "album":
+                        continue
+
+                    name = rg.get("title", "")
+                    first_release = rg.get("first-release-date", "")
+                    year = int(first_release[:4]) if first_release and len(first_release) >= 4 else 0
+                    mbid = rg.get("id", "")
+
+                    albums.append({
+                        "name": name,
+                        "year": year,
+                        "mbid": mbid,
+                        "primary_type": primary_type,
+                    })
+
+                # Sort by year
+                albums.sort(key=lambda x: (x["year"] == 0, x["year"]))
+
+                _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag search for '%s' + tag:'%s' found %d albums",
+                               artist_name, tag, len(albums))
+                for i, alb in enumerate(albums[:10]):
+                    _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag [%d] '%s' (%d)", i+1, alb["name"], alb["year"])
+
+                return albums
+
+    except asyncio.TimeoutError:
+        _LOGGER.debug("MusicBrainz tag search timed out for '%s' + '%s'", artist_name, tag)
+    except Exception as e:
+        _LOGGER.debug("MusicBrainz tag search failed for '%s' + '%s': %s", artist_name, tag, e)
+
+    return []
+
+
 async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str = None) -> list[dict]:
     """Get artist's discography from MusicBrainz with album types and years.
 
@@ -733,44 +805,63 @@ class MusicController:
                 return {"error": f"Could not find album containing '{song_on_album}'" + (f" by {artist}" if artist else "")}
 
             # Handle ordinal album requests (second, third album) or type-filtered requests (studio, live)
-            if artist and (album_ordinal or album_type_filter):
-                _LOGGER.warning("MUSIC DEBUG: MusicBrainz discography search - ordinal=%s, type='%s', artist='%s', album_filter='%s'",
+            # Also handles tag-based filtering (christmas, holiday albums)
+            if artist and (album_ordinal or album_type_filter or album):
+                _LOGGER.warning("MUSIC DEBUG: Album search - ordinal=%s, type='%s', artist='%s', album_tag='%s'",
                                album_ordinal, album_type_filter, artist, album)
 
-                # Get discography from MusicBrainz (with optional type filter)
-                discography = await _get_artist_discography_musicbrainz(artist, album_type_filter)
-                use_musicbrainz_discography = True
+                discography = []
 
-                if discography:
-                    # Filter by album name if specified (e.g., "christmas")
-                    if album:
+                # If album tag is specified (e.g., "christmas"), use MusicBrainz tag-based search
+                # This properly finds albums like "Wrapped in Red" tagged as christmas
+                if album:
+                    discography = await _search_albums_by_tag_musicbrainz(artist, album)
+
+                # If no results from tag search (or no album tag), get full discography
+                if not discography:
+                    discography = await _get_artist_discography_musicbrainz(artist, album_type_filter)
+
+                    # If we have a discography but also an album filter, try name matching as fallback
+                    if discography and album:
                         album_filter_lower = album.lower()
                         filtered_discog = [d for d in discography if album_filter_lower in d["name"].lower()]
                         if filtered_discog:
-                            _LOGGER.warning("MUSIC DEBUG: Filtered discography from %d to %d albums matching '%s'",
+                            _LOGGER.warning("MUSIC DEBUG: Name-filtered discography from %d to %d albums matching '%s'",
                                            len(discography), len(filtered_discog), album)
                             discography = filtered_discog
-                        else:
-                            # MusicBrainz has no matching albums - fall back to Music Assistant
-                            _LOGGER.warning("MUSIC DEBUG: MusicBrainz has no '%s' albums, falling back to Music Assistant", album)
-                            use_musicbrainz_discography = False
 
-                    # Check if we have enough albums for the requested ordinal
-                    if album_ordinal and len(discography) < album_ordinal:
-                        _LOGGER.warning("MUSIC DEBUG: MusicBrainz only has %d matching albums but ordinal=%d requested, falling back to Music Assistant",
-                                       len(discography), album_ordinal)
-                        use_musicbrainz_discography = False
-                else:
-                    use_musicbrainz_discography = False
+                if not discography:
+                    return {"error": f"Could not find {album + ' ' if album else ''}albums by {artist}"}
 
-                # If MusicBrainz discography is insufficient, use Music Assistant + MusicBrainz year lookup
-                if not use_musicbrainz_discography and album:
-                    _LOGGER.warning("MUSIC DEBUG: Using Music Assistant search with MusicBrainz year lookup")
+                # Select album based on ordinal or modifier
+                target_album_name = None
+                target_year = 0
+                if album_ordinal:
+                    if album_ordinal <= len(discography):
+                        target_album_name = discography[album_ordinal - 1]["name"]
+                        target_year = discography[album_ordinal - 1]["year"]
+                        _LOGGER.warning("MUSIC DEBUG: Selected ordinal #%d album: '%s' (%d)", album_ordinal, target_album_name, target_year)
+                    else:
+                        return {"error": f"{artist} only has {len(discography)} {album + ' ' if album else ''}albums"}
+                elif album_modifier == "latest":
+                    target_album_name = discography[-1]["name"]
+                    target_year = discography[-1]["year"]
+                    _LOGGER.warning("MUSIC DEBUG: Selected latest album: '%s' (%d)", target_album_name, target_year)
+                elif album_modifier == "first":
+                    target_album_name = discography[0]["name"]
+                    target_year = discography[0]["year"]
+                    _LOGGER.warning("MUSIC DEBUG: Selected first album: '%s' (%d)", target_album_name, target_year)
+                elif discography:
+                    # No modifier specified, just use the most recent from the tag search
+                    target_album_name = discography[-1]["name"]
+                    target_year = discography[-1]["year"]
+                    _LOGGER.warning("MUSIC DEBUG: No modifier, using most recent: '%s' (%d)", target_album_name, target_year)
 
-                    # Search Music Assistant for albums by this artist
+                if target_album_name:
+                    # Search Music Assistant for this specific album
                     search_result = await self._hass.services.async_call(
                         "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["album"], "limit": 20},
+                        {"config_entry_id": ma_config_entry_id, "name": f"{target_album_name} {artist}", "media_type": ["album"], "limit": 5},
                         blocking=True, return_response=True
                     )
 
@@ -782,125 +873,33 @@ class MusicController:
                             albums = search_result
 
                         if albums:
-                            artist_lower = artist.lower()
-                            # Filter to albums by this artist
-                            def get_album_artist(alb):
-                                if alb.get("artists"):
-                                    if isinstance(alb["artists"], list) and alb["artists"]:
-                                        return (alb["artists"][0].get("name") or "").lower()
-                                return ""
+                            # Find best match
+                            target_lower = target_album_name.lower()
+                            best_album = None
+                            for alb in albums:
+                                alb_name = (alb.get("name") or alb.get("title") or "").lower()
+                                if target_lower in alb_name or alb_name in target_lower:
+                                    best_album = alb
+                                    break
+                            if not best_album:
+                                best_album = albums[0]  # Fallback to first result
 
-                            matching = [a for a in albums if artist_lower in get_album_artist(a)]
+                            found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
+                            found_uri = best_album.get("uri") or best_album.get("media_id")
 
-                            # Filter by album name
-                            album_filter_lower = album.lower()
-                            matching = [a for a in matching if album_filter_lower in (a.get("name") or a.get("title") or "").lower()]
+                            for player in target_players:
+                                await self._play_media(player, found_uri, "album")
+                                await self._hass.services.async_call(
+                                    "media_player", "shuffle_set",
+                                    {"entity_id": player, "shuffle": False},
+                                    blocking=True
+                                )
 
-                            if matching:
-                                _LOGGER.warning("MUSIC DEBUG: Music Assistant found %d '%s' albums", len(matching), album)
+                            return {"status": "playing", "message": f"Playing {found_name} by {artist} in the {room}"}
 
-                                # Get years from MusicBrainz for each album
-                                albums_with_year = []
-                                for alb in matching:
-                                    alb_name = alb.get("name") or alb.get("title") or ""
-                                    year = await _lookup_album_year_musicbrainz(alb_name, artist)
-                                    albums_with_year.append((year, alb, alb_name))
-                                    if year > 0:
-                                        _LOGGER.warning("MUSIC DEBUG: MusicBrainz year for '%s': %d", alb_name, year)
+                    return {"error": f"Found '{target_album_name}' in MusicBrainz but not in your music library"}
 
-                                # Sort by year (albums with year=0 go to end)
-                                albums_with_year.sort(key=lambda x: (x[0] == 0, x[0]))
-
-                                # Select based on ordinal or modifier
-                                selected_album = None
-                                if album_ordinal:
-                                    if album_ordinal <= len(albums_with_year):
-                                        selected_album = albums_with_year[album_ordinal - 1]
-                                        _LOGGER.warning("MUSIC DEBUG: Selected ordinal #%d: '%s' (%d)", album_ordinal, selected_album[2], selected_album[0])
-                                    else:
-                                        return {"error": f"{artist} only has {len(albums_with_year)} {album} albums in your library"}
-                                elif album_modifier == "latest":
-                                    selected_album = albums_with_year[-1]
-                                    _LOGGER.warning("MUSIC DEBUG: Selected latest: '%s' (%d)", selected_album[2], selected_album[0])
-                                elif album_modifier == "first":
-                                    selected_album = albums_with_year[0]
-                                    _LOGGER.warning("MUSIC DEBUG: Selected first: '%s' (%d)", selected_album[2], selected_album[0])
-
-                                if selected_album:
-                                    found_album = selected_album[1]
-                                    found_name = _normalize_unicode(found_album.get("name") or found_album.get("title"))
-                                    found_uri = found_album.get("uri") or found_album.get("media_id")
-
-                                    for player in target_players:
-                                        await self._play_media(player, found_uri, "album")
-                                        await self._hass.services.async_call(
-                                            "media_player", "shuffle_set",
-                                            {"entity_id": player, "shuffle": False},
-                                            blocking=True
-                                        )
-
-                                    return {"status": "playing", "message": f"Playing {found_name} by {artist} in the {room}"}
-
-                    return {"error": f"Could not find {album} albums by {artist} in your library"}
-
-                # Use MusicBrainz discography results
-                if use_musicbrainz_discography and discography:
-                    # Select album based on ordinal or modifier
-                    target_album_name = None
-                    if album_ordinal:
-                        target_album_name = discography[album_ordinal - 1]["name"]
-                        target_year = discography[album_ordinal - 1]["year"]
-                        _LOGGER.warning("MUSIC DEBUG: Selected ordinal #%d album: '%s' (%d)", album_ordinal, target_album_name, target_year)
-                    elif album_modifier == "latest":
-                        target_album_name = discography[-1]["name"]
-                        _LOGGER.warning("MUSIC DEBUG: Selected latest album: '%s' (%d)", target_album_name, discography[-1]["year"])
-                    elif album_modifier == "first":
-                        target_album_name = discography[0]["name"]
-                        _LOGGER.warning("MUSIC DEBUG: Selected first album: '%s' (%d)", target_album_name, discography[0]["year"])
-
-                    if target_album_name:
-                        # Search Music Assistant for this specific album
-                        search_result = await self._hass.services.async_call(
-                            "music_assistant", "search",
-                            {"config_entry_id": ma_config_entry_id, "name": f"{target_album_name} {artist}", "media_type": ["album"], "limit": 5},
-                            blocking=True, return_response=True
-                        )
-
-                        if search_result:
-                            albums = []
-                            if isinstance(search_result, dict):
-                                albums = search_result.get("albums", [])
-                            elif isinstance(search_result, list):
-                                albums = search_result
-
-                            if albums:
-                                # Find best match
-                                target_lower = target_album_name.lower()
-                                best_album = None
-                                for alb in albums:
-                                    alb_name = (alb.get("name") or alb.get("title") or "").lower()
-                                    if target_lower in alb_name or alb_name in target_lower:
-                                        best_album = alb
-                                        break
-                                if not best_album:
-                                    best_album = albums[0]  # Fallback to first result
-
-                                found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
-                                found_uri = best_album.get("uri") or best_album.get("media_id")
-
-                                for player in target_players:
-                                    await self._play_media(player, found_uri, "album")
-                                    await self._hass.services.async_call(
-                                        "media_player", "shuffle_set",
-                                        {"entity_id": player, "shuffle": False},
-                                        blocking=True
-                                    )
-
-                                return {"status": "playing", "message": f"Playing {found_name} by {artist} in the {room}"}
-
-                        return {"error": f"Found '{target_album_name}' in MusicBrainz but not in your music library"}
-
-                return {"error": f"Could not find discography for {artist}" + (f" (type: {album_type_filter})" if album_type_filter else "")}
+                return {"error": f"Could not find {album + ' ' if album else ''}albums by {artist}"}
 
             # Handle smart album search (latest/first album by artist)
             if album_modifier and artist:
