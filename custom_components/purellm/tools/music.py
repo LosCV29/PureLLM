@@ -657,9 +657,17 @@ class MusicController:
         if self._wake_cast_before_play and self._wake_cast_adb_entity:
             _LOGGER.warning("WAKE CAST: Waking display and restarting mediashell via ADB on %s", self._wake_cast_adb_entity)
             try:
-                # First wake the display, then restart mediashell service
-                # KEYCODE_WAKEUP wakes the screen if it's off/standby
-                adb_command = "input keyevent KEYCODE_WAKEUP && am force-stop com.google.android.apps.mediashell && am startservice -n com.google.android.apps.mediashell/.MediaShellCastReceiverService"
+                # Step 1: Call media_player.turn_on to trigger CEC power-on for the TV
+                await self._hass.services.async_call(
+                    "media_player", "turn_on",
+                    {},
+                    target={"entity_id": self._wake_cast_adb_entity},
+                    blocking=True
+                )
+
+                # Step 2: Send KEYCODE_WAKEUP + KEYCODE_HOME to wake device and go to known state
+                # Then restart mediashell service
+                adb_command = "input keyevent KEYCODE_WAKEUP && input keyevent KEYCODE_HOME && am force-stop com.google.android.apps.mediashell && am startservice -n com.google.android.apps.mediashell/.MediaShellCastReceiverService"
                 await self._hass.services.async_call(
                     "androidtv", "adb_command",
                     {"command": adb_command},
@@ -667,8 +675,8 @@ class MusicController:
                     blocking=True
                 )
                 _LOGGER.warning("WAKE CAST: Display wake + mediashell restart completed via %s", self._wake_cast_adb_entity)
-                # Wait for the cast service to restart before playing
-                await asyncio.sleep(3.0)
+                # Wait for the cast service to fully restart before playing (7 seconds per HA community)
+                await asyncio.sleep(5.0)
             except Exception as e:
                 # Don't fail playback if ADB command fails
                 _LOGGER.warning("WAKE CAST: ADB command failed on %s: %s", self._wake_cast_adb_entity, e)
