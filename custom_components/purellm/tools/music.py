@@ -5,6 +5,7 @@ import asyncio
 import codecs
 import logging
 import re
+import aiohttp
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -56,6 +57,66 @@ def _normalize_unicode(text: str | None) -> str:
         _LOGGER.debug("Encode/decode normalization failed: %s", e)
 
     return text
+
+
+async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> int:
+    """Look up album release year from MusicBrainz API.
+
+    Args:
+        album_name: Name of the album
+        artist_name: Name of the artist
+
+    Returns:
+        Release year as int, or 0 if not found
+    """
+    try:
+        # Clean up album name for search (remove special editions, etc.)
+        clean_album = re.sub(r'\s*[\(\[].*?[\)\]]', '', album_name).strip()
+        clean_album = re.sub(r'\s*[-–].*?(edition|version|deluxe|remaster).*$', '', clean_album, flags=re.IGNORECASE).strip()
+
+        # MusicBrainz API endpoint for release-group (albums)
+        url = "https://musicbrainz.org/ws/2/release-group"
+        params = {
+            "query": f'releasegroup:"{clean_album}" AND artist:"{artist_name}"',
+            "fmt": "json",
+            "limit": 5
+        }
+        headers = {
+            "User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    release_groups = data.get("release-groups", [])
+
+                    if release_groups:
+                        # Find best match - prefer exact title match
+                        for rg in release_groups:
+                            rg_title = rg.get("title", "").lower()
+                            if clean_album.lower() in rg_title or rg_title in clean_album.lower():
+                                first_release = rg.get("first-release-date", "")
+                                if first_release and len(first_release) >= 4:
+                                    year = int(first_release[:4])
+                                    _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s'", year, album_name, artist_name)
+                                    return year
+
+                        # Fallback to first result if no exact match
+                        first_release = release_groups[0].get("first-release-date", "")
+                        if first_release and len(first_release) >= 4:
+                            year = int(first_release[:4])
+                            _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s' (fallback)", year, album_name, artist_name)
+                            return year
+                else:
+                    _LOGGER.debug("MusicBrainz API returned status %d", response.status)
+
+    except asyncio.TimeoutError:
+        _LOGGER.debug("MusicBrainz lookup timed out for '%s' by '%s'", album_name, artist_name)
+    except Exception as e:
+        _LOGGER.debug("MusicBrainz lookup failed for '%s' by '%s': %s", album_name, artist_name, e)
+
+    return 0
 
 
 class MusicController:
@@ -585,7 +646,20 @@ class MusicController:
                                         alb.get("year") or alb.get("release_date") or "unknown")
 
                         albums_with_year = [(get_year(a), a) for a in matching_albums]
-                        # Include albums even with year=0, but sort them to the end
+
+                        # Check if all years are 0 (missing) - if so, use MusicBrainz to look up years
+                        if all(y == 0 for y, _ in albums_with_year):
+                            _LOGGER.warning("MUSIC DEBUG: All years are 0, querying MusicBrainz for release dates...")
+                            updated_albums = []
+                            for _, alb in albums_with_year:
+                                alb_name = alb.get("name") or alb.get("title") or ""
+                                mb_year = await _lookup_album_year_musicbrainz(alb_name, artist)
+                                updated_albums.append((mb_year, alb))
+                                if mb_year > 0:
+                                    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found year %d for '%s'", mb_year, alb_name)
+                            albums_with_year = updated_albums
+
+                        # Sort: albums with year=0 go to end, then sort by year (desc for latest, asc for first)
                         albums_with_year.sort(key=lambda x: (x[0] == 0, -x[0] if album_modifier == "latest" else x[0]))
 
                         if albums_with_year:
