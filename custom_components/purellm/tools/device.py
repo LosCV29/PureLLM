@@ -408,6 +408,18 @@ async def control_device(
     if device_name != device_name_raw:
         _LOGGER.info("Normalized device name: '%s' → '%s'", device_name_raw, device_name)
 
+    # Check if device_name is actually an entity_id (e.g., "light.master_dimmer_switch_light")
+    # If so, treat it as a direct entity_id instead of running fuzzy matching
+    known_domains = {"light", "switch", "cover", "fan", "lock", "climate", "media_player",
+                     "vacuum", "scene", "script", "input_boolean", "automation", "button",
+                     "siren", "humidifier", "sensor", "binary_sensor"}
+    if device_name and "." in device_name:
+        potential_domain = device_name.split(".")[0]
+        if potential_domain in known_domains:
+            _LOGGER.info("Device name '%s' looks like an entity_id, using directly", device_name)
+            direct_entity_id = device_name
+            device_name = ""  # Clear device_name so it doesn't go through fuzzy matching
+
     _LOGGER.debug("control_device: entity=%s, device=%s, area=%s, action=%s",
                   direct_entity_id or entity_ids_list, device_name, area_name, action)
 
