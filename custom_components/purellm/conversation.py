@@ -534,34 +534,36 @@ class PureLLMConversationEntity(ConversationEntity):
             conversation_id, len(data["messages"])
         )
 
-    def _get_extra_system_prompt(self, conversation_id: str | None, chat_log: ChatLog | None) -> str | None:
-        """Get extra system prompt from chat_log or stored conversation."""
-        # First check if there's an extra_system_prompt in the chat_log
-        # This is set by start_conversation action
-        if chat_log and hasattr(chat_log, 'extra_system_prompt') and chat_log.extra_system_prompt:
+    def _get_extra_system_prompt(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: ChatLog,
+    ) -> str | None:
+        """Get extra system prompt from user_input, chat_log, or stored conversation.
+
+        Priority:
+        1. user_input.extra_system_prompt (from ask_question/start_conversation)
+        2. chat_log.extra_system_prompt (from conversation framework)
+        3. stored conversation history
+        """
+        # First check user_input for extra_system_prompt (ask_question passes it here)
+        if hasattr(user_input, 'extra_system_prompt') and user_input.extra_system_prompt:
+            return user_input.extra_system_prompt
+
+        # Then check chat_log for extra_system_prompt
+        if hasattr(chat_log, 'extra_system_prompt') and chat_log.extra_system_prompt:
             return chat_log.extra_system_prompt
 
         # Check if we have a stored extra_system_prompt for this conversation
-        if conversation_id and conversation_id in self._conversation_history:
-            return self._conversation_history[conversation_id].get("extra_system_prompt")
+        if user_input.conversation_id and user_input.conversation_id in self._conversation_history:
+            return self._conversation_history[user_input.conversation_id].get("extra_system_prompt")
 
         return None
-
-    async def async_process(
-        self,
-        user_input: conversation.ConversationInput,
-    ) -> conversation.ConversationResult:
-        """Process a conversation input from Home Assistant.
-
-        This is the main entry point called by Home Assistant's conversation
-        framework, including voice pipelines and assist_satellite.ask_question.
-        """
-        return await self._async_handle_message(user_input, None)
 
     async def _async_handle_message(
         self,
         user_input: conversation.ConversationInput,
-        chat_log: ChatLog | None,
+        chat_log: ChatLog,
     ) -> conversation.ConversationResult:
         """Handle an incoming chat message.
 
@@ -576,8 +578,8 @@ class PureLLMConversationEntity(ConversationEntity):
         # Get or create conversation_id for tracking
         conversation_id = user_input.conversation_id or str(uuid.uuid4())
 
-        # Get extra_system_prompt (from start_conversation action or stored)
-        extra_system_prompt = self._get_extra_system_prompt(user_input.conversation_id, chat_log)
+        # Get extra_system_prompt (from ask_question, start_conversation, or stored)
+        extra_system_prompt = self._get_extra_system_prompt(user_input, chat_log)
 
         # Only get conversation history if this is a start_conversation call (has extra_system_prompt)
         history = self._get_conversation_history(user_input.conversation_id) if extra_system_prompt else []
