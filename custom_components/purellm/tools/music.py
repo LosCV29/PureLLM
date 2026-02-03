@@ -398,8 +398,8 @@ class MusicController:
         Args:
             hass: Home Assistant instance
             room_player_mapping: Dict of room name -> media_player entity_id
-            wake_cast_before_play: If True, restart mediashell via ADB before playing
-                to wake Chromecast/cast screen (fixes UI not showing after Home/Back)
+            wake_cast_before_play: If True, bring cast UI to foreground via ADB before playing
+                (fixes UI not showing after pressing Home/Back on Android TV)
             wake_cast_adb_entity: The ADB media_player entity to use for wake cast
                 (e.g., media_player.android_tv_bridge)
         """
@@ -653,22 +653,22 @@ class MusicController:
                     media_id, media_type, player, self._wake_cast_before_play, self._wake_cast_adb_entity)
 
         # Wake cast screen before playing (fixes Chromecast UI not showing after Home/Back)
-        # This wakes the display and restarts mediashell via ADB to force the cast screen to appear
+        # This wakes the display and brings mediashell to foreground without killing the cast session
         if self._wake_cast_before_play and self._wake_cast_adb_entity:
-            _LOGGER.warning("WAKE CAST: Waking display and restarting mediashell via ADB on %s", self._wake_cast_adb_entity)
+            _LOGGER.warning("WAKE CAST: Waking display and bringing cast UI to foreground via ADB on %s", self._wake_cast_adb_entity)
             try:
-                # First wake the display, then restart mediashell service
-                # KEYCODE_WAKEUP wakes the screen if it's off/standby
-                adb_command = "input keyevent KEYCODE_WAKEUP && am force-stop com.google.android.apps.mediashell && am startservice -n com.google.android.apps.mediashell/.MediaShellCastReceiverService"
+                # Wake the display and launch CastReceiverActivity to bring cast UI to foreground
+                # This preserves any existing cast session instead of killing it
+                adb_command = "input keyevent KEYCODE_WAKEUP && am start -n com.google.android.apps.mediashell/.CastReceiverActivity"
                 await self._hass.services.async_call(
                     "androidtv", "adb_command",
                     {"command": adb_command},
                     target={"entity_id": self._wake_cast_adb_entity},
                     blocking=True
                 )
-                _LOGGER.warning("WAKE CAST: Display wake + mediashell restart completed via %s", self._wake_cast_adb_entity)
-                # Wait for the cast service to restart before playing
-                await asyncio.sleep(3.0)
+                _LOGGER.warning("WAKE CAST: Display wake + cast UI foreground completed via %s", self._wake_cast_adb_entity)
+                # Brief wait for the activity to come to foreground
+                await asyncio.sleep(1.0)
             except Exception as e:
                 # Don't fail playback if ADB command fails
                 _LOGGER.warning("WAKE CAST: ADB command failed on %s: %s", self._wake_cast_adb_entity, e)
