@@ -37,7 +37,6 @@ ASK_AND_ACT_SCHEMA = vol.Schema({
     vol.Required("satellite_entity_id"): cv.entity_id,
     vol.Required("question"): cv.string,
     vol.Required("answers"): vol.All(cv.ensure_list, [ANSWER_SCHEMA]),
-    vol.Optional("preannounce", default=False): cv.boolean,
 })
 
 PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.UPDATE]
@@ -70,7 +69,6 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     satellite_entity_id = call.data["satellite_entity_id"]
     question = call.data["question"]
     answers = call.data["answers"]
-    preannounce = call.data.get("preannounce", False)
 
     _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s", question, satellite_entity_id)
 
@@ -145,7 +143,7 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
                 "entity_id": satellite_entity_id,
                 "start_message": question,
                 "extra_system_prompt": extra_system_prompt,
-                "preannounce": preannounce,
+                "preannounce": False,  # No wake sound for minimal latency
             },
             blocking=True,
             return_response=True,
