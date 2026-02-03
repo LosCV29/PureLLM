@@ -337,7 +337,14 @@ ALBUM_TYPE_KEYWORDS = {
 }
 
 # Broadway/cast recording exclusion keywords - filter these out when searching for soundtracks
-BROADWAY_EXCLUSION_KEYWORDS = ["broadway", "original cast", "cast recording", "original broadway", "west end"]
+BROADWAY_EXCLUSION_KEYWORDS = [
+    "broadway", "original cast", "cast recording", "original broadway",
+    "west end", "cast album", "theatre", "theater cast", " cast)", " cast]",
+    "london cast", "revival cast"
+]
+
+# Movie soundtrack positive keywords - prefer albums with these terms
+MOVIE_SOUNDTRACK_KEYWORDS = ["motion picture", "movie", "film score", "film soundtrack", "original score"]
 
 # Holiday keywords for shuffle playlist search
 HOLIDAY_KEYWORDS = {
@@ -705,6 +712,11 @@ class MusicController:
         latest_keywords = ["latest", "last", "newest", "new", "most recent", "recent", "nuevo", "última", "ultimo", "más reciente"]
         first_keywords = ["first", "oldest", "debut", "earliest", "primero", "primera"]
 
+        # Check if this is a soundtrack search - always prefer movie soundtracks (check BEFORE media_type block)
+        is_soundtrack_search = "soundtrack" in query_lower or "ost" in query_lower
+        if is_soundtrack_search:
+            _LOGGER.info("Detected soundtrack search - will prefer movie soundtracks and filter out Broadway")
+
         if media_type == "album":
             # Check for ordinals (second, third, etc.)
             for ordinal_word, ordinal_num in ORDINALS.items():
@@ -738,10 +750,10 @@ class MusicController:
                     _LOGGER.info("Detected album type filter: '%s' (keyword: %s)", type_value, type_keyword)
                     break
 
-            # Check if this is a soundtrack search - always prefer movie soundtracks
-            is_soundtrack_search = album_type_filter == "soundtrack" or "soundtrack" in query_lower or "ost" in query_lower
-            if is_soundtrack_search:
-                _LOGGER.info("Detected soundtrack search - will prefer movie soundtracks and filter out Broadway")
+            # Also check if album_type_filter detected soundtrack
+            if album_type_filter == "soundtrack" and not is_soundtrack_search:
+                is_soundtrack_search = True
+                _LOGGER.info("Detected soundtrack via album_type_filter")
 
             # Check for year-based album requests (e.g., "2020 album", "album from 2019")
             album_year = None
@@ -1129,7 +1141,7 @@ class MusicController:
             search_query = f"{query} {artist}" if artist else query
 
             # For soundtrack searches, add "motion picture" to prefer movie soundtracks
-            if is_soundtrack_search and media_type == "album":
+            if is_soundtrack_search:
                 search_query = f"{search_query} motion picture"
                 _LOGGER.info("Added 'motion picture' to soundtrack search: '%s'", search_query)
 
@@ -1187,17 +1199,42 @@ class MusicController:
                                        album, len(results))
 
                 # For soundtrack searches, filter out Broadway/cast recordings - only want movie soundtracks
-                if is_soundtrack_search and try_type == "album" and results:
-                    non_broadway_results = [
-                        r for r in results
-                        if not any(kw in (r.get("name") or r.get("title") or "").lower() for kw in BROADWAY_EXCLUSION_KEYWORDS)
-                    ]
-                    if non_broadway_results:
-                        _LOGGER.info("Filtered out Broadway: %d albums -> %d movie soundtracks",
-                                    len(results), len(non_broadway_results))
-                        results = non_broadway_results
+                if is_soundtrack_search and results:
+                    def get_item_names(item):
+                        """Get item name and album name for checking."""
+                        item_name = (item.get("name") or item.get("title") or "").lower()
+                        album_name = ""
+                        album_info = item.get("album", {})
+                        if isinstance(album_info, dict):
+                            album_name = (album_info.get("name") or album_info.get("title") or "").lower()
+                        return item_name, album_name
+
+                    def is_broadway(item):
+                        """Check if item or its album contains Broadway keywords."""
+                        item_name, album_name = get_item_names(item)
+                        combined = f"{item_name} {album_name}"
+                        return any(kw in combined for kw in BROADWAY_EXCLUSION_KEYWORDS)
+
+                    def is_movie_soundtrack(item):
+                        """Check if item or its album contains movie soundtrack keywords."""
+                        item_name, album_name = get_item_names(item)
+                        combined = f"{item_name} {album_name}"
+                        return any(kw in combined for kw in MOVIE_SOUNDTRACK_KEYWORDS)
+
+                    # First, try to find movie soundtracks specifically
+                    movie_results = [r for r in results if is_movie_soundtrack(r) and not is_broadway(r)]
+                    if movie_results:
+                        _LOGGER.info("Found %d movie soundtracks out of %d results", len(movie_results), len(results))
+                        results = movie_results
                     else:
-                        _LOGGER.warning("All results were Broadway/cast recordings, using original results")
+                        # Fall back to filtering out Broadway
+                        non_broadway_results = [r for r in results if not is_broadway(r)]
+                        if non_broadway_results:
+                            _LOGGER.info("Filtered out Broadway: %d results -> %d non-Broadway",
+                                        len(results), len(non_broadway_results))
+                            results = non_broadway_results
+                        else:
+                            _LOGGER.warning("All results were Broadway/cast recordings - no movie soundtrack found")
 
                 query_lower = query.lower()
                 artist_lower = artist.lower() if artist else ""
