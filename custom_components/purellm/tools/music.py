@@ -336,6 +336,21 @@ ALBUM_TYPE_KEYWORDS = {
     "ep": "ep",
 }
 
+# Soundtrack variant keywords - movie vs broadway/theater
+SOUNDTRACK_VARIANT_KEYWORDS = {
+    # Movie/film soundtracks - these terms help find motion picture soundtracks
+    "movie": "motion picture",
+    "film": "motion picture",
+    "motion picture": "motion picture",
+    # Broadway/theater soundtracks - these terms help find cast recordings
+    "broadway": "broadway cast",
+    "original cast": "original cast",
+    "cast recording": "cast recording",
+    "theater": "broadway cast",
+    "theatre": "broadway cast",
+    "stage": "broadway cast",
+}
+
 # Holiday keywords for shuffle playlist search
 HOLIDAY_KEYWORDS = {
     # Christmas
@@ -735,6 +750,14 @@ class MusicController:
                     _LOGGER.info("Detected album type filter: '%s' (keyword: %s)", type_value, type_keyword)
                     break
 
+            # Check for soundtrack variant keywords (movie vs broadway)
+            soundtrack_variant = None
+            for variant_keyword, variant_value in SOUNDTRACK_VARIANT_KEYWORDS.items():
+                if variant_keyword in query_lower:
+                    soundtrack_variant = variant_value
+                    _LOGGER.info("Detected soundtrack variant: '%s' (keyword: %s)", variant_value, variant_keyword)
+                    break
+
             # Check for year-based album requests (e.g., "2020 album", "album from 2019")
             album_year = None
             year_patterns = [
@@ -1119,6 +1142,11 @@ class MusicController:
 
             # Standard search (non-modifier path)
             search_query = f"{query} {artist}" if artist else query
+
+            # Include soundtrack variant in search query (e.g., "motion picture" for movie soundtracks)
+            if soundtrack_variant and media_type == "album":
+                search_query = f"{search_query} {soundtrack_variant}"
+                _LOGGER.info("Added soundtrack variant to search: '%s'", search_query)
 
             # NO cascading - search ONLY the requested type
             search_types_to_try = [media_type]
