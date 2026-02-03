@@ -36,6 +36,8 @@ ANSWER_SCHEMA = vol.Schema({
 
 ASK_AND_ACT_SCHEMA = vol.Schema({
     vol.Required("satellite_entity_id"): cv.entity_id,
+    vol.Required("media_player_entity_id"): cv.entity_id,
+    vol.Required("tts_entity_id"): cv.entity_id,
     vol.Required("question"): cv.string,
     vol.Required("answers"): vol.All(cv.ensure_list, [ANSWER_SCHEMA]),
 })
@@ -59,83 +61,104 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     """Handle the ask_and_act service call.
 
     This service leverages the LLM to:
-    1. Speak a question via start_conversation
-    2. Listen for user response
+    1. Speak a question via TTS
+    2. Listen for user response via satellite
     3. LLM executes the appropriate action based on response
     4. LLM speaks confirmation
 
     The LLM handles action execution via its control_device tool.
     """
     satellite_entity_id = call.data["satellite_entity_id"]
+    media_player_entity_id = call.data["media_player_entity_id"]
+    tts_entity_id = call.data["tts_entity_id"]
     question = call.data["question"]
     answers = call.data["answers"]
 
     _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s", question, satellite_entity_id)
 
+    # Step 1: Speak the question via TTS
+    try:
+        await hass.services.async_call(
+            "tts", "speak",
+            {
+                "entity_id": tts_entity_id,
+                "media_player_entity_id": media_player_entity_id,
+                "message": question,
+            },
+            blocking=True,
+        )
+        _LOGGER.debug("ask_and_act: TTS spoke question")
+    except Exception as err:
+        _LOGGER.error("ask_and_act: TTS failed: %s", err)
+        return {"error": f"TTS failed: {err}"}
+
+    # Step 2: Wait for TTS to finish playing
+    await asyncio.sleep(2.5)
+
     # Build the extra_system_prompt that instructs the LLM what to do
     prompt_parts = [
-        f"CONTEXT: You just asked the user: \"{question}\"",
+        f"The user was just asked: \"{question}\"",
         "",
-        "INSTRUCTIONS:",
-        "Based on the user's response, you MUST take ONE of the following actions:",
+        "YOU MUST FOLLOW THESE INSTRUCTIONS EXACTLY:",
         "",
     ]
 
     for answer in answers:
-        answer_id = answer["id"]
         sentences = answer["sentences"]
         sentences_str = ", ".join(f'"{s}"' for s in sentences)
-
-        prompt_parts.append(f"If user says {sentences_str} (or similar):")
 
         if "action" in answer:
             action = answer["action"]
             service = action["service"]
             target = action.get("target", {})
             data = action.get("data", {})
-
-            # Get the entity_id from target
             entity_id = target.get("entity_id", "")
 
-            # Build action description based on service type
             if service.startswith("light.turn_on"):
                 brightness = data.get("brightness_pct", 100)
                 color_temp = data.get("color_temp_kelvin", 4000)
-                prompt_parts.append(f"  -> Call control_device with entity_id=\"{entity_id}\", action=\"turn_on\", brightness={brightness}, color_temp={color_temp}")
+                prompt_parts.append(f"If user says {sentences_str} or similar affirmative:")
+                prompt_parts.append(f"  1. FIRST call control_device(entity_id=\"{entity_id}\", action=\"turn_on\", brightness={brightness}, color_temp={color_temp})")
+                if "response" in answer:
+                    prompt_parts.append(f"  2. AFTER the tool call succeeds, say: \"{answer['response']}\"")
             elif service.startswith("light.turn_off"):
-                prompt_parts.append(f"  -> Call control_device with entity_id=\"{entity_id}\", action=\"turn_off\"")
-            elif service.startswith("switch.turn_on"):
-                prompt_parts.append(f"  -> Call control_device with entity_id=\"{entity_id}\", action=\"turn_on\"")
-            elif service.startswith("switch.turn_off"):
-                prompt_parts.append(f"  -> Call control_device with entity_id=\"{entity_id}\", action=\"turn_off\"")
-            else:
-                # Generic service call instruction
-                prompt_parts.append(f"  -> Execute service {service} on {entity_id}")
-
-        if "response" in answer:
-            prompt_parts.append(f"  -> Then say: \"{answer['response']}\"")
+                prompt_parts.append(f"If user says {sentences_str} or similar:")
+                prompt_parts.append(f"  1. FIRST call control_device(entity_id=\"{entity_id}\", action=\"turn_off\")")
+                if "response" in answer:
+                    prompt_parts.append(f"  2. AFTER the tool call succeeds, say: \"{answer['response']}\"")
+            elif service.startswith("switch."):
+                action_type = "turn_on" if "turn_on" in service else "turn_off"
+                prompt_parts.append(f"If user says {sentences_str} or similar:")
+                prompt_parts.append(f"  1. FIRST call control_device(entity_id=\"{entity_id}\", action=\"{action_type}\")")
+                if "response" in answer:
+                    prompt_parts.append(f"  2. AFTER the tool call succeeds, say: \"{answer['response']}\"")
+        else:
+            # No action, just respond
+            prompt_parts.append(f"If user says {sentences_str} or similar:")
+            if "response" in answer:
+                prompt_parts.append(f"  -> Just say: \"{answer['response']}\"")
 
         prompt_parts.append("")
 
     prompt_parts.extend([
-        "IMPORTANT:",
-        "- You MUST call the control_device tool to execute the action",
-        "- Use entity_id parameter (NOT device parameter) when calling control_device",
-        "- Do NOT just describe the action - actually execute it",
-        "- Keep your spoken response brief",
+        "CRITICAL RULES:",
+        "- You MUST call control_device BEFORE saying anything",
+        "- Use entity_id parameter, NOT device parameter",
+        "- Do NOT say 'Done' or any response until AFTER the tool call completes",
+        "- If you don't call the tool first, the action will NOT happen",
     ])
 
     extra_system_prompt = "\n".join(prompt_parts)
     _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
 
-    # Use start_conversation to speak the question AND listen for response
-    # start_conversation handles: TTS -> STT -> LLM -> TTS response
+    # Step 3: Use start_conversation to listen for response
+    # Empty start_message = just listen, don't speak
     try:
         await hass.services.async_call(
             "assist_satellite", "start_conversation",
             {
                 "entity_id": satellite_entity_id,
-                "start_message": question,
+                "start_message": "",
                 "extra_system_prompt": extra_system_prompt,
                 "preannounce": False,
             },
