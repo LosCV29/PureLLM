@@ -556,6 +556,10 @@ async def get_sports_info(
                                 "summary": f"{away_name} {away_score} @ {home_name} {home_score}"
                             }
 
+                        # Explicitly mark when no last_game found for last_game queries
+                        if not last_game and query_type in ["last_game", "both"]:
+                            result["no_last_game"] = True
+
                     # Find next upcoming game from schedule if not found on scoreboard
                     if not next_game_from_scoreboard and query_type in ["next_game", "both"]:
                         now_utc = datetime.now(timezone.utc)
@@ -624,7 +628,10 @@ async def get_sports_info(
             response_parts.append(result["standings"]["summary"])
         if "live_game" in result:
             response_parts.append(result["live_game"]["summary"])
-        if "last_game" in result:
+        # Explicitly report when no last_game data found (prevents LLM hallucination)
+        if result.get("no_last_game"):
+            response_parts.append(f"No recent completed game data available for {full_name}")
+        elif "last_game" in result:
             lg = result["last_game"]
             date_str = lg['date']
             # Build natural sentence for last game
