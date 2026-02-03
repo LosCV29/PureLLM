@@ -652,13 +652,21 @@ class MusicController:
         _LOGGER.info("Playing media: uri='%s', type='%s' on %s (wake_cast=%s, adb_entity=%s)",
                     media_id, media_type, player, self._wake_cast_before_play, self._wake_cast_adb_entity)
 
-        # Wake cast screen before playing (fixes Chromecast UI not showing after Home/Back)
-        # This wakes the display and brings mediashell to foreground without killing the cast session
+        await self._hass.services.async_call(
+            "music_assistant", "play_media",
+            {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
+            target={"entity_id": player},
+            blocking=True
+        )
+
+        # Wake cast screen AFTER playing starts (fixes Chromecast UI not showing after Home/Back)
+        # The cast session must be active before we can bring the UI to foreground
         if self._wake_cast_before_play and self._wake_cast_adb_entity:
-            _LOGGER.warning("WAKE CAST: Waking display and bringing cast UI to foreground via ADB on %s", self._wake_cast_adb_entity)
+            _LOGGER.warning("WAKE CAST: Bringing cast UI to foreground via ADB on %s", self._wake_cast_adb_entity)
             try:
+                # Brief delay to let cast session establish
+                await asyncio.sleep(0.5)
                 # Wake the display and use monkey command to bring mediashell to foreground
-                # monkey simulates launching from the app launcher which reliably brings it to front
                 adb_command = "input keyevent KEYCODE_WAKEUP && monkey -p com.google.android.apps.mediashell -c android.intent.category.LAUNCHER 1"
                 await self._hass.services.async_call(
                     "androidtv", "adb_command",
@@ -666,19 +674,10 @@ class MusicController:
                     target={"entity_id": self._wake_cast_adb_entity},
                     blocking=True
                 )
-                _LOGGER.warning("WAKE CAST: Display wake + cast UI foreground completed via %s", self._wake_cast_adb_entity)
-                # Brief wait for the activity to come to foreground
-                await asyncio.sleep(1.0)
+                _LOGGER.warning("WAKE CAST: Cast UI foreground completed via %s", self._wake_cast_adb_entity)
             except Exception as e:
                 # Don't fail playback if ADB command fails
                 _LOGGER.warning("WAKE CAST: ADB command failed on %s: %s", self._wake_cast_adb_entity, e)
-
-        await self._hass.services.async_call(
-            "music_assistant", "play_media",
-            {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
-            target={"entity_id": player},
-            blocking=True
-        )
 
         return True
 
