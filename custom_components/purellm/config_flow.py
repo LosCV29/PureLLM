@@ -120,6 +120,8 @@ from .const import (
     # Cast/Chromecast Settings
     CONF_WAKE_CAST_BEFORE_PLAY,
     DEFAULT_WAKE_CAST_BEFORE_PLAY,
+    CONF_WAKE_CAST_ADB_ENTITY,
+    DEFAULT_WAKE_CAST_ADB_ENTITY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -1288,6 +1290,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             new_room = user_input.get("room_name", "").strip().lower()
             action = user_input.get("action", "add")
             wake_cast = user_input.get(CONF_WAKE_CAST_BEFORE_PLAY, DEFAULT_WAKE_CAST_BEFORE_PLAY)
+            adb_entity = user_input.get(CONF_WAKE_CAST_ADB_ENTITY, DEFAULT_WAKE_CAST_ADB_ENTITY)
 
             if action == "delete" and selected:
                 # Delete selected room
@@ -1303,17 +1306,17 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 # Add new room mapping
                 rooms_dict[new_room] = new_player
             elif not selected and not new_player and not new_room:
-                # Save wake cast setting and return to menu
-                new_options = {**self._entry.options, CONF_WAKE_CAST_BEFORE_PLAY: wake_cast}
+                # Save wake cast settings and return to menu
+                new_options = {**self._entry.options, CONF_WAKE_CAST_BEFORE_PLAY: wake_cast, CONF_WAKE_CAST_ADB_ENTITY: adb_entity}
                 return self.async_create_entry(title="", data=new_options)
 
-            # Save updated mappings and wake cast setting
+            # Save updated mappings and wake cast settings
             if rooms_dict:
                 updated_mapping = "\n".join([f"{k}: {v}" for k, v in rooms_dict.items()])
             else:
                 updated_mapping = ""
 
-            new_options = {**self._entry.options, CONF_ROOM_PLAYER_MAPPING: updated_mapping, CONF_WAKE_CAST_BEFORE_PLAY: wake_cast}
+            new_options = {**self._entry.options, CONF_ROOM_PLAYER_MAPPING: updated_mapping, CONF_WAKE_CAST_BEFORE_PLAY: wake_cast, CONF_WAKE_CAST_ADB_ENTITY: adb_entity}
             self.hass.config_entries.async_update_entry(self._entry, options=new_options)
             current_mapping = updated_mapping
             # Rebuild dict for display
@@ -1373,6 +1376,15 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_WAKE_CAST_BEFORE_PLAY,
                         default=current.get(CONF_WAKE_CAST_BEFORE_PLAY, DEFAULT_WAKE_CAST_BEFORE_PLAY),
                     ): cv.boolean,
+                    vol.Optional(
+                        CONF_WAKE_CAST_ADB_ENTITY,
+                        default=current.get(CONF_WAKE_CAST_ADB_ENTITY, DEFAULT_WAKE_CAST_ADB_ENTITY),
+                    ): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="media_player",
+                            multiple=False,
+                        )
+                    ),
                 }
             ),
         )

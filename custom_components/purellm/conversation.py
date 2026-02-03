@@ -77,6 +77,8 @@ from .const import (
     DEFAULT_SOFABATON_ACTIVITIES,
     CONF_WAKE_CAST_BEFORE_PLAY,
     DEFAULT_WAKE_CAST_BEFORE_PLAY,
+    CONF_WAKE_CAST_ADB_ENTITY,
+    DEFAULT_WAKE_CAST_ADB_ENTITY,
     DEFAULT_API_KEY,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
@@ -324,8 +326,9 @@ class PureLLMConversationEntity(ConversationEntity):
             self.sofabaton_activities = []
 
         # Cast/Chromecast settings
-        # When enabled, calls media_player.turn_on before playing to wake Chromecast screen
+        # When enabled, restarts mediashell via ADB before playing to wake Chromecast screen
         self.wake_cast_before_play = config.get(CONF_WAKE_CAST_BEFORE_PLAY, DEFAULT_WAKE_CAST_BEFORE_PLAY)
+        self.wake_cast_adb_entity = config.get(CONF_WAKE_CAST_ADB_ENTITY, DEFAULT_WAKE_CAST_ADB_ENTITY)
 
         # Clear caches on config update
         self._tools = None
