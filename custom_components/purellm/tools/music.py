@@ -668,7 +668,7 @@ class MusicController:
                 )
                 _LOGGER.warning("WAKE CAST: mediashell restart completed via %s", self._wake_cast_adb_entity)
                 # Wait for the cast service to restart before playing
-                await asyncio.sleep(1.5)
+                await asyncio.sleep(2.0)
             except Exception as e:
                 # Don't fail playback if ADB command fails
                 _LOGGER.warning("WAKE CAST: ADB command failed on %s: %s", self._wake_cast_adb_entity, e)
