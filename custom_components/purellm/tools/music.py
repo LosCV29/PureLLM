@@ -636,13 +636,13 @@ class MusicController:
         Returns:
             True if command was sent successfully
         """
-        _LOGGER.info("Playing media: uri='%s', type='%s' on %s",
-                    media_id, media_type, player)
+        _LOGGER.info("Playing media: uri='%s', type='%s' on %s (wake_cast=%s)",
+                    media_id, media_type, player, self._wake_cast_before_play)
 
         # Wake cast screen before playing (fixes Chromecast UI not showing after Home/Back)
         # This calls media_player.turn_on which activates the cast receiver
         if self._wake_cast_before_play:
-            _LOGGER.info("Waking cast screen with turn_on for %s", player)
+            _LOGGER.warning("WAKE CAST: Calling turn_on for %s", player)
             try:
                 await self._hass.services.async_call(
                     "media_player", "turn_on",
@@ -650,11 +650,12 @@ class MusicController:
                     target={"entity_id": player},
                     blocking=True
                 )
+                _LOGGER.warning("WAKE CAST: turn_on completed for %s", player)
                 # Small delay to let the cast screen activate
                 await asyncio.sleep(0.5)
             except Exception as e:
                 # Don't fail playback if turn_on fails (some players may not support it)
-                _LOGGER.debug("Wake cast turn_on failed for %s (non-fatal): %s", player, e)
+                _LOGGER.warning("WAKE CAST: turn_on failed for %s: %s", player, e)
 
         await self._hass.services.async_call(
             "music_assistant", "play_media",
