@@ -5,6 +5,7 @@ import asyncio
 import codecs
 import logging
 import re
+import aiohttp
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -56,6 +57,203 @@ def _normalize_unicode(text: str | None) -> str:
         _LOGGER.debug("Encode/decode normalization failed: %s", e)
 
     return text
+
+
+async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> int:
+    """Look up album release year from MusicBrainz API.
+
+    Args:
+        album_name: Name of the album
+        artist_name: Name of the artist
+
+    Returns:
+        Release year as int, or 0 if not found
+    """
+    try:
+        # Clean up album name for search (remove special editions, etc.)
+        clean_album = re.sub(r'\s*[\(\[].*?[\)\]]', '', album_name).strip()
+        clean_album = re.sub(r'\s*[-–].*?(edition|version|deluxe|remaster).*$', '', clean_album, flags=re.IGNORECASE).strip()
+
+        # MusicBrainz API endpoint for release-group (albums)
+        url = "https://musicbrainz.org/ws/2/release-group"
+        params = {
+            "query": f'releasegroup:"{clean_album}" AND artist:"{artist_name}"',
+            "fmt": "json",
+            "limit": 5
+        }
+        headers = {
+            "User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    release_groups = data.get("release-groups", [])
+
+                    if release_groups:
+                        # Find best match - prefer exact title match
+                        for rg in release_groups:
+                            rg_title = rg.get("title", "").lower()
+                            if clean_album.lower() in rg_title or rg_title in clean_album.lower():
+                                first_release = rg.get("first-release-date", "")
+                                if first_release and len(first_release) >= 4:
+                                    year = int(first_release[:4])
+                                    _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s'", year, album_name, artist_name)
+                                    return year
+
+                        # Fallback to first result if no exact match
+                        first_release = release_groups[0].get("first-release-date", "")
+                        if first_release and len(first_release) >= 4:
+                            year = int(first_release[:4])
+                            _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s' (fallback)", year, album_name, artist_name)
+                            return year
+                else:
+                    _LOGGER.debug("MusicBrainz API returned status %d", response.status)
+
+    except asyncio.TimeoutError:
+        _LOGGER.debug("MusicBrainz lookup timed out for '%s' by '%s'", album_name, artist_name)
+    except Exception as e:
+        _LOGGER.debug("MusicBrainz lookup failed for '%s' by '%s': %s", album_name, artist_name, e)
+
+    return 0
+
+
+async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str = None) -> list[dict]:
+    """Get artist's discography from MusicBrainz with album types and years.
+
+    Args:
+        artist_name: Name of the artist
+        album_type: Optional filter - 'studio', 'live', 'compilation', 'soundtrack', 'ep', 'single'
+
+    Returns:
+        List of dicts with: name, year, primary_type, secondary_types
+    """
+    try:
+        # First, find the artist ID
+        url = "https://musicbrainz.org/ws/2/artist"
+        params = {
+            "query": f'artist:"{artist_name}"',
+            "fmt": "json",
+            "limit": 1
+        }
+        headers = {
+            "User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"
+        }
+
+        async with aiohttp.ClientSession() as session:
+            # Get artist ID
+            async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
+                if response.status != 200:
+                    return []
+                data = await response.json()
+                artists = data.get("artists", [])
+                if not artists:
+                    return []
+                artist_id = artists[0].get("id")
+                if not artist_id:
+                    return []
+
+            # MusicBrainz rate limit - wait 1 second between requests
+            await asyncio.sleep(1)
+
+            # Get artist's release groups (albums)
+            url = f"https://musicbrainz.org/ws/2/release-group"
+            params = {
+                "artist": artist_id,
+                "type": "album|ep",  # Get albums and EPs
+                "fmt": "json",
+                "limit": 100
+            }
+
+            async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
+                if response.status != 200:
+                    return []
+                data = await response.json()
+                release_groups = data.get("release-groups", [])
+
+                discography = []
+                for rg in release_groups:
+                    name = rg.get("title", "")
+                    first_release = rg.get("first-release-date", "")
+                    year = int(first_release[:4]) if first_release and len(first_release) >= 4 else 0
+                    primary_type = (rg.get("primary-type") or "").lower()
+                    secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
+
+                    # Determine album category
+                    is_studio = primary_type == "album" and not secondary_types
+                    is_live = "live" in secondary_types
+                    is_compilation = "compilation" in secondary_types
+                    is_soundtrack = "soundtrack" in secondary_types
+                    is_ep = primary_type == "ep"
+                    is_single = primary_type == "single"
+
+                    # Apply type filter if specified
+                    if album_type:
+                        type_lower = album_type.lower()
+                        if type_lower == "studio" and not is_studio:
+                            continue
+                        elif type_lower == "live" and not is_live:
+                            continue
+                        elif type_lower in ("compilation", "greatest hits", "best of") and not is_compilation:
+                            continue
+                        elif type_lower == "soundtrack" and not is_soundtrack:
+                            continue
+                        elif type_lower == "ep" and not is_ep:
+                            continue
+
+                    discography.append({
+                        "name": name,
+                        "year": year,
+                        "primary_type": primary_type,
+                        "secondary_types": secondary_types,
+                        "is_studio": is_studio,
+                        "is_live": is_live,
+                        "is_compilation": is_compilation,
+                    })
+
+                # Sort by year
+                discography.sort(key=lambda x: (x["year"] == 0, x["year"]))
+                _LOGGER.info("MusicBrainz: Found %d albums for '%s'%s",
+                            len(discography), artist_name,
+                            f" (filtered by {album_type})" if album_type else "")
+                return discography
+
+    except asyncio.TimeoutError:
+        _LOGGER.debug("MusicBrainz discography lookup timed out for '%s'", artist_name)
+    except Exception as e:
+        _LOGGER.debug("MusicBrainz discography lookup failed for '%s': %s", artist_name, e)
+
+    return []
+
+
+# Ordinal number mapping
+ORDINALS = {
+    "first": 1, "1st": 1,
+    "second": 2, "2nd": 2,
+    "third": 3, "3rd": 3,
+    "fourth": 4, "4th": 4,
+    "fifth": 5, "5th": 5,
+    "sixth": 6, "6th": 6,
+    "seventh": 7, "7th": 7,
+    "eighth": 8, "8th": 8,
+    "ninth": 9, "9th": 9,
+    "tenth": 10, "10th": 10,
+}
+
+# Album type keywords mapping
+ALBUM_TYPE_KEYWORDS = {
+    "studio": "studio",
+    "live": "live",
+    "concert": "live",
+    "compilation": "compilation",
+    "greatest hits": "compilation",
+    "best of": "compilation",
+    "hits": "compilation",
+    "soundtrack": "soundtrack",
+    "ost": "soundtrack",
+    "ep": "ep",
+}
 
 
 class MusicController:
@@ -358,22 +556,44 @@ class MusicController:
 
         # Detect smart album modifiers
         album_modifier = None
+        album_ordinal = None  # For "second", "third", etc.
+        album_type_filter = None  # For "studio", "live", "compilation", etc.
         query_lower = query.lower()
         latest_keywords = ["latest", "last", "newest", "new", "most recent", "recent", "nuevo", "última", "ultimo", "más reciente"]
         first_keywords = ["first", "oldest", "debut", "earliest", "primero", "primera"]
 
         if media_type == "album":
-            for kw in latest_keywords:
-                if kw in query_lower:
-                    album_modifier = "latest"
-                    _LOGGER.info("Detected album modifier: 'latest' (keyword: %s)", kw)
-                    break
-            if not album_modifier:
-                for kw in first_keywords:
-                    if kw in query_lower:
+            # Check for ordinals (second, third, etc.)
+            for ordinal_word, ordinal_num in ORDINALS.items():
+                if ordinal_word in query_lower:
+                    if ordinal_word in ("first", "1st"):
                         album_modifier = "first"
-                        _LOGGER.info("Detected album modifier: 'first' (keyword: %s)", kw)
+                        _LOGGER.info("Detected album modifier: 'first' (ordinal)")
+                    else:
+                        album_ordinal = ordinal_num
+                        _LOGGER.info("Detected album ordinal: %d (keyword: %s)", ordinal_num, ordinal_word)
+                    break
+
+            # Check for latest/first keywords (if not already set by ordinal)
+            if not album_modifier and not album_ordinal:
+                for kw in latest_keywords:
+                    if kw in query_lower:
+                        album_modifier = "latest"
+                        _LOGGER.info("Detected album modifier: 'latest' (keyword: %s)", kw)
                         break
+                if not album_modifier:
+                    for kw in first_keywords:
+                        if kw in query_lower:
+                            album_modifier = "first"
+                            _LOGGER.info("Detected album modifier: 'first' (keyword: %s)", kw)
+                            break
+
+            # Check for album type keywords (studio, live, compilation, etc.)
+            for type_keyword, type_value in ALBUM_TYPE_KEYWORDS.items():
+                if type_keyword in query_lower:
+                    album_type_filter = type_value
+                    _LOGGER.info("Detected album type filter: '%s' (keyword: %s)", type_value, type_keyword)
+                    break
 
         try:
             # Get Music Assistant config entry
@@ -503,6 +723,88 @@ class MusicController:
 
                 return {"error": f"Could not find album containing '{song_on_album}'" + (f" by {artist}" if artist else "")}
 
+            # Handle ordinal album requests (second, third album) or type-filtered requests (studio, live)
+            # These require MusicBrainz for accurate discography data
+            if artist and (album_ordinal or album_type_filter):
+                _LOGGER.warning("MUSIC DEBUG: MusicBrainz discography search - ordinal=%s, type='%s', artist='%s', album_filter='%s'",
+                               album_ordinal, album_type_filter, artist, album)
+
+                # Get discography from MusicBrainz (with optional type filter)
+                discography = await _get_artist_discography_musicbrainz(artist, album_type_filter)
+
+                if discography:
+                    # Filter by album name if specified (e.g., "christmas")
+                    if album:
+                        album_filter_lower = album.lower()
+                        filtered_discog = [d for d in discography if album_filter_lower in d["name"].lower()]
+                        if filtered_discog:
+                            _LOGGER.warning("MUSIC DEBUG: Filtered discography from %d to %d albums matching '%s'",
+                                           len(discography), len(filtered_discog), album)
+                            discography = filtered_discog
+
+                    # Select album based on ordinal or modifier
+                    target_album_name = None
+                    if album_ordinal:
+                        # Get the nth album (1-indexed)
+                        if album_ordinal <= len(discography):
+                            target_album_name = discography[album_ordinal - 1]["name"]
+                            target_year = discography[album_ordinal - 1]["year"]
+                            _LOGGER.warning("MUSIC DEBUG: Selected ordinal #%d album: '%s' (%d)", album_ordinal, target_album_name, target_year)
+                        else:
+                            return {"error": f"{artist} only has {len(discography)} albums" + (f" of type '{album_type_filter}'" if album_type_filter else "")}
+                    elif album_modifier == "latest":
+                        # Get most recent (last in chronological list)
+                        target_album_name = discography[-1]["name"]
+                        _LOGGER.warning("MUSIC DEBUG: Selected latest album: '%s' (%d)", target_album_name, discography[-1]["year"])
+                    elif album_modifier == "first":
+                        # Get oldest (first in chronological list)
+                        target_album_name = discography[0]["name"]
+                        _LOGGER.warning("MUSIC DEBUG: Selected first album: '%s' (%d)", target_album_name, discography[0]["year"])
+
+                    if target_album_name:
+                        # Search Music Assistant for this specific album
+                        search_result = await self._hass.services.async_call(
+                            "music_assistant", "search",
+                            {"config_entry_id": ma_config_entry_id, "name": f"{target_album_name} {artist}", "media_type": ["album"], "limit": 5},
+                            blocking=True, return_response=True
+                        )
+
+                        if search_result:
+                            albums = []
+                            if isinstance(search_result, dict):
+                                albums = search_result.get("albums", [])
+                            elif isinstance(search_result, list):
+                                albums = search_result
+
+                            if albums:
+                                # Find best match
+                                target_lower = target_album_name.lower()
+                                best_album = None
+                                for alb in albums:
+                                    alb_name = (alb.get("name") or alb.get("title") or "").lower()
+                                    if target_lower in alb_name or alb_name in target_lower:
+                                        best_album = alb
+                                        break
+                                if not best_album:
+                                    best_album = albums[0]  # Fallback to first result
+
+                                found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
+                                found_uri = best_album.get("uri") or best_album.get("media_id")
+
+                                for player in target_players:
+                                    await self._play_media(player, found_uri, "album")
+                                    await self._hass.services.async_call(
+                                        "media_player", "shuffle_set",
+                                        {"entity_id": player, "shuffle": False},
+                                        blocking=True
+                                    )
+
+                                return {"status": "playing", "message": f"Playing {found_name} by {artist} in the {room}"}
+
+                        return {"error": f"Found '{target_album_name}' in MusicBrainz but not in your music library"}
+
+                return {"error": f"Could not find discography for {artist}" + (f" (type: {album_type_filter})" if album_type_filter else "")}
+
             # Handle smart album search (latest/first album by artist)
             if album_modifier and artist:
                 _LOGGER.warning("MUSIC DEBUG: Smart album search - modifier='%s', artist='%s', album_filter='%s'", album_modifier, artist, album)
@@ -585,7 +887,20 @@ class MusicController:
                                         alb.get("year") or alb.get("release_date") or "unknown")
 
                         albums_with_year = [(get_year(a), a) for a in matching_albums]
-                        # Include albums even with year=0, but sort them to the end
+
+                        # Check if all years are 0 (missing) - if so, use MusicBrainz to look up years
+                        if all(y == 0 for y, _ in albums_with_year):
+                            _LOGGER.warning("MUSIC DEBUG: All years are 0, querying MusicBrainz for release dates...")
+                            updated_albums = []
+                            for _, alb in albums_with_year:
+                                alb_name = alb.get("name") or alb.get("title") or ""
+                                mb_year = await _lookup_album_year_musicbrainz(alb_name, artist)
+                                updated_albums.append((mb_year, alb))
+                                if mb_year > 0:
+                                    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found year %d for '%s'", mb_year, alb_name)
+                            albums_with_year = updated_albums
+
+                        # Sort: albums with year=0 go to end, then sort by year (desc for latest, asc for first)
                         albums_with_year.sort(key=lambda x: (x[0] == 0, -x[0] if album_modifier == "latest" else x[0]))
 
                         if albums_with_year:
