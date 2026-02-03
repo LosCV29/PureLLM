@@ -1,7 +1,6 @@
 """The PolyVoice integration."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from typing import Any
@@ -36,8 +35,6 @@ ANSWER_SCHEMA = vol.Schema({
 
 ASK_AND_ACT_SCHEMA = vol.Schema({
     vol.Required("satellite_entity_id"): cv.entity_id,
-    vol.Required("media_player_entity_id"): cv.entity_id,
-    vol.Required("tts_entity_id"): cv.entity_id,
     vol.Required("question"): cv.string,
     vol.Required("answers"): vol.All(cv.ensure_list, [ANSWER_SCHEMA]),
 })
@@ -61,39 +58,17 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     """Handle the ask_and_act service call.
 
     This service leverages the LLM to:
-    1. Speak a question via TTS
-    2. Listen for user response via satellite
-    3. LLM executes the appropriate action based on response
-    4. LLM speaks confirmation
+    1. Speak question AND listen via start_conversation (one smooth flow)
+    2. LLM executes the appropriate action based on response
+    3. LLM speaks confirmation
 
     The LLM handles action execution via its control_device tool.
     """
     satellite_entity_id = call.data["satellite_entity_id"]
-    media_player_entity_id = call.data["media_player_entity_id"]
-    tts_entity_id = call.data["tts_entity_id"]
     question = call.data["question"]
     answers = call.data["answers"]
 
     _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s", question, satellite_entity_id)
-
-    # Step 1: Speak the question via TTS
-    try:
-        await hass.services.async_call(
-            "tts", "speak",
-            {
-                "entity_id": tts_entity_id,
-                "media_player_entity_id": media_player_entity_id,
-                "message": question,
-            },
-            blocking=True,
-        )
-        _LOGGER.debug("ask_and_act: TTS spoke question")
-    except Exception as err:
-        _LOGGER.error("ask_and_act: TTS failed: %s", err)
-        return {"error": f"TTS failed: {err}"}
-
-    # Step 2: Wait for TTS to finish playing
-    await asyncio.sleep(2.5)
 
     # Build the extra_system_prompt that instructs the LLM what to do
     prompt_parts = [
@@ -151,14 +126,14 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     extra_system_prompt = "\n".join(prompt_parts)
     _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
 
-    # Step 3: Use start_conversation to listen for response
-    # Empty start_message = just listen, don't speak
+    # Use start_conversation with question as start_message
+    # This speaks the question AND enters listening mode in one smooth flow
     try:
         await hass.services.async_call(
             "assist_satellite", "start_conversation",
             {
                 "entity_id": satellite_entity_id,
-                "start_message": "",
+                "start_message": question,
                 "extra_system_prompt": extra_system_prompt,
                 "preannounce": False,
             },
