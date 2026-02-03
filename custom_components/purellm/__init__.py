@@ -131,7 +131,7 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     # Use start_conversation to speak the question AND listen for response
     # start_conversation handles: TTS -> STT -> LLM -> TTS response
     try:
-        result = await hass.services.async_call(
+        await hass.services.async_call(
             "assist_satellite", "start_conversation",
             {
                 "entity_id": satellite_entity_id,
@@ -140,10 +140,9 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
                 "preannounce": False,
             },
             blocking=True,
-            return_response=True,
         )
-        _LOGGER.info("ask_and_act: start_conversation completed, result: %s", result)
-        return {"success": True, "result": result}
+        _LOGGER.info("ask_and_act: start_conversation completed")
+        return {"success": True}
     except Exception as err:
         _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
         return {"error": f"start_conversation failed: {err}"}
