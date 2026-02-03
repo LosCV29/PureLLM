@@ -158,7 +158,7 @@ When user asks about Champions League/UCL: MUST include 'Champions League' in te
 MUSIC ROOMS: Extract room separately from query. Spanish: sala=living room, cocina=kitchen, recámara=bedroom.
 STT mishearings: salad/salah/salla→sala, kosina→cocina, banyo→baño.
 For "album with [song] on it" use song_on_album param, NOT query.
-SOUNDTRACKS: For movie soundtracks include "movie" in query (e.g., "Wicked movie soundtrack"). For Broadway/theater include "broadway" (e.g., "Wicked broadway soundtrack").
+SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
 """
 
 # =============================================================================
