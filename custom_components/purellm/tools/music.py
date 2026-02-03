@@ -657,9 +657,9 @@ class MusicController:
         if self._wake_cast_before_play and self._wake_cast_adb_entity:
             _LOGGER.warning("WAKE CAST: Waking display and bringing cast UI to foreground via ADB on %s", self._wake_cast_adb_entity)
             try:
-                # Wake the display and launch CastReceiverActivity to bring cast UI to foreground
-                # This preserves any existing cast session instead of killing it
-                adb_command = "input keyevent KEYCODE_WAKEUP && am start -n com.google.android.apps.mediashell/.CastReceiverActivity"
+                # Wake the display and use monkey command to bring mediashell to foreground
+                # monkey simulates launching from the app launcher which reliably brings it to front
+                adb_command = "input keyevent KEYCODE_WAKEUP && monkey -p com.google.android.apps.mediashell -c android.intent.category.LAUNCHER 1"
                 await self._hass.services.async_call(
                     "androidtv", "adb_command",
                     {"command": adb_command},
