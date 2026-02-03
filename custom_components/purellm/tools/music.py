@@ -187,6 +187,7 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
                     is_soundtrack = "soundtrack" in secondary_types
                     is_ep = primary_type == "ep"
                     is_single = primary_type == "single"
+                    is_album = primary_type == "album"  # Any type of album (studio, live, compilation, etc.)
 
                     # Apply type filter if specified
                     if album_type:
@@ -201,6 +202,10 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
                             continue
                         elif type_lower == "ep" and not is_ep:
                             continue
+                    else:
+                        # Default: only include actual albums (not singles or EPs)
+                        if not is_album:
+                            continue
 
                     discography.append({
                         "name": name,
@@ -214,9 +219,13 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
 
                 # Sort by year
                 discography.sort(key=lambda x: (x["year"] == 0, x["year"]))
-                _LOGGER.info("MusicBrainz: Found %d albums for '%s'%s",
+                _LOGGER.warning("MUSIC DEBUG: MusicBrainz found %d albums for '%s'%s",
                             len(discography), artist_name,
                             f" (filtered by {album_type})" if album_type else "")
+                for i, alb in enumerate(discography[:10]):
+                    _LOGGER.warning("MUSIC DEBUG: MusicBrainz [%d] '%s' (%d) - type: %s%s",
+                                   i+1, alb["name"], alb["year"], alb["primary_type"],
+                                   f" + {alb['secondary_types']}" if alb["secondary_types"] else "")
                 return discography
 
     except asyncio.TimeoutError:
