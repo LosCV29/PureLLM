@@ -1237,9 +1237,18 @@ class MusicController:
                             if any(kw in name for kw in ["film", "movie", "soundtrack"]):
                                 s += 30
 
-                            # STRONG negative: "cast" in artist name (Broadway indicator)
+                            # STRONG negative: Broadway cast indicators in artist name
+                            # But NOT "movie cast" - that's the actual movie soundtrack!
                             if "cast" in r_artist:
-                                s -= 200
+                                if "movie cast" in r_artist or "film cast" in r_artist:
+                                    # This is a movie cast recording - boost it!
+                                    s += 80
+                                elif any(bw in r_artist for bw in ["broadway", "original cast", "london cast", "west end"]):
+                                    # Explicit Broadway indicator
+                                    s -= 200
+                                else:
+                                    # Generic "cast" without "movie" - likely Broadway
+                                    s -= 100
 
                             # Negative: Broadway keywords in album name
                             if _is_broadway_cast_recording(name):
