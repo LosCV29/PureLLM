@@ -336,6 +336,58 @@ ALBUM_TYPE_KEYWORDS = {
     "ep": "ep",
 }
 
+# Broadway cast recording keywords - used to EXCLUDE these from movie soundtrack searches
+BROADWAY_KEYWORDS = [
+    "broadway cast",
+    "original cast recording",
+    "original cast",
+    "london cast",
+    "west end",
+    "revival cast",
+    "off-broadway",
+    "off broadway",
+]
+
+# Movie soundtrack keywords - used to INCLUDE only these for movie soundtrack searches
+MOVIE_SOUNDTRACK_KEYWORDS = [
+    "motion picture",
+    "film soundtrack",
+    "movie soundtrack",
+    "original soundtrack",
+    "music from the film",
+    "music from the movie",
+]
+
+
+def _is_broadway_cast_recording(album_name: str) -> bool:
+    """Check if an album is a Broadway/theater cast recording.
+
+    Args:
+        album_name: Name of the album
+
+    Returns:
+        True if the album appears to be a Broadway cast recording
+    """
+    name_lower = album_name.lower()
+    return any(kw in name_lower for kw in BROADWAY_KEYWORDS)
+
+
+def _is_movie_soundtrack(album_name: str) -> bool:
+    """Check if an album is a movie soundtrack (not Broadway).
+
+    Args:
+        album_name: Name of the album
+
+    Returns:
+        True if the album appears to be a movie soundtrack
+    """
+    name_lower = album_name.lower()
+    # Must contain movie keywords AND not contain broadway keywords
+    has_movie_keyword = any(kw in name_lower for kw in MOVIE_SOUNDTRACK_KEYWORDS)
+    is_broadway = _is_broadway_cast_recording(album_name)
+    return has_movie_keyword and not is_broadway
+
+
 # Holiday keywords for shuffle playlist search
 HOLIDAY_KEYWORDS = {
     # Christmas
@@ -1151,6 +1203,47 @@ class MusicController:
                     else:
                         _LOGGER.warning("No albums matched filter '%s', using all %d results",
                                        album, len(results))
+
+                # Filter Broadway cast recordings vs movie soundtracks for album searches
+                # When searching for soundtracks, prefer movie soundtracks over Broadway cast recordings
+                if try_type == "album" and results:
+                    # Check if user is searching for a soundtrack (ost, soundtrack keywords in query)
+                    is_soundtrack_search = album_type_filter == "soundtrack" or any(
+                        kw in query_lower for kw in ["soundtrack", "ost", "motion picture"]
+                    )
+
+                    if is_soundtrack_search:
+                        # For soundtrack searches, prioritize movie soundtracks and exclude Broadway
+                        movie_soundtracks = [
+                            r for r in results
+                            if _is_movie_soundtrack(r.get("name") or r.get("title") or "")
+                        ]
+                        if movie_soundtracks:
+                            _LOGGER.info("Filtered %d albums to %d movie soundtracks (excluding Broadway)",
+                                        len(results), len(movie_soundtracks))
+                            results = movie_soundtracks
+                        else:
+                            # No explicit movie soundtracks found, at least filter out Broadway cast recordings
+                            non_broadway = [
+                                r for r in results
+                                if not _is_broadway_cast_recording(r.get("name") or r.get("title") or "")
+                            ]
+                            if non_broadway:
+                                _LOGGER.info("Filtered %d albums to %d non-Broadway results",
+                                            len(results), len(non_broadway))
+                                results = non_broadway
+                    else:
+                        # For non-soundtrack album searches, also filter out Broadway cast recordings
+                        # unless the query specifically mentions Broadway
+                        if "broadway" not in query_lower and "cast recording" not in query_lower:
+                            non_broadway = [
+                                r for r in results
+                                if not _is_broadway_cast_recording(r.get("name") or r.get("title") or "")
+                            ]
+                            if non_broadway and len(non_broadway) < len(results):
+                                _LOGGER.info("Filtered out %d Broadway cast recordings from album results",
+                                            len(results) - len(non_broadway))
+                                results = non_broadway
 
                 query_lower = query.lower()
                 artist_lower = artist.lower() if artist else ""
