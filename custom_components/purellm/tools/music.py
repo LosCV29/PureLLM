@@ -665,9 +665,18 @@ class MusicController:
             _LOGGER.warning("WAKE CAST: Bringing cast UI to foreground via ADB on %s", self._wake_cast_adb_entity)
             try:
                 # Brief delay to let cast session establish
-                await asyncio.sleep(0.5)
-                # Wake the display and use monkey command to bring mediashell to foreground
-                adb_command = "input keyevent KEYCODE_WAKEUP && monkey -p com.google.android.apps.mediashell -c android.intent.category.LAUNCHER 1"
+                await asyncio.sleep(1.0)
+                # Try multiple approaches to bring cast UI to foreground:
+                # 1. Wake display
+                # 2. Press Back to dismiss any overlay/launcher
+                # 3. Use am start with flags to force activity to front
+                adb_command = (
+                    "input keyevent KEYCODE_WAKEUP && "
+                    "sleep 0.3 && "
+                    "input keyevent KEYCODE_BACK && "
+                    "sleep 0.3 && "
+                    "am start -W -n com.google.android.apps.mediashell/.CastReceiverActivity --activity-reorder-to-front"
+                )
                 await self._hass.services.async_call(
                     "androidtv", "adb_command",
                     {"command": adb_command},
