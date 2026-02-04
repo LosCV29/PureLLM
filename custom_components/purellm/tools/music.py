@@ -1208,30 +1208,80 @@ class MusicController:
                 # When searching for soundtracks, prefer movie soundtracks over Broadway cast recordings
                 if try_type == "album" and results:
                     # Check if user is searching for a soundtrack (ost, soundtrack keywords in query)
+                    # "movie" is a strong signal user wants film soundtrack, not Broadway
                     is_soundtrack_search = album_type_filter == "soundtrack" or any(
-                        kw in query_lower for kw in ["soundtrack", "ost", "motion picture"]
+                        kw in query_lower for kw in ["soundtrack", "ost", "motion picture", "movie", "film"]
                     )
+                    is_movie_search = "movie" in query_lower or "film" in query_lower
 
                     if is_soundtrack_search:
-                        # For soundtrack searches, prioritize movie soundtracks and exclude Broadway
-                        movie_soundtracks = [
-                            r for r in results
-                            if _is_movie_soundtrack(r.get("name") or r.get("title") or "")
-                        ]
-                        if movie_soundtracks:
-                            _LOGGER.info("Filtered %d albums to %d movie soundtracks (excluding Broadway)",
-                                        len(results), len(movie_soundtracks))
-                            results = movie_soundtracks
+                        # Score-based filtering for soundtracks (especially movie soundtracks)
+                        def score_soundtrack(r):
+                            """Score album for movie soundtrack preference. Higher = more likely movie soundtrack."""
+                            s = 0
+                            name = (r.get("name") or r.get("title") or "").lower()
+
+                            # Get artist name
+                            r_artist = ""
+                            if r.get("artists"):
+                                if isinstance(r["artists"], list) and r["artists"]:
+                                    r_artist = (r["artists"][0].get("name") or "").lower()
+                            elif r.get("artist"):
+                                r_artist = (r["artist"] if isinstance(r["artist"], str) else r["artist"].get("name", "")).lower()
+
+                            # Strong positive: "motion picture" in name
+                            if "motion picture" in name:
+                                s += 100
+
+                            # Positive: movie-related keywords in album name
+                            if any(kw in name for kw in ["film", "movie", "soundtrack"]):
+                                s += 30
+
+                            # STRONG negative: "cast" in artist name (Broadway indicator)
+                            if "cast" in r_artist:
+                                s -= 200
+
+                            # Negative: Broadway keywords in album name
+                            if _is_broadway_cast_recording(name):
+                                s -= 150
+
+                            # Positive for recent years when "movie" is in query (movies are recent)
+                            if is_movie_search:
+                                r_year = r.get("year") or 0
+                                if isinstance(r_year, str) and len(r_year) >= 4:
+                                    try:
+                                        r_year = int(r_year[:4])
+                                    except ValueError:
+                                        r_year = 0
+                                if r_year >= 2020:
+                                    s += 50
+                                elif r_year >= 2010:
+                                    s += 20
+
+                            return s
+
+                        # Score and sort results
+                        scored = [(score_soundtrack(r), r) for r in results]
+                        scored.sort(key=lambda x: x[0], reverse=True)
+
+                        # Log for debugging
+                        _LOGGER.warning("SOUNDTRACK DEBUG: Scoring %d results for movie soundtrack preference:", len(results))
+                        for sc, r in scored[:5]:
+                            r_name = r.get("name") or r.get("title") or ""
+                            r_artist = ""
+                            if r.get("artists") and isinstance(r["artists"], list) and r["artists"]:
+                                r_artist = r["artists"][0].get("name") or ""
+                            _LOGGER.warning("  Score %d: '%s' by '%s'", sc, r_name, r_artist)
+
+                        # Filter to only non-negative scores (removes Broadway cast recordings)
+                        positive_results = [r for sc, r in scored if sc >= 0]
+                        if positive_results:
+                            results = positive_results
+                            _LOGGER.info("Filtered to %d non-Broadway soundtrack results", len(results))
                         else:
-                            # No explicit movie soundtracks found, at least filter out Broadway cast recordings
-                            non_broadway = [
-                                r for r in results
-                                if not _is_broadway_cast_recording(r.get("name") or r.get("title") or "")
-                            ]
-                            if non_broadway:
-                                _LOGGER.info("Filtered %d albums to %d non-Broadway results",
-                                            len(results), len(non_broadway))
-                                results = non_broadway
+                            # All results were Broadway - just use the highest scored
+                            results = [scored[0][1]] if scored else results
+                            _LOGGER.warning("All results appear to be Broadway, using highest scored")
                     else:
                         # For non-soundtrack album searches, also filter out Broadway cast recordings
                         # unless the query specifically mentions Broadway
