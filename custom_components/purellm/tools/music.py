@@ -1227,6 +1227,16 @@ class MusicController:
                         score += 100
                     elif query_lower in item_name:
                         score += 50
+                    else:
+                        # Word-based matching: check if key words from query appear in item name
+                        # This handles cases like "wicked soundtrack" matching "Wicked: The Soundtrack"
+                        query_words = [w for w in query_lower.split() if len(w) > 2]  # Skip short words
+                        if query_words:
+                            matches = sum(1 for w in query_words if w in item_name)
+                            if matches == len(query_words):
+                                score += 40  # All key words match
+                            elif matches > 0:
+                                score += 20 * matches  # Partial word matches
 
                     # Artist match (if artist was specified)
                     if artist_lower:
