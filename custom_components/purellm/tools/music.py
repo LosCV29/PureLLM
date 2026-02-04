@@ -336,16 +336,6 @@ ALBUM_TYPE_KEYWORDS = {
     "ep": "ep",
 }
 
-# Broadway/cast recording exclusion keywords - filter these out when searching for soundtracks
-BROADWAY_EXCLUSION_KEYWORDS = [
-    "broadway", "original cast", "cast recording", "original broadway",
-    "west end", "cast album", "theatre", "theater cast", " cast)", " cast]",
-    "london cast", "revival cast"
-]
-
-# Movie soundtrack positive keywords - prefer albums with these terms
-MOVIE_SOUNDTRACK_KEYWORDS = ["motion picture", "movie", "film score", "film soundtrack", "original score"]
-
 # Holiday keywords for shuffle playlist search
 HOLIDAY_KEYWORDS = {
     # Christmas
@@ -392,21 +382,15 @@ class MusicController:
     and handles all music control operations via Music Assistant.
     """
 
-    def __init__(self, hass: "HomeAssistant", room_player_mapping: dict[str, str], wake_cast_before_play: bool = True, wake_cast_adb_entity: str = ""):
+    def __init__(self, hass: "HomeAssistant", room_player_mapping: dict[str, str]):
         """Initialize the music controller.
 
         Args:
             hass: Home Assistant instance
             room_player_mapping: Dict of room name -> media_player entity_id
-            wake_cast_before_play: If True, bring cast UI to foreground via ADB before playing
-                (fixes UI not showing after pressing Home/Back on Android TV)
-            wake_cast_adb_entity: The ADB media_player entity to use for wake cast
-                (e.g., media_player.android_tv_bridge)
         """
         self._hass = hass
         self._players = room_player_mapping
-        self._wake_cast_before_play = wake_cast_before_play
-        self._wake_cast_adb_entity = wake_cast_adb_entity
         self._last_paused_player: str | None = None
         self._last_music_command: str | None = None
         self._last_music_command_time: datetime | None = None
@@ -649,8 +633,8 @@ class MusicController:
         Returns:
             True if command was sent successfully
         """
-        _LOGGER.info("Playing media: uri='%s', type='%s' on %s (wake_cast=%s, adb_entity=%s)",
-                    media_id, media_type, player, self._wake_cast_before_play, self._wake_cast_adb_entity)
+        _LOGGER.info("Playing media: uri='%s', type='%s' on %s",
+                    media_id, media_type, player)
 
         await self._hass.services.async_call(
             "music_assistant", "play_media",
@@ -658,35 +642,6 @@ class MusicController:
             target={"entity_id": player},
             blocking=True
         )
-
-        # Wake cast screen AFTER playing starts (fixes Chromecast UI not showing after Home/Back)
-        # The cast session must be active before we can bring the UI to foreground
-        if self._wake_cast_before_play and self._wake_cast_adb_entity:
-            _LOGGER.warning("WAKE CAST: Bringing cast UI to foreground via ADB on %s", self._wake_cast_adb_entity)
-            try:
-                # Brief delay to let cast session establish
-                await asyncio.sleep(1.0)
-                # Try multiple approaches to bring cast UI to foreground:
-                # 1. Wake display
-                # 2. Press Back to dismiss any overlay/launcher
-                # 3. Use am start with flags to force activity to front
-                adb_command = (
-                    "input keyevent KEYCODE_WAKEUP && "
-                    "sleep 0.3 && "
-                    "input keyevent KEYCODE_BACK && "
-                    "sleep 0.3 && "
-                    "am start -W -n com.google.android.apps.mediashell/.CastReceiverActivity --activity-reorder-to-front"
-                )
-                await self._hass.services.async_call(
-                    "androidtv", "adb_command",
-                    {"command": adb_command},
-                    target={"entity_id": self._wake_cast_adb_entity},
-                    blocking=True
-                )
-                _LOGGER.warning("WAKE CAST: Cast UI foreground completed via %s", self._wake_cast_adb_entity)
-            except Exception as e:
-                # Don't fail playback if ADB command fails
-                _LOGGER.warning("WAKE CAST: ADB command failed on %s: %s", self._wake_cast_adb_entity, e)
 
         return True
 
@@ -722,15 +677,9 @@ class MusicController:
         album_modifier = None
         album_ordinal = None  # For "second", "third", etc.
         album_type_filter = None  # For "studio", "live", "compilation", etc.
-        album_year = None  # For year-based requests like "2020 album"
         query_lower = query.lower()
         latest_keywords = ["latest", "last", "newest", "new", "most recent", "recent", "nuevo", "última", "ultimo", "más reciente"]
         first_keywords = ["first", "oldest", "debut", "earliest", "primero", "primera"]
-
-        # Check if this is a soundtrack search - always prefer movie soundtracks (check BEFORE media_type block)
-        is_soundtrack_search = "soundtrack" in query_lower or "ost" in query_lower
-        if is_soundtrack_search:
-            _LOGGER.info("Detected soundtrack search - will prefer movie soundtracks and filter out Broadway")
 
         if media_type == "album":
             # Check for ordinals (second, third, etc.)
@@ -764,11 +713,6 @@ class MusicController:
                     album_type_filter = type_value
                     _LOGGER.info("Detected album type filter: '%s' (keyword: %s)", type_value, type_keyword)
                     break
-
-            # Also check if album_type_filter detected soundtrack
-            if album_type_filter == "soundtrack" and not is_soundtrack_search:
-                is_soundtrack_search = True
-                _LOGGER.info("Detected soundtrack via album_type_filter")
 
             # Check for year-based album requests (e.g., "2020 album", "album from 2019")
             album_year = None
@@ -1155,11 +1099,6 @@ class MusicController:
             # Standard search (non-modifier path)
             search_query = f"{query} {artist}" if artist else query
 
-            # For soundtrack searches, add "motion picture" to prefer movie soundtracks
-            if is_soundtrack_search:
-                search_query = f"{search_query} motion picture"
-                _LOGGER.info("Added 'motion picture' to soundtrack search: '%s'", search_query)
-
             # NO cascading - search ONLY the requested type
             search_types_to_try = [media_type]
             _LOGGER.info("Searching for media_type='%s' only (no cascade)", media_type)
@@ -1212,44 +1151,6 @@ class MusicController:
                     else:
                         _LOGGER.warning("No albums matched filter '%s', using all %d results",
                                        album, len(results))
-
-                # For soundtrack searches, filter out Broadway/cast recordings - only want movie soundtracks
-                if is_soundtrack_search and results:
-                    def get_item_names(item):
-                        """Get item name and album name for checking."""
-                        item_name = (item.get("name") or item.get("title") or "").lower()
-                        album_name = ""
-                        album_info = item.get("album", {})
-                        if isinstance(album_info, dict):
-                            album_name = (album_info.get("name") or album_info.get("title") or "").lower()
-                        return item_name, album_name
-
-                    def is_broadway(item):
-                        """Check if item or its album contains Broadway keywords."""
-                        item_name, album_name = get_item_names(item)
-                        combined = f"{item_name} {album_name}"
-                        return any(kw in combined for kw in BROADWAY_EXCLUSION_KEYWORDS)
-
-                    def is_movie_soundtrack(item):
-                        """Check if item or its album contains movie soundtrack keywords."""
-                        item_name, album_name = get_item_names(item)
-                        combined = f"{item_name} {album_name}"
-                        return any(kw in combined for kw in MOVIE_SOUNDTRACK_KEYWORDS)
-
-                    # First, try to find movie soundtracks specifically
-                    movie_results = [r for r in results if is_movie_soundtrack(r) and not is_broadway(r)]
-                    if movie_results:
-                        _LOGGER.info("Found %d movie soundtracks out of %d results", len(movie_results), len(results))
-                        results = movie_results
-                    else:
-                        # Fall back to filtering out Broadway
-                        non_broadway_results = [r for r in results if not is_broadway(r)]
-                        if non_broadway_results:
-                            _LOGGER.info("Filtered out Broadway: %d results -> %d non-Broadway",
-                                        len(results), len(non_broadway_results))
-                            results = non_broadway_results
-                        else:
-                            _LOGGER.warning("All results were Broadway/cast recordings - no movie soundtrack found")
 
                 query_lower = query.lower()
                 artist_lower = artist.lower() if artist else ""
