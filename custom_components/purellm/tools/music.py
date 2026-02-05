@@ -12,10 +12,70 @@ from typing import Any, TYPE_CHECKING
 from homeassistant.components.media_player import MediaPlayerEntityFeature
 from homeassistant.helpers import entity_registry as er, device_registry as dr
 
+from ..utils.helpers import COMMON_ROOM_NAMES
+
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
+
+# Shared MusicBrainz constants
+_MB_HEADERS = {"User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"}
+_MB_BASE = "https://musicbrainz.org/ws/2"
+
+
+async def _musicbrainz_get(endpoint: str, params: dict, timeout: float = 5) -> dict | None:
+    """Make a GET request to MusicBrainz API. Returns JSON data or None."""
+    try:
+        params["fmt"] = "json"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{_MB_BASE}/{endpoint}", params=params,
+                headers=_MB_HEADERS, timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as response:
+                if response.status == 200:
+                    return await response.json()
+                _LOGGER.debug("MusicBrainz API returned status %d", response.status)
+    except asyncio.TimeoutError:
+        _LOGGER.debug("MusicBrainz request timed out: %s", endpoint)
+    except Exception as e:
+        _LOGGER.debug("MusicBrainz request failed: %s %s", endpoint, e)
+    return None
+
+
+def _parse_ma_results(search_result: Any, media_type: str) -> list:
+    """Parse Music Assistant search results into a flat list."""
+    if not search_result:
+        return []
+    type_keys = {"track": "tracks", "album": "albums", "artist": "artists", "playlist": "playlists"}
+    if isinstance(search_result, dict):
+        results = search_result.get(type_keys.get(media_type, ""), [])
+        if not results:
+            results = search_result.get("items", [])
+        return results
+    if isinstance(search_result, list):
+        return search_result
+    return []
+
+
+def _extract_artist(item: dict, lowercase: bool = False) -> str:
+    """Extract artist name from a Music Assistant item."""
+    artist = ""
+    if item.get("artists"):
+        if isinstance(item["artists"], list) and item["artists"]:
+            artist = item["artists"][0].get("name") or ""
+        elif isinstance(item["artists"], str):
+            artist = item["artists"]
+    elif item.get("artist"):
+        if isinstance(item["artist"], str):
+            artist = item["artist"]
+        else:
+            artist = item["artist"].get("name") or ""
+    if not artist:
+        return ""
+    if lowercase:
+        return artist.lower()
+    return _normalize_unicode(artist)
 
 # Feature flags for media player capabilities
 PAUSE_FEATURE = MediaPlayerEntityFeature.PAUSE
@@ -60,252 +120,142 @@ def _normalize_unicode(text: str | None) -> str:
 
 
 async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> int:
-    """Look up album release year from MusicBrainz API.
+    """Look up album release year from MusicBrainz API."""
+    clean_album = re.sub(r'\s*[\(\[].*?[\)\]]', '', album_name).strip()
+    clean_album = re.sub(r'\s*[-–].*?(edition|version|deluxe|remaster).*$', '', clean_album, flags=re.IGNORECASE).strip()
 
-    Args:
-        album_name: Name of the album
-        artist_name: Name of the artist
+    data = await _musicbrainz_get("release-group", {
+        "query": f'releasegroup:"{clean_album}" AND artist:"{artist_name}"',
+        "limit": 5,
+    })
+    if not data:
+        return 0
 
-    Returns:
-        Release year as int, or 0 if not found
-    """
-    try:
-        # Clean up album name for search (remove special editions, etc.)
-        clean_album = re.sub(r'\s*[\(\[].*?[\)\]]', '', album_name).strip()
-        clean_album = re.sub(r'\s*[-–].*?(edition|version|deluxe|remaster).*$', '', clean_album, flags=re.IGNORECASE).strip()
+    release_groups = data.get("release-groups", [])
+    if not release_groups:
+        return 0
 
-        # MusicBrainz API endpoint for release-group (albums)
-        url = "https://musicbrainz.org/ws/2/release-group"
-        params = {
-            "query": f'releasegroup:"{clean_album}" AND artist:"{artist_name}"',
-            "fmt": "json",
-            "limit": 5
-        }
-        headers = {
-            "User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"
-        }
+    # Find best match - prefer exact title match
+    for rg in release_groups:
+        rg_title = rg.get("title", "").lower()
+        if clean_album.lower() in rg_title or rg_title in clean_album.lower():
+            first_release = rg.get("first-release-date", "")
+            if first_release and len(first_release) >= 4:
+                year = int(first_release[:4])
+                _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s'", year, album_name, artist_name)
+                return year
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    release_groups = data.get("release-groups", [])
-
-                    if release_groups:
-                        # Find best match - prefer exact title match
-                        for rg in release_groups:
-                            rg_title = rg.get("title", "").lower()
-                            if clean_album.lower() in rg_title or rg_title in clean_album.lower():
-                                first_release = rg.get("first-release-date", "")
-                                if first_release and len(first_release) >= 4:
-                                    year = int(first_release[:4])
-                                    _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s'", year, album_name, artist_name)
-                                    return year
-
-                        # Fallback to first result if no exact match
-                        first_release = release_groups[0].get("first-release-date", "")
-                        if first_release and len(first_release) >= 4:
-                            year = int(first_release[:4])
-                            _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s' (fallback)", year, album_name, artist_name)
-                            return year
-                else:
-                    _LOGGER.debug("MusicBrainz API returned status %d", response.status)
-
-    except asyncio.TimeoutError:
-        _LOGGER.debug("MusicBrainz lookup timed out for '%s' by '%s'", album_name, artist_name)
-    except Exception as e:
-        _LOGGER.debug("MusicBrainz lookup failed for '%s' by '%s': %s", album_name, artist_name, e)
+    # Fallback to first result
+    first_release = release_groups[0].get("first-release-date", "")
+    if first_release and len(first_release) >= 4:
+        year = int(first_release[:4])
+        _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s' (fallback)", year, album_name, artist_name)
+        return year
 
     return 0
 
 
 async def _search_albums_by_tag_musicbrainz(artist_name: str, tag: str) -> list[dict]:
-    """Search MusicBrainz for albums by artist with a specific tag (e.g., christmas, holiday).
+    """Search MusicBrainz for albums by artist with a specific tag (e.g., christmas, holiday)."""
+    data = await _musicbrainz_get("release-group", {
+        "query": f'artist:"{artist_name}" AND tag:{tag}',
+        "limit": 25,
+    }, timeout=10)
+    if not data:
+        return []
 
-    This uses tag-based search which properly identifies albums like "Wrapped in Red"
-    as a Christmas album even though "christmas" isn't in the title.
+    albums = []
+    for rg in data.get("release-groups", []):
+        primary_type = (rg.get("primary-type") or "").lower()
+        if primary_type != "album":
+            continue
+        first_release = rg.get("first-release-date", "")
+        albums.append({
+            "name": rg.get("title", ""),
+            "year": int(first_release[:4]) if first_release and len(first_release) >= 4 else 0,
+            "mbid": rg.get("id", ""),
+            "primary_type": primary_type,
+        })
 
-    Args:
-        artist_name: Name of the artist
-        tag: Tag to search for (e.g., "christmas", "holiday", "live")
-
-    Returns:
-        List of dicts with: name, year, mbid
-    """
-    try:
-        url = "https://musicbrainz.org/ws/2/release-group"
-        # Search using both artist name and tag
-        query = f'artist:"{artist_name}" AND tag:{tag}'
-        params = {
-            "query": query,
-            "fmt": "json",
-            "limit": 25
-        }
-        headers = {
-            "User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status != 200:
-                    _LOGGER.debug("MusicBrainz tag search returned status %d", response.status)
-                    return []
-
-                data = await response.json()
-                release_groups = data.get("release-groups", [])
-
-                albums = []
-                for rg in release_groups:
-                    # Only include actual albums (not singles/EPs)
-                    primary_type = (rg.get("primary-type") or "").lower()
-                    if primary_type != "album":
-                        continue
-
-                    name = rg.get("title", "")
-                    first_release = rg.get("first-release-date", "")
-                    year = int(first_release[:4]) if first_release and len(first_release) >= 4 else 0
-                    mbid = rg.get("id", "")
-
-                    albums.append({
-                        "name": name,
-                        "year": year,
-                        "mbid": mbid,
-                        "primary_type": primary_type,
-                    })
-
-                # Sort by year
-                albums.sort(key=lambda x: (x["year"] == 0, x["year"]))
-
-                _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag search for '%s' + tag:'%s' found %d albums",
-                               artist_name, tag, len(albums))
-                for i, alb in enumerate(albums[:10]):
-                    _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag [%d] '%s' (%d)", i+1, alb["name"], alb["year"])
-
-                return albums
-
-    except asyncio.TimeoutError:
-        _LOGGER.debug("MusicBrainz tag search timed out for '%s' + '%s'", artist_name, tag)
-    except Exception as e:
-        _LOGGER.debug("MusicBrainz tag search failed for '%s' + '%s': %s", artist_name, tag, e)
-
-    return []
+    albums.sort(key=lambda x: (x["year"] == 0, x["year"]))
+    _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag search for '%s' + tag:'%s' found %d albums",
+                   artist_name, tag, len(albums))
+    for i, alb in enumerate(albums[:10]):
+        _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag [%d] '%s' (%d)", i+1, alb["name"], alb["year"])
+    return albums
 
 
 async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str = None) -> list[dict]:
-    """Get artist's discography from MusicBrainz with album types and years.
+    """Get artist's discography from MusicBrainz with album types and years."""
+    # First, find the artist ID
+    artist_data = await _musicbrainz_get("artist", {
+        "query": f'artist:"{artist_name}"', "limit": 1,
+    })
+    if not artist_data:
+        return []
+    artists = artist_data.get("artists", [])
+    if not artists or not artists[0].get("id"):
+        return []
+    artist_id = artists[0]["id"]
 
-    Args:
-        artist_name: Name of the artist
-        album_type: Optional filter - 'studio', 'live', 'compilation', 'soundtrack', 'ep', 'single'
+    # MusicBrainz rate limit
+    await asyncio.sleep(1)
 
-    Returns:
-        List of dicts with: name, year, primary_type, secondary_types
-    """
-    try:
-        # First, find the artist ID
-        url = "https://musicbrainz.org/ws/2/artist"
-        params = {
-            "query": f'artist:"{artist_name}"',
-            "fmt": "json",
-            "limit": 1
-        }
-        headers = {
-            "User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"
-        }
+    # Get artist's release groups
+    data = await _musicbrainz_get("release-group", {
+        "artist": artist_id, "type": "album|ep", "limit": 100,
+    }, timeout=10)
+    if not data:
+        return []
 
-        async with aiohttp.ClientSession() as session:
-            # Get artist ID
-            async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                if response.status != 200:
-                    return []
-                data = await response.json()
-                artists = data.get("artists", [])
-                if not artists:
-                    return []
-                artist_id = artists[0].get("id")
-                if not artist_id:
-                    return []
+    discography = []
+    for rg in data.get("release-groups", []):
+        first_release = rg.get("first-release-date", "")
+        year = int(first_release[:4]) if first_release and len(first_release) >= 4 else 0
+        primary_type = (rg.get("primary-type") or "").lower()
+        secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
 
-            # MusicBrainz rate limit - wait 1 second between requests
-            await asyncio.sleep(1)
+        is_studio = primary_type == "album" and not secondary_types
+        is_live = "live" in secondary_types
+        is_compilation = "compilation" in secondary_types
+        is_soundtrack = "soundtrack" in secondary_types
+        is_ep = primary_type == "ep"
 
-            # Get artist's release groups (albums)
-            url = f"https://musicbrainz.org/ws/2/release-group"
-            params = {
-                "artist": artist_id,
-                "type": "album|ep",  # Get albums and EPs
-                "fmt": "json",
-                "limit": 100
-            }
+        if album_type:
+            type_lower = album_type.lower()
+            if type_lower == "studio" and not is_studio:
+                continue
+            elif type_lower == "live" and not is_live:
+                continue
+            elif type_lower in ("compilation", "greatest hits", "best of") and not is_compilation:
+                continue
+            elif type_lower == "soundtrack" and not is_soundtrack:
+                continue
+            elif type_lower == "ep" and not is_ep:
+                continue
+        else:
+            if primary_type != "album":
+                continue
 
-            async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as response:
-                if response.status != 200:
-                    return []
-                data = await response.json()
-                release_groups = data.get("release-groups", [])
+        discography.append({
+            "name": rg.get("title", ""),
+            "year": year,
+            "primary_type": primary_type,
+            "secondary_types": secondary_types,
+            "is_studio": is_studio,
+            "is_live": is_live,
+            "is_compilation": is_compilation,
+        })
 
-                discography = []
-                for rg in release_groups:
-                    name = rg.get("title", "")
-                    first_release = rg.get("first-release-date", "")
-                    year = int(first_release[:4]) if first_release and len(first_release) >= 4 else 0
-                    primary_type = (rg.get("primary-type") or "").lower()
-                    secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
-
-                    # Determine album category
-                    is_studio = primary_type == "album" and not secondary_types
-                    is_live = "live" in secondary_types
-                    is_compilation = "compilation" in secondary_types
-                    is_soundtrack = "soundtrack" in secondary_types
-                    is_ep = primary_type == "ep"
-                    is_single = primary_type == "single"
-                    is_album = primary_type == "album"  # Any type of album (studio, live, compilation, etc.)
-
-                    # Apply type filter if specified
-                    if album_type:
-                        type_lower = album_type.lower()
-                        if type_lower == "studio" and not is_studio:
-                            continue
-                        elif type_lower == "live" and not is_live:
-                            continue
-                        elif type_lower in ("compilation", "greatest hits", "best of") and not is_compilation:
-                            continue
-                        elif type_lower == "soundtrack" and not is_soundtrack:
-                            continue
-                        elif type_lower == "ep" and not is_ep:
-                            continue
-                    else:
-                        # Default: only include actual albums (not singles or EPs)
-                        if not is_album:
-                            continue
-
-                    discography.append({
-                        "name": name,
-                        "year": year,
-                        "primary_type": primary_type,
-                        "secondary_types": secondary_types,
-                        "is_studio": is_studio,
-                        "is_live": is_live,
-                        "is_compilation": is_compilation,
-                    })
-
-                # Sort by year
-                discography.sort(key=lambda x: (x["year"] == 0, x["year"]))
-                _LOGGER.warning("MUSIC DEBUG: MusicBrainz found %d albums for '%s'%s",
-                            len(discography), artist_name,
-                            f" (filtered by {album_type})" if album_type else "")
-                for i, alb in enumerate(discography[:10]):
-                    _LOGGER.warning("MUSIC DEBUG: MusicBrainz [%d] '%s' (%d) - type: %s%s",
-                                   i+1, alb["name"], alb["year"], alb["primary_type"],
-                                   f" + {alb['secondary_types']}" if alb["secondary_types"] else "")
-                return discography
-
-    except asyncio.TimeoutError:
-        _LOGGER.debug("MusicBrainz discography lookup timed out for '%s'", artist_name)
-    except Exception as e:
-        _LOGGER.debug("MusicBrainz discography lookup failed for '%s': %s", artist_name, e)
-
-    return []
+    discography.sort(key=lambda x: (x["year"] == 0, x["year"]))
+    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found %d albums for '%s'%s",
+                len(discography), artist_name,
+                f" (filtered by {album_type})" if album_type else "")
+    for i, alb in enumerate(discography[:10]):
+        _LOGGER.warning("MUSIC DEBUG: MusicBrainz [%d] '%s' (%d) - type: %s%s",
+                       i+1, alb["name"], alb["year"], alb["primary_type"],
+                       f" + {alb['secondary_types']}" if alb["secondary_types"] else "")
+    return discography
 
 
 # Ordinal number mapping
@@ -482,24 +432,8 @@ class MusicController:
             if match:
                 potential_room = match.group(1).lower().strip()
                 _LOGGER.warning("MUSIC DEBUG: Potential room extracted: '%s'", potential_room)
-                # Check if it looks like a room name (matches any configured room or common room names)
-                # English room names
-                common_rooms = {'living room', 'kitchen', 'bedroom', 'master bedroom', 'office',
-                               'bathroom', 'garage', 'basement', 'den', 'studio', 'nursery',
-                               'dining room', 'family room', 'guest room', 'laundry room',
-                               # Spanish room names (bilingual support)
-                               'sala', 'cocina', 'recámara', 'recamara', 'habitación', 'habitacion',
-                               'dormitorio', 'oficina', 'baño', 'bano', 'garaje', 'sótano', 'sotano',
-                               'estudio', 'comedor', 'cuarto de huéspedes', 'cuarto de huespedes',
-                               'lavandería', 'lavanderia', 'cuarto', 'alcoba',
-                               # Common STT mishearings of Spanish room names
-                               'salad', 'salah', 'salla', 'sulla', 'zala', 'salat', 'satellite', 'sela', 'seller',  # sala
-                               'cocinna', 'kosina', 'cozina',  # cocina
-                               'bano', 'banyo', 'bunyo'  # baño
-                               }
-                # Also check against configured rooms
                 configured_rooms = {r.lower() for r in self._players.keys()}
-                all_known_rooms = common_rooms | configured_rooms
+                all_known_rooms = COMMON_ROOM_NAMES | configured_rooms
                 _LOGGER.warning("MUSIC DEBUG: Configured rooms: %s", configured_rooms)
                 _LOGGER.warning("MUSIC DEBUG: Is '%s' in known rooms? %s", potential_room, potential_room in all_known_rooms)
 
@@ -697,6 +631,37 @@ class MusicController:
 
         return True
 
+    async def _play_on_players(self, target_players: list[str], uri: str, media_type: str, shuffle: bool = False) -> None:
+        """Play media on target players with appropriate shuffle setting."""
+        for player in target_players:
+            await self._play_media(player, uri, media_type)
+            if media_type == "album":
+                await self._hass.services.async_call(
+                    "media_player", "shuffle_set",
+                    {"entity_id": player, "shuffle": False},
+                    blocking=True
+                )
+            elif shuffle:
+                await self._hass.services.async_call(
+                    "media_player", "shuffle_set",
+                    {"entity_id": player, "shuffle": True},
+                    blocking=True
+                )
+
+    async def _call_media_service(self, entity_id: str, service: str) -> None:
+        """Call a media_player service using area targeting when available."""
+        area_id = self._get_area_id(entity_id)
+        if area_id:
+            _LOGGER.info("%s via area: %s", service, area_id)
+            await self._hass.services.async_call(
+                "media_player", service, {},
+                target={"area_id": area_id}, blocking=True)
+        else:
+            _LOGGER.info("No area found, %s via entity: %s", service, entity_id)
+            await self._hass.services.async_call(
+                "media_player", service, {},
+                target={"entity_id": entity_id}, blocking=True)
+
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "", song_on_album: str = "") -> dict:
         """Play music via Music Assistant with search-first for accuracy.
 
@@ -800,14 +765,8 @@ class MusicController:
                     blocking=True, return_response=True
                 )
 
-                if search_result:
-                    tracks = []
-                    if isinstance(search_result, dict):
-                        tracks = search_result.get("tracks", [])
-                    elif isinstance(search_result, list):
-                        tracks = search_result
-
-                    if tracks:
+                tracks = _parse_ma_results(search_result, "track")
+                if tracks:
                         # Score tracks to find best match
                         song_lower = song_on_album.lower()
                         artist_lower = artist.lower() if artist else ""
@@ -815,14 +774,7 @@ class MusicController:
                         def score_track(track):
                             score = 0
                             track_name = (track.get("name") or track.get("title") or "").lower()
-
-                            # Get track artist
-                            track_artist = ""
-                            if track.get("artists"):
-                                if isinstance(track["artists"], list) and track["artists"]:
-                                    track_artist = (track["artists"][0].get("name") or "").lower()
-                            elif track.get("artist"):
-                                track_artist = (track["artist"] if isinstance(track["artist"], str) else track["artist"].get("name", "")).lower()
+                            track_artist = _extract_artist(track, lowercase=True)
 
                             # Song name match
                             if song_lower == track_name:
@@ -858,24 +810,14 @@ class MusicController:
                                     album_name = album_info
 
                             # Get artist for display
-                            found_artist = artist
-                            if not found_artist and best_track.get("artists"):
-                                if isinstance(best_track["artists"], list) and best_track["artists"]:
-                                    found_artist = _normalize_unicode(best_track["artists"][0].get("name"))
+                            found_artist = artist or _extract_artist(best_track)
 
                             if album_name:
                                 _LOGGER.info("Found album '%s' containing song '%s'", album_name, song_on_album)
 
                                 # If we have a URI, play directly
                                 if album_uri:
-                                    for player in target_players:
-                                        await self._play_media(player, album_uri, "album")
-                                        # Albums always play sequentially - disable shuffle for album playback
-                                        await self._hass.services.async_call(
-                                            "media_player", "shuffle_set",
-                                            {"entity_id": player, "shuffle": False},
-                                            blocking=True
-                                        )
+                                    await self._play_on_players(target_players, album_uri, "album")
                                     return {"status": "playing", "message": f"Playing {album_name} by {found_artist} in the {room}"}
 
                                 # Otherwise search for the album by name
@@ -885,27 +827,13 @@ class MusicController:
                                     blocking=True, return_response=True
                                 )
 
-                                if album_search:
-                                    albums = []
-                                    if isinstance(album_search, dict):
-                                        albums = album_search.get("albums", [])
-                                    elif isinstance(album_search, list):
-                                        albums = album_search
-
-                                    if albums:
-                                        found_album = albums[0]
-                                        found_album_name = _normalize_unicode(found_album.get("name") or found_album.get("title"))
-                                        found_album_uri = found_album.get("uri") or found_album.get("media_id")
-
-                                        for player in target_players:
-                                            await self._play_media(player, found_album_uri, "album")
-                                            # Albums always play sequentially - disable shuffle for album playback
-                                            await self._hass.services.async_call(
-                                                "media_player", "shuffle_set",
-                                                {"entity_id": player, "shuffle": False},
-                                                blocking=True
-                                            )
-                                        return {"status": "playing", "message": f"Playing {found_album_name} by {found_artist} in the {room}"}
+                                albums = _parse_ma_results(album_search, "album")
+                                if albums:
+                                    found_album = albums[0]
+                                    found_album_name = _normalize_unicode(found_album.get("name") or found_album.get("title"))
+                                    found_album_uri = found_album.get("uri") or found_album.get("media_id")
+                                    await self._play_on_players(target_players, found_album_uri, "album")
+                                    return {"status": "playing", "message": f"Playing {found_album_name} by {found_artist} in the {room}"}
 
                 return {"error": f"Could not find album containing '{song_on_album}'" + (f" by {artist}" if artist else "")}
 
@@ -991,37 +919,23 @@ class MusicController:
                         blocking=True, return_response=True
                     )
 
-                    if search_result:
-                        albums = []
-                        if isinstance(search_result, dict):
-                            albums = search_result.get("albums", [])
-                        elif isinstance(search_result, list):
-                            albums = search_result
+                    albums = _parse_ma_results(search_result, "album")
+                    if albums:
+                        # Find best match
+                        target_lower = target_album_name.lower()
+                        best_album = None
+                        for alb in albums:
+                            alb_name = (alb.get("name") or alb.get("title") or "").lower()
+                            if target_lower in alb_name or alb_name in target_lower:
+                                best_album = alb
+                                break
+                        if not best_album:
+                            best_album = albums[0]
 
-                        if albums:
-                            # Find best match
-                            target_lower = target_album_name.lower()
-                            best_album = None
-                            for alb in albums:
-                                alb_name = (alb.get("name") or alb.get("title") or "").lower()
-                                if target_lower in alb_name or alb_name in target_lower:
-                                    best_album = alb
-                                    break
-                            if not best_album:
-                                best_album = albums[0]  # Fallback to first result
-
-                            found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
-                            found_uri = best_album.get("uri") or best_album.get("media_id")
-
-                            for player in target_players:
-                                await self._play_media(player, found_uri, "album")
-                                await self._hass.services.async_call(
-                                    "media_player", "shuffle_set",
-                                    {"entity_id": player, "shuffle": False},
-                                    blocking=True
-                                )
-
-                            return {"status": "playing", "message": f"Playing {found_name} by {artist} in the {room}"}
+                        found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
+                        found_uri = best_album.get("uri") or best_album.get("media_id")
+                        await self._play_on_players(target_players, found_uri, "album")
+                        return {"status": "playing", "message": f"Playing {found_name} by {artist} in the {room}"}
 
                     return {"error": f"Found '{target_album_name}' in MusicBrainz but not in your music library"}
 
@@ -1038,31 +952,11 @@ class MusicController:
                     blocking=True, return_response=True
                 )
 
-                albums = []
-                if search_result:
-                    if isinstance(search_result, dict):
-                        albums = search_result.get("albums", [])
-                    elif isinstance(search_result, list):
-                        albums = search_result
+                albums = _parse_ma_results(search_result, "album")
 
                 if albums:
                     artist_lower = artist.lower()
-
-                    # Filter to only albums by this artist
-                    def get_album_artist(alb):
-                        if alb.get("artists"):
-                            if isinstance(alb["artists"], list) and alb["artists"]:
-                                return (alb["artists"][0].get("name") or "").lower()
-                            elif isinstance(alb["artists"], str):
-                                return alb["artists"].lower()
-                        elif alb.get("artist"):
-                            if isinstance(alb["artist"], str):
-                                return alb["artist"].lower()
-                            else:
-                                return (alb["artist"].get("name") or "").lower()
-                        return ""
-
-                    matching_albums = [a for a in albums if artist_lower in get_album_artist(a) or get_album_artist(a) in artist_lower]
+                    matching_albums = [a for a in albums if artist_lower in _extract_artist(a, lowercase=True) or _extract_artist(a, lowercase=True) in artist_lower]
                     _LOGGER.warning("MUSIC DEBUG: Found %d albums, %d match artist '%s'", len(albums), len(matching_albums), artist)
 
                     # Filter by album name if specified (e.g., "christmas" for christmas albums)
@@ -1135,16 +1029,7 @@ class MusicController:
                             year = albums_with_year[0][0]
                             _LOGGER.warning("MUSIC DEBUG: Selected %s album: '%s' (year: %d) by '%s'", album_modifier, found_name, year, found_artist)
 
-                            # Play it
-                            for player in target_players:
-                                await self._play_media(player, found_uri, "album")
-                                # Albums always play sequentially - disable shuffle for album playback
-                                await self._hass.services.async_call(
-                                    "media_player", "shuffle_set",
-                                    {"entity_id": player, "shuffle": False},
-                                    blocking=True
-                                )
-
+                            await self._play_on_players(target_players, found_uri, "album")
                             return {"status": "playing", "message": f"Playing {found_name} by {found_artist} in the {room}"}
 
                 return {"error": f"Could not find albums by {artist}"}
@@ -1173,19 +1058,7 @@ class MusicController:
                 if not search_result:
                     continue
 
-                # Get the appropriate results list
-                results = []
-                if isinstance(search_result, dict):
-                    if try_type == "track":
-                        results = search_result.get("tracks", [])
-                    elif try_type == "album":
-                        results = search_result.get("albums", [])
-                    elif try_type == "artist":
-                        results = search_result.get("artists", [])
-                    if not results:
-                        results = search_result.get("items", [])
-                elif isinstance(search_result, list):
-                    results = search_result
+                results = _parse_ma_results(search_result, try_type)
 
                 if not results:
                     continue
@@ -1212,16 +1085,7 @@ class MusicController:
                 def score_result(item):
                     score = 0
                     item_name = (item.get("name") or item.get("title") or "").lower()
-                    item_artist = ""
-
-                    # Get artist from various possible fields
-                    if item.get("artists"):
-                        if isinstance(item["artists"], list):
-                            item_artist = (item["artists"][0].get("name") or "").lower() if item["artists"] else ""
-                        elif isinstance(item["artists"], str):
-                            item_artist = item["artists"].lower()
-                    elif item.get("artist"):
-                        item_artist = (item["artist"] if isinstance(item["artist"], str) else item["artist"].get("name", "")).lower()
+                    item_artist = _extract_artist(item, lowercase=True)
 
                     # Exact query match in name
                     if query_lower == item_name:
@@ -1259,17 +1123,7 @@ class MusicController:
                     found_uri = best_match.get("uri") or best_match.get("media_id")
                     found_type = try_type
 
-                    # Extract artist name from result
-                    if best_match.get("artists"):
-                        if isinstance(best_match["artists"], list) and best_match["artists"]:
-                            found_artist = _normalize_unicode(best_match["artists"][0].get("name"))
-                        elif isinstance(best_match["artists"], str):
-                            found_artist = best_match["artists"]
-                    elif best_match.get("artist"):
-                        if isinstance(best_match["artist"], str):
-                            found_artist = best_match["artist"]
-                        else:
-                            found_artist = _normalize_unicode(best_match["artist"].get("name"))
+                    found_artist = _extract_artist(best_match) or found_artist
 
                     _LOGGER.info("Found %s: '%s' by '%s' (uri: %s, score: %d)", try_type, found_name, found_artist, found_uri, scored_results[0][0])
                     break  # Found a good match, stop searching
@@ -1284,24 +1138,7 @@ class MusicController:
                 display_name = found_name
 
             # Play the found media
-            for player in target_players:
-                await self._play_media(player, found_uri, found_type)
-
-                # Albums always play sequentially from track 1 - never shuffle albums
-                # Shuffle is only applied to playlists via the dedicated shuffle action
-                if found_type == "album":
-                    await self._hass.services.async_call(
-                        "media_player", "shuffle_set",
-                        {"entity_id": player, "shuffle": False},
-                        blocking=True
-                    )
-                elif shuffle:
-                    # Only allow shuffle for non-album media types (tracks, artists)
-                    await self._hass.services.async_call(
-                        "media_player", "shuffle_set",
-                        {"entity_id": player, "shuffle": True},
-                        blocking=True
-                    )
+            await self._play_on_players(target_players, found_uri, found_type, shuffle=shuffle)
 
             return {"status": "playing", "message": f"Playing {display_name} in the {room}"}
 
@@ -1349,25 +1186,7 @@ class MusicController:
         pid = playing_players[0][0]
         _LOGGER.info("Selected player to pause: %s (from %d playing)", pid, len(playing_players))
 
-        # Get area_id for area-based targeting (like HA native intents)
-        area_id = self._get_area_id(pid)
-        if area_id:
-            _LOGGER.info("Pausing via area: %s", area_id)
-            await self._hass.services.async_call(
-                "media_player", "media_pause",
-                {},
-                target={"area_id": area_id},
-                blocking=True
-            )
-        else:
-            # Fallback to entity targeting if no area
-            _LOGGER.info("No area found, pausing via entity: %s", pid)
-            await self._hass.services.async_call(
-                "media_player", "media_pause",
-                {},
-                target={"entity_id": pid},
-                blocking=True
-            )
+        await self._call_media_service(pid, "media_pause")
 
         self._last_paused_player = pid
         return {"status": "paused", "message": f"Paused in {self._get_room_name(pid)}"}
@@ -1379,21 +1198,7 @@ class MusicController:
         # Try last paused player first
         if self._last_paused_player and self._last_paused_player in all_players:
             _LOGGER.info("Resuming last paused player: %s", self._last_paused_player)
-            area_id = self._get_area_id(self._last_paused_player)
-            if area_id:
-                await self._hass.services.async_call(
-                    "media_player", "media_play",
-                    {},
-                    target={"area_id": area_id},
-                    blocking=True
-                )
-            else:
-                await self._hass.services.async_call(
-                    "media_player", "media_play",
-                    {},
-                    target={"entity_id": self._last_paused_player},
-                    blocking=True
-                )
+            await self._call_media_service(self._last_paused_player, "media_play")
             room_name = self._get_room_name(self._last_paused_player)
             self._last_paused_player = None
             return {"status": "resumed", "message": f"Resumed in {room_name}"}
@@ -1401,21 +1206,7 @@ class MusicController:
         # Find any paused player
         paused = self._find_player_by_state("paused", all_players)
         if paused:
-            area_id = self._get_area_id(paused)
-            if area_id:
-                await self._hass.services.async_call(
-                    "media_player", "media_play",
-                    {},
-                    target={"area_id": area_id},
-                    blocking=True
-                )
-            else:
-                await self._hass.services.async_call(
-                    "media_player", "media_play",
-                    {},
-                    target={"entity_id": paused},
-                    blocking=True
-                )
+            await self._call_media_service(paused, "media_play")
             return {"status": "resumed", "message": f"Resumed in {self._get_room_name(paused)}"}
 
         return {"error": "No paused music to resume"}
@@ -1429,24 +1220,7 @@ class MusicController:
             if state and state.state in ("playing", "paused"):
                 _LOGGER.info("  %s → %s", pid, state.state)
 
-                # Get area_id for area-based targeting
-                area_id = self._get_area_id(pid)
-                if area_id:
-                    _LOGGER.info("Stopping via area: %s", area_id)
-                    await self._hass.services.async_call(
-                        "media_player", "media_stop",
-                        {},
-                        target={"area_id": area_id},
-                        blocking=True
-                    )
-                else:
-                    _LOGGER.info("No area found, stopping via entity: %s", pid)
-                    await self._hass.services.async_call(
-                        "media_player", "media_stop",
-                        {},
-                        target={"entity_id": pid},
-                        blocking=True
-                    )
+                await self._call_media_service(pid, "media_stop")
 
                 return {"status": "stopped", "message": f"Stopped in {self._get_room_name(pid)}"}
 
@@ -1581,11 +1355,7 @@ class MusicController:
                         {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": ["playlist"], "limit": 15},
                         blocking=True, return_response=True
                     )
-                    if search_result:
-                        if isinstance(search_result, dict):
-                            all_playlists.extend(search_result.get("playlists", []))
-                        elif isinstance(search_result, list):
-                            all_playlists.extend(search_result)
+                    all_playlists.extend(_parse_ma_results(search_result, "playlist"))
                 _LOGGER.info("Holiday search for '%s' found %d total playlists", query, len(all_playlists))
             else:
                 # Standard search for non-holiday queries
@@ -1594,13 +1364,7 @@ class MusicController:
                     {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["playlist"], "limit": 10},
                     blocking=True, return_response=True
                 )
-                if search_result:
-                    if isinstance(search_result, dict):
-                        all_playlists = search_result.get("playlists", [])
-                        if not all_playlists and "items" in search_result:
-                            all_playlists = search_result.get("items", [])
-                    elif isinstance(search_result, list):
-                        all_playlists = search_result
+                all_playlists = _parse_ma_results(search_result, "playlist")
 
             playlist_name = None
             playlist_uri = None
