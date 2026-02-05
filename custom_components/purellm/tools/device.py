@@ -600,10 +600,13 @@ async def control_device(
         # Only check voice scripts for non-media-player actions
         if action not in media_player_actions:
             # Check if device name matches any configured voice script trigger
+            # Bidirectional: trigger in device OR device in trigger
+            # This handles LLM sending shorter names (e.g. "chromecast" for trigger "chromecast screen")
             for vs in voice_scripts:
                 trigger = vs.get("trigger", "").lower().strip()
-                if trigger and trigger in device_lower:
+                if trigger and (trigger in device_lower or device_lower in trigger):
                     matched_voice_script = vs
+                    _LOGGER.debug("Voice script matched: trigger='%s' for device='%s'", trigger, device_lower)
                     break
 
         if matched_voice_script:
