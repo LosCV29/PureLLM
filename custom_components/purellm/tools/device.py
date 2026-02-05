@@ -468,6 +468,7 @@ async def control_device(
 
     action_words = {
         "turn_on": "turned on", "turn_off": "turned off", "toggle": "toggled",
+        "open": "opened", "close": "closed",
         "lock": "locked", "unlock": "unlocked",
         "open_cover": "opened", "close_cover": "closed", "stop_cover": "stopped",
         "set_cover_position": "set position for",
@@ -805,7 +806,12 @@ async def control_device(
             elif action == "set_temperature" and temperature is not None:
                 response = f"I've set the {controlled[0]} to {temperature} degrees."
             else:
-                action_word = action_words.get(service, action)
+                # For voice scripts, use the original action for the response word
+                # (scripts always map to "turn_on" service, which would say "turned on" for close actions)
+                if matched_voice_script:
+                    action_word = action_words.get(action, action)
+                else:
+                    action_word = action_words.get(service, action)
                 response = f"I've {action_word} the {controlled[0]}."
         else:
             if action == "preset":
@@ -813,7 +819,10 @@ async def control_device(
             elif action == "set_position" and position is not None:
                 response = f"I've set {len(controlled)} devices to {position}%: {', '.join(controlled[:5])}"
             else:
-                action_word = action_words.get(service, action)
+                if matched_voice_script:
+                    action_word = action_words.get(action, action)
+                else:
+                    action_word = action_words.get(service, action)
                 response = f"I've {action_word} {len(controlled)} devices: {', '.join(controlled[:5])}"
             if len(controlled) > 5:
                 response += f" and {len(controlled) - 5} more"
