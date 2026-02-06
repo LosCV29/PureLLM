@@ -67,6 +67,30 @@ def _extract_competitors(competitors: list) -> tuple:
         away,
     )
 
+# Approximate sport seasons by month (1=Jan, 12=Dec)
+# Used to disambiguate when the same team name exists in multiple leagues
+_SPORT_SEASONS = {
+    "hockey":    {9, 10, 11, 12, 1, 2, 3, 4, 5, 6},   # NHL: Oct-Jun
+    "basketball":{10, 11, 12, 1, 2, 3, 4, 5, 6},       # NBA: Oct-Jun
+    "football":  {8, 9, 10, 11, 12, 1, 2},              # NFL: Aug-Feb
+    "baseball":  {2, 3, 4, 5, 6, 7, 8, 9, 10, 11},     # MLB: Feb(ST)-Nov
+    "soccer":    set(range(1, 13)),                       # Year-round
+}
+
+
+def _pick_best_match(matches: list[dict], month: int) -> dict:
+    """Pick the best team match when multiple leagues have the same team name.
+
+    Prefers teams whose sport is currently in-season.
+    """
+    in_season = [m for m in matches if month in _SPORT_SEASONS.get(m["sport"], set())]
+    if len(in_season) == 1:
+        return in_season[0]
+    if in_season:
+        return in_season[0]
+    return matches[0]
+
+
 # Cache TTL for team lists (teams don't change often)
 TEAMS_CACHE_TTL = 3600  # 1 hour
 
@@ -125,6 +149,12 @@ async def get_sports_info(
 
     team_name = arguments.get("team_name", "")
     query_type = arguments.get("query_type", "both")
+
+    # Normalize query_type
+    if query_type == "schedule":
+        query_type = "next_game"
+    elif query_type not in ("last_game", "next_game", "standings", "both"):
+        query_type = "both"
 
     if not team_name:
         return {"error": "No team name provided"}
@@ -199,7 +229,6 @@ async def get_sports_info(
                 ("football", "college-football"),  # NCAA Football
             ]
 
-        team_found = False
         url = None
         full_name = team_name
         team_leagues = []
@@ -215,13 +244,12 @@ async def get_sports_info(
         ]
         all_league_results = await asyncio.gather(*league_tasks, return_exceptions=True)
 
-        # Search through results for matching team
+        # Collect ALL matching teams across leagues (handles ambiguity like Panthers = NFL + NHL)
+        all_matches = []
         for match_type in ["abbrev", "name"]:
-            if team_found:
-                break
+            if all_matches:
+                break  # Abbreviation matches take priority over name matches
             for result in all_league_results:
-                if team_found:
-                    break
                 if isinstance(result, Exception):
                     continue
                 sport, league, teams = result
@@ -238,19 +266,33 @@ async def get_sports_info(
                         match = all(word in combined for word in search_words)
 
                     if match:
-                        team_id = t.get("id", "")
-                        team_abbrev = t.get("abbreviation", "").lower()
-                        full_name = t.get("displayName", team_name)
-                        url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams/{team_id}/schedule"
-                        team_leagues.append((sport, league))
-                        if not team_found:
-                            team_found = True
-                        break
+                        all_matches.append({
+                            "team_id": t.get("id", ""),
+                            "team_abbrev": t.get("abbreviation", "").lower(),
+                            "full_name": t.get("displayName", team_name),
+                            "sport": sport,
+                            "league": league,
+                        })
 
-        if not team_found:
+        if not all_matches:
             if wants_ucl:
                 return {"error": f"Team '{team_name}' not found in UEFA Champions League."}
             return {"error": f"Team '{team_name}' not found. Try the full team name (e.g., 'Miami Heat', 'Manchester City', 'Real Madrid')."}
+
+        # Pick best match - prefer in-season sports when team name is ambiguous
+        if len(all_matches) == 1:
+            best = all_matches[0]
+        else:
+            month = datetime.now(hass_timezone).month
+            best = _pick_best_match(all_matches, month)
+            _LOGGER.info("Sports: Ambiguous team '%s' matched %d leagues, picked %s (%s/%s)",
+                        team_name, len(all_matches), best["full_name"], best["sport"], best["league"])
+
+        team_id = best["team_id"]
+        team_abbrev = best["team_abbrev"]
+        full_name = best["full_name"]
+        url = f"https://site.api.espn.com/apis/site/v2/sports/{best['sport']}/{best['league']}/teams/{team_id}/schedule"
+        team_leagues.append((best["sport"], best["league"]))
 
         result = {"team": full_name}
 
