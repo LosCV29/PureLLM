@@ -802,27 +802,50 @@ class PureLLMConversationEntity(ConversationEntity):
                             accumulated_content += delta.content
                             yield {"content": delta.content}
 
-                        # Accumulate tool calls
+                        # Accumulate tool calls (new format)
                         if delta.tool_calls:
                             for tc_delta in delta.tool_calls:
-                                if tc_delta.index is not None:
-                                    while len(tool_calls_buffer) <= tc_delta.index:
-                                        tool_calls_buffer.append({
-                                            "id": None,
-                                            "type": "function",
-                                            "function": {"name": "", "arguments": ""}
-                                        })
+                                # Default index to 0 if missing (common with local LLMs)
+                                idx = tc_delta.index if tc_delta.index is not None else 0
+                                while len(tool_calls_buffer) <= idx:
+                                    tool_calls_buffer.append({
+                                        "id": None,
+                                        "type": "function",
+                                        "function": {"name": "", "arguments": ""}
+                                    })
 
-                                    current = tool_calls_buffer[tc_delta.index]
-                                    if tc_delta.id:
-                                        current["id"] = tc_delta.id
-                                    if tc_delta.function:
-                                        if tc_delta.function.name:
-                                            current["function"]["name"] += tc_delta.function.name
-                                        if tc_delta.function.arguments:
-                                            current["function"]["arguments"] += tc_delta.function.arguments
+                                current = tool_calls_buffer[idx]
+                                if tc_delta.id:
+                                    current["id"] = tc_delta.id
+                                if tc_delta.function:
+                                    if tc_delta.function.name:
+                                        current["function"]["name"] += tc_delta.function.name
+                                    if tc_delta.function.arguments:
+                                        current["function"]["arguments"] += tc_delta.function.arguments
+
+                        # Handle legacy function_call format (some local LLMs use this)
+                        if hasattr(delta, "function_call") and delta.function_call and not delta.tool_calls:
+                            if not tool_calls_buffer:
+                                tool_calls_buffer.append({
+                                    "id": "call_legacy_0",
+                                    "type": "function",
+                                    "function": {"name": "", "arguments": ""}
+                                })
+                            current = tool_calls_buffer[0]
+                            if delta.function_call.name:
+                                current["function"]["name"] += delta.function_call.name
+                            if delta.function_call.arguments:
+                                current["function"]["arguments"] += delta.function_call.arguments
                 finally:
                     await stream.close()
+
+                # Debug: log what the LLM produced
+                if not accumulated_content and not tool_calls_buffer:
+                    _LOGGER.warning("LLM produced no content and no tool calls on iteration %d", iteration)
+                elif tool_calls_buffer:
+                    _LOGGER.info("LLM produced %d tool call(s): %s",
+                                len(tool_calls_buffer),
+                                [tc.get("function", {}).get("name", "?") for tc in tool_calls_buffer])
 
                 # Process tool calls if any
                 # Generate synthetic IDs for tool calls missing them (common with local LLMs)
@@ -892,14 +915,16 @@ class PureLLMConversationEntity(ConversationEntity):
                 if accumulated_content:
                     return
 
+                _LOGGER.warning("LLM iteration %d: no content and no tool calls, breaking", iteration)
                 break
 
             except Exception as e:
-                _LOGGER.error("OpenAI API error: %s", e)
+                _LOGGER.error("OpenAI API error: %s", e, exc_info=True)
                 yield {"content": "Sorry, there was an error processing your request."}
                 return
 
         # If we get here with no content, yield a fallback
+        _LOGGER.error("LLM fallback triggered after %d iterations - no response produced", iteration + 1)
         yield {"content": "I apologize, but I couldn't complete that request."}
 
     # =========================================================================
