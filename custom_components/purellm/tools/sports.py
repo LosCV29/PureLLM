@@ -170,13 +170,11 @@ async def get_sports_info(
         wants_hockey = "hockey" in team_key
 
         # Remove common extra words that don't help with team matching
-        noise_words = ["game", "match", "next", "last", "the", "play", "playing", "fixture", "fixtures", "schedule",
+        # Use word-boundary split to avoid corrupting team names (e.g. "the" inside "panthers")
+        noise_words = {"game", "match", "next", "last", "the", "play", "playing", "fixture", "fixtures", "schedule",
                        "mens", "womens", "men's", "women's", "basketball", "football", "baseball", "hockey",
-                       "team", "university", "of", "college", "state"]
-        for word in noise_words:
-            team_key = team_key.replace(word, "").strip()
-        # Clean up multiple spaces
-        team_key = " ".join(team_key.split())
+                       "team", "university", "of", "college", "state"}
+        team_key = " ".join(w for w in team_key.split() if w not in noise_words)
 
         # Check for UEFA Champions League ONLY - these keywords mean user wants UCL
         ucl_keywords = ["champions league", "ucl", "champions", "uefa"]
