@@ -18,6 +18,55 @@ _LOGGER = logging.getLogger(__name__)
 # Common ESPN API headers
 ESPN_HEADERS = {"User-Agent": "HomeAssistant-PolyVoice/1.0"}
 
+
+def _format_game_date(game_dt_local, now_local, include_time: bool = True) -> str:
+    """Format game date with relative labels (Today, Tomorrow, yesterday)."""
+    game_date_only = game_dt_local.date()
+    today_date = now_local.date()
+
+    if include_time:
+        time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
+        if game_date_only == today_date:
+            return f"Today at {time_str}"
+        elif game_date_only == today_date + timedelta(days=1):
+            return f"Tomorrow at {time_str}"
+        else:
+            return game_dt_local.strftime("%A, %B %d at %I:%M %p")
+    else:
+        if game_date_only == today_date:
+            return "today"
+        elif game_date_only == today_date - timedelta(days=1):
+            return "yesterday"
+        else:
+            return game_dt_local.strftime("%A, %B %d")
+
+
+def _match_team_in_competitors(competitors: list, team_id: str, team_abbrev: str, full_name: str) -> bool:
+    """Check if any competitor matches the given team."""
+    full_lower = full_name.lower()
+    for c in competitors:
+        c_team = c.get("team", {})
+        if c_team.get("id", "") == team_id:
+            return True
+        if team_abbrev and c_team.get("abbreviation", "").lower() == team_abbrev:
+            return True
+        c_name = c_team.get("displayName", "").lower()
+        if full_lower in c_name or c_name in full_lower:
+            return True
+    return False
+
+
+def _extract_competitors(competitors: list) -> tuple:
+    """Extract home/away teams. Returns (home_name, away_name, home_comp, away_comp)."""
+    home = next((c for c in competitors if c.get("homeAway") == "home"), {})
+    away = next((c for c in competitors if c.get("homeAway") == "away"), {})
+    return (
+        home.get("team", {}).get("displayName") or "Home",
+        away.get("team", {}).get("displayName") or "Away",
+        home,
+        away,
+    )
+
 # Cache TTL for team lists (teams don't change often)
 TEAMS_CACHE_TTL = 3600  # 1 hour
 
@@ -305,24 +354,7 @@ async def get_sports_info(
 
                         sb_competitors = sb_comp.get("competitors", [])
 
-                        # Match by ID, abbreviation, or display name (ESPN IDs can differ between endpoints for college sports)
-                        team_match = False
-                        for c in sb_competitors:
-                            c_team = c.get("team", {})
-                            c_id = c_team.get("id", "")
-                            c_abbrev = c_team.get("abbreviation", "").lower()
-                            c_name = c_team.get("displayName", "").lower()
-                            if c_id == team_id:
-                                team_match = True
-                                break
-                            if team_abbrev and c_abbrev == team_abbrev:
-                                team_match = True
-                                break
-                            if full_name.lower() in c_name or c_name in full_name.lower():
-                                team_match = True
-                                break
-
-                        if not team_match:
+                        if not _match_team_in_competitors(sb_competitors, team_id, team_abbrev, full_name):
                             # Log what we're checking for debugging
                             competitor_names = [c.get("team", {}).get("displayName", "?") for c in sb_competitors]
                             _LOGGER.debug("Sports: Scoreboard event %s - no match (looking for %s)",
@@ -330,11 +362,7 @@ async def get_sports_info(
                             continue
 
                         _LOGGER.debug("Sports: Found team match on scoreboard, state=%s", sb_state)
-                        home_team_sb = next((c for c in sb_competitors if c.get("homeAway") == "home"), {})
-                        away_team_sb = next((c for c in sb_competitors if c.get("homeAway") == "away"), {})
-                        # Use 'or' to handle empty strings (not just missing keys)
-                        home_name = home_team_sb.get("team", {}).get("displayName") or "Home"
-                        away_name = away_team_sb.get("team", {}).get("displayName") or "Away"
+                        home_name, away_name, home_team_sb, away_team_sb = _extract_competitors(sb_competitors)
 
                         if sb_state == "in":
                             home_score = home_team_sb.get("score", "0")
@@ -360,20 +388,7 @@ async def get_sports_info(
                             if game_date_str:
                                 try:
                                     game_dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
-                                    game_dt_local = game_dt.astimezone(hass_timezone)
-                                    now_local = datetime.now(hass_timezone)
-
-                                    game_date_only = game_dt_local.date()
-                                    today_date = now_local.date()
-                                    tomorrow_date = today_date + timedelta(days=1)
-
-                                    time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
-                                    if game_date_only == today_date:
-                                        formatted_date = f"Today at {time_str}"
-                                    elif game_date_only == tomorrow_date:
-                                        formatted_date = f"Tomorrow at {time_str}"
-                                    else:
-                                        formatted_date = game_dt_local.strftime("%A, %B %d at %I:%M %p")
+                                    formatted_date = _format_game_date(game_dt.astimezone(hass_timezone), datetime.now(hass_timezone))
                                 except (ValueError, KeyError, TypeError, AttributeError):
                                     formatted_date = sb_status.get("detail", "TBD")
                             else:
@@ -423,44 +438,14 @@ async def get_sports_info(
                         if fut_status.get("state", "") != "pre":
                             continue
                         fut_competitors = fut_comp.get("competitors", [])
-                        # Match by ID, abbreviation, or display name (ESPN IDs can differ between endpoints)
-                        team_match = False
-                        for c in fut_competitors:
-                            c_team = c.get("team", {})
-                            c_id = c_team.get("id", "")
-                            c_abbrev = c_team.get("abbreviation", "").lower()
-                            c_name = c_team.get("displayName", "").lower()
-                            if c_id == team_id:
-                                team_match = True
-                                break
-                            if team_abbrev and c_abbrev == team_abbrev:
-                                team_match = True
-                                break
-                            if full_name.lower() in c_name or c_name in full_name.lower():
-                                team_match = True
-                                break
-                        if not team_match:
+                        if not _match_team_in_competitors(fut_competitors, team_id, team_abbrev, full_name):
                             continue
                         # Found upcoming game
-                        home_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "home"), {})
-                        away_team_fut = next((c for c in fut_competitors if c.get("homeAway") == "away"), {})
-                        # Use 'or' to handle empty strings (not just missing keys)
-                        home_name = home_team_fut.get("team", {}).get("displayName") or "Home"
-                        away_name = away_team_fut.get("team", {}).get("displayName") or "Away"
+                        home_name, away_name, _, _ = _extract_competitors(fut_competitors)
                         game_date_str = fut_event.get("date", "")
                         try:
                             game_dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
-                            game_dt_local = game_dt.astimezone(hass_timezone)
-                            game_date_only = game_dt_local.date()
-                            today_date = now_local.date()
-                            tomorrow_date = today_date + timedelta(days=1)
-                            time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
-                            if game_date_only == today_date:
-                                formatted_date = f"Today at {time_str}"
-                            elif game_date_only == tomorrow_date:
-                                formatted_date = f"Tomorrow at {time_str}"
-                            else:
-                                formatted_date = game_dt_local.strftime("%A, %B %d at %I:%M %p")
+                            formatted_date = _format_game_date(game_dt.astimezone(hass_timezone), now_local)
                         except (ValueError, KeyError, TypeError, AttributeError):
                             formatted_date = "TBD"
                         venue = fut_comp.get("venue", {}).get("fullName", "")
@@ -507,12 +492,7 @@ async def get_sports_info(
                         if last_game:
                             comp = last_game.get("competitions", [{}])[0]
                             competitors = comp.get("competitors", [])
-                            home_team = next((c for c in competitors if c.get("homeAway") == "home"), {})
-                            away_team = next((c for c in competitors if c.get("homeAway") == "away"), {})
-
-                            # Use 'or' to handle empty strings (not just missing keys)
-                            home_name = home_team.get("team", {}).get("displayName") or "Home"
-                            away_name = away_team.get("team", {}).get("displayName") or "Away"
+                            home_name, away_name, home_team, away_team = _extract_competitors(competitors)
                             home_score_raw = home_team.get("score", "0")
                             away_score_raw = away_team.get("score", "0")
                             home_score = home_score_raw.get("displayValue", home_score_raw) if isinstance(home_score_raw, dict) else home_score_raw
@@ -523,27 +503,12 @@ async def get_sports_info(
                             formatted_last_date = game_date_str[:10]  # Default fallback
                             if game_date_str:
                                 try:
-                                    # Handle both full ISO timestamps and date-only strings
                                     if "T" in game_date_str:
-                                        # Full timestamp: "2026-01-07T00:30:00Z"
                                         game_dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
                                     else:
-                                        # Date only: "2026-01-07" - treat as UTC midnight
                                         game_dt = datetime.fromisoformat(game_date_str).replace(tzinfo=timezone.utc)
-
-                                    game_dt_local = game_dt.astimezone(hass_timezone)
-                                    now_local = datetime.now(hass_timezone)
-
-                                    game_date_only = game_dt_local.date()
-                                    today_date = now_local.date()
-                                    yesterday_date = today_date - timedelta(days=1)
-
-                                    if game_date_only == today_date:
-                                        formatted_last_date = "today"
-                                    elif game_date_only == yesterday_date:
-                                        formatted_last_date = "yesterday"
-                                    else:
-                                        formatted_last_date = game_dt_local.strftime("%A, %B %d")
+                                    formatted_last_date = _format_game_date(
+                                        game_dt.astimezone(hass_timezone), datetime.now(hass_timezone), include_time=False)
                                 except (ValueError, KeyError, TypeError, AttributeError):
                                     pass
 
@@ -592,26 +557,9 @@ async def get_sports_info(
                         if next_game:
                             comp = next_game.get("competitions", [{}])[0]
                             competitors = comp.get("competitors", [])
-                            home_team = next((c for c in competitors if c.get("homeAway") == "home"), {})
-                            away_team = next((c for c in competitors if c.get("homeAway") == "away"), {})
-                            # Use 'or' to handle empty strings (not just missing keys)
-                            home_name = home_team.get("team", {}).get("displayName") or "Home"
-                            away_name = away_team.get("team", {}).get("displayName") or "Away"
-
-                            # Format the date with relative dates
-                            game_dt_local = next_game_date.astimezone(hass_timezone)
-                            now_local = datetime.now(hass_timezone)
-                            game_date_only = game_dt_local.date()
-                            today_date = now_local.date()
-                            tomorrow_date = today_date + timedelta(days=1)
-
-                            time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
-                            if game_date_only == today_date:
-                                formatted_date = f"Today at {time_str}"
-                            elif game_date_only == tomorrow_date:
-                                formatted_date = f"Tomorrow at {time_str}"
-                            else:
-                                formatted_date = game_dt_local.strftime("%A, %B %d at %I:%M %p")
+                            home_name, away_name, _, _ = _extract_competitors(competitors)
+                            formatted_date = _format_game_date(
+                                next_game_date.astimezone(hass_timezone), datetime.now(hass_timezone))
 
                             venue = comp.get("venue", {}).get("fullName", "")
                             result["next_game"] = {

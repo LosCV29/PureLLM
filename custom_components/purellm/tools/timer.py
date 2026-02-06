@@ -365,6 +365,46 @@ def _find_timer_by_name(timers: list, name: str) -> Any | None:
     return best_match if best_score > 0.3 else None
 
 
+async def _timer_batch_action(
+    hass: "HomeAssistant",
+    timers: list,
+    timer_name: str,
+    target_state: str,
+    timer_service: str,
+    action_past: str,
+    state_label: str,
+) -> dict[str, Any]:
+    """Find timers in target_state and apply timer_service. Used by pause/resume."""
+    target_timers = []
+    if timer_name:
+        matched = _find_timer_by_name(timers, timer_name)
+        if matched and matched.state == target_state:
+            target_timers = [matched]
+        elif matched:
+            return {"message": f"Timer '{matched.attributes.get('friendly_name', timer_name)}' is not {state_label} (currently {matched.state})"}
+    else:
+        target_timers = [t for t in timers if t.state == target_state]
+
+    if not target_timers:
+        return {"message": f"No {state_label} timers to {action_past.rstrip('d')}"}
+
+    for timer in target_timers:
+        await hass.services.async_call(
+            "timer", timer_service,
+            {"entity_id": timer.entity_id},
+            blocking=True
+        )
+
+    names = [t.attributes.get("friendly_name", "Timer") for t in target_timers]
+    return {
+        "success": True,
+        "action": action_past,
+        "count": len(target_timers),
+        "timers": names,
+        "message": f"{action_past.capitalize()}: {', '.join(names)}"
+    }
+
+
 async def control_timer(
     arguments: dict[str, Any],
     hass: "HomeAssistant",
@@ -515,64 +555,10 @@ async def control_timer(
                 }
 
         elif action == "pause":
-            target_timers = []
-            if timer_name:
-                matched = _find_timer_by_name(timers, timer_name)
-                if matched and matched.state == "active":
-                    target_timers = [matched]
-                elif matched:
-                    return {"message": f"Timer '{matched.attributes.get('friendly_name', timer_name)}' is not active (currently {matched.state})"}
-            else:
-                target_timers = [t for t in timers if t.state == "active"]
-
-            if not target_timers:
-                return {"message": "No active timers to pause"}
-
-            for timer in target_timers:
-                await hass.services.async_call(
-                    "timer", "pause",
-                    {"entity_id": timer.entity_id},
-                    blocking=True
-                )
-
-            names = [t.attributes.get("friendly_name", "Timer") for t in target_timers]
-            return {
-                "success": True,
-                "action": "paused",
-                "count": len(target_timers),
-                "timers": names,
-                "message": f"Paused: {', '.join(names)}"
-            }
+            return await _timer_batch_action(hass, timers, timer_name, "active", "pause", "paused", "active")
 
         elif action == "resume":
-            target_timers = []
-            if timer_name:
-                matched = _find_timer_by_name(timers, timer_name)
-                if matched and matched.state == "paused":
-                    target_timers = [matched]
-                elif matched:
-                    return {"message": f"Timer '{matched.attributes.get('friendly_name', timer_name)}' is not paused (currently {matched.state})"}
-            else:
-                target_timers = [t for t in timers if t.state == "paused"]
-
-            if not target_timers:
-                return {"message": "No paused timers to resume"}
-
-            for timer in target_timers:
-                await hass.services.async_call(
-                    "timer", "start",
-                    {"entity_id": timer.entity_id},
-                    blocking=True
-                )
-
-            names = [t.attributes.get("friendly_name", "Timer") for t in target_timers]
-            return {
-                "success": True,
-                "action": "resumed",
-                "count": len(target_timers),
-                "timers": names,
-                "message": f"Resumed: {', '.join(names)}"
-            }
+            return await _timer_batch_action(hass, timers, timer_name, "paused", "start", "resumed", "paused")
 
         elif action == "status":
             active_info = []

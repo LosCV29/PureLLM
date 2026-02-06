@@ -5,6 +5,32 @@ from math import radians, cos, sin, asin, sqrt
 from typing import Any
 
 
+# STT mishearing normalization map for Spanish room names
+# Used by device.py and music.py for device lookups and spoken responses
+ROOM_NORMALIZATION_MAP = {
+    # sala variants (most common mishearing)
+    'salad': 'sala', 'salah': 'sala', 'salla': 'sala', 'sulla': 'sala',
+    'zala': 'sala', 'salat': 'sala', 'satellite': 'sala', 'sela': 'sala',
+    'seller': 'sala', 'silent': 'sala',
+    # cocina variants
+    'cocinna': 'cocina', 'kosina': 'cocina', 'cozina': 'cocina',
+    # baño variants
+    'banyo': 'baño', 'bunyo': 'baño', 'bano': 'baño',
+}
+
+# Common room names (English + Spanish + STT mishearings)
+# Used by music.py for room-stripping from queries
+COMMON_ROOM_NAMES = {
+    'living room', 'kitchen', 'bedroom', 'master bedroom', 'office',
+    'bathroom', 'garage', 'basement', 'den', 'studio', 'nursery',
+    'dining room', 'family room', 'guest room', 'laundry room',
+    'sala', 'cocina', 'recámara', 'recamara', 'habitación', 'habitacion',
+    'dormitorio', 'oficina', 'baño', 'bano', 'garaje', 'sótano', 'sotano',
+    'estudio', 'comedor', 'cuarto de huéspedes', 'cuarto de huespedes',
+    'lavandería', 'lavanderia', 'cuarto', 'alcoba',
+} | set(ROOM_NORMALIZATION_MAP.keys())
+
+
 def get_friendly_name(entity_id: str, state) -> str:
     """Get the friendly name for an entity."""
     return state.attributes.get("friendly_name", entity_id.split(".")[-1])

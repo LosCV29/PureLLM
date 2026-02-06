@@ -234,17 +234,14 @@ class PureLLMConversationEntity(ConversationEntity):
         self.system_prompt = config.get(CONF_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT)
 
         # Custom location
-        try:
-            lat = float(config.get(CONF_CUSTOM_LATITUDE) or 0)
-            self.custom_latitude = lat if lat != 0 else None
-        except (ValueError, TypeError):
-            self.custom_latitude = None
-
-        try:
-            lon = float(config.get(CONF_CUSTOM_LONGITUDE) or 0)
-            self.custom_longitude = lon if lon != 0 else None
-        except (ValueError, TypeError):
-            self.custom_longitude = None
+        def _parse_coord(key):
+            try:
+                v = float(config.get(key) or 0)
+                return v if v != 0 else None
+            except (ValueError, TypeError):
+                return None
+        self.custom_latitude = _parse_coord(CONF_CUSTOM_LATITUDE)
+        self.custom_longitude = _parse_coord(CONF_CUSTOM_LONGITUDE)
 
         # API keys
         self.openweathermap_api_key = config.get(CONF_OPENWEATHERMAP_API_KEY, "")
@@ -296,12 +293,16 @@ class PureLLMConversationEntity(ConversationEntity):
         self.notify_on_camera = config.get(CONF_NOTIFY_ON_CAMERA, DEFAULT_NOTIFY_ON_CAMERA)
         self.notify_on_search = config.get(CONF_NOTIFY_ON_SEARCH, DEFAULT_NOTIFY_ON_SEARCH)
 
+        # JSON list parser helper
+        def _parse_json_list(key, default):
+            raw = config.get(key, default)
+            try:
+                return json.loads(raw) if raw else []
+            except (json.JSONDecodeError, TypeError):
+                return []
+
         # Voice scripts configuration
-        voice_scripts_json = config.get(CONF_VOICE_SCRIPTS, DEFAULT_VOICE_SCRIPTS)
-        try:
-            self.voice_scripts = json.loads(voice_scripts_json) if voice_scripts_json else []
-        except (json.JSONDecodeError, TypeError):
-            self.voice_scripts = []
+        self.voice_scripts = _parse_json_list(CONF_VOICE_SCRIPTS, DEFAULT_VOICE_SCRIPTS)
 
         # Camera friendly names configuration
         camera_names_str = config.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES)
@@ -315,11 +316,7 @@ class PureLLMConversationEntity(ConversationEntity):
             self.camera_friendly_names[location_key] = friendly_name
 
         # SofaBaton activities configuration
-        sofabaton_json = config.get(CONF_SOFABATON_ACTIVITIES, DEFAULT_SOFABATON_ACTIVITIES)
-        try:
-            self.sofabaton_activities = json.loads(sofabaton_json) if sofabaton_json else []
-        except (json.JSONDecodeError, TypeError):
-            self.sofabaton_activities = []
+        self.sofabaton_activities = _parse_json_list(CONF_SOFABATON_ACTIVITIES, DEFAULT_SOFABATON_ACTIVITIES)
 
         # Clear caches on config update
         self._tools = None

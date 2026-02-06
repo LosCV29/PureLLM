@@ -8,37 +8,12 @@ from datetime import datetime, timedelta
 from typing import Any, TYPE_CHECKING
 
 from ..utils.fuzzy_matching import find_entity_by_name
-from ..utils.helpers import format_human_readable_state, get_friendly_name
+from ..utils.helpers import format_human_readable_state, get_friendly_name, ROOM_NORMALIZATION_MAP
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
-
-
-# STT mishearing normalization map for Spanish room names
-# Used to fix device lookups and spoken responses (e.g., "salad" → "sala")
-ROOM_NORMALIZATION_MAP = {
-    # sala variants (most common mishearing)
-    'salad': 'sala',
-    'salah': 'sala',
-    'salla': 'sala',
-    'sulla': 'sala',
-    'zala': 'sala',
-    'salat': 'sala',      # common STT mishearing
-    'satellite': 'sala',  # common STT mishearing
-    'sela': 'sala',
-    'seller': 'sala',
-    'silent': 'sala',
-    # cocina variants
-    'cocinna': 'cocina',
-    'kosina': 'cocina',
-    'cozina': 'cocina',
-    # baño variants
-    'banyo': 'baño',
-    'bunyo': 'baño',
-    'bano': 'baño',
-}
 
 
 def _normalize_spanish_room_names(text: str) -> str:
