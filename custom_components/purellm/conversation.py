@@ -768,6 +768,7 @@ class PureLLMConversationEntity(ConversationEntity):
         messages.append({"role": "user", "content": user_text})
 
         called_tools: set[str] = set()
+        last_tool_response_text: str = ""  # Track last tool response for fallback
 
         for iteration in range(5):  # Max 5 tool iterations
             kwargs = {
@@ -843,7 +844,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 if not accumulated_content and not tool_calls_buffer:
                     _LOGGER.warning("LLM produced no content and no tool calls on iteration %d", iteration)
                 elif tool_calls_buffer:
-                    _LOGGER.info("LLM produced %d tool call(s): %s",
+                    _LOGGER.warning("LLM produced %d tool call(s): %s",
                                 len(tool_calls_buffer),
                                 [tc.get("function", {}).get("name", "?") for tc in tool_calls_buffer])
 
@@ -864,9 +865,11 @@ class PureLLMConversationEntity(ConversationEntity):
                     if tool_key not in called_tools:
                         called_tools.add(tool_key)
                         unique_tool_calls.append(tc)
+                    else:
+                        _LOGGER.warning("LLM repeated tool call (deduped): %s", tc['function']['name'])
 
                 if unique_tool_calls:
-                    _LOGGER.info("Processing %d tool call(s)", len(unique_tool_calls))
+                    _LOGGER.warning("Executing %d tool call(s)", len(unique_tool_calls))
 
                     # Add assistant message with tool calls to conversation
                     messages.append({
@@ -884,7 +887,7 @@ class PureLLMConversationEntity(ConversationEntity):
                         except json.JSONDecodeError:
                             arguments = {}
 
-                        _LOGGER.info("Tool call: %s(%s)", tool_name, arguments)
+                        _LOGGER.warning("Tool call: %s(%s)", tool_name, arguments)
                         tool_tasks.append(self._execute_tool(tool_name, arguments))
 
                     tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
@@ -898,8 +901,11 @@ class PureLLMConversationEntity(ConversationEntity):
                         # Get content for the message
                         if isinstance(result, dict) and "response_text" in result:
                             content = result["response_text"]
+                            last_tool_response_text = content
                         else:
                             content = json.dumps(result, ensure_ascii=False)
+
+                        _LOGGER.warning("Tool result for %s: %s", tool_call["function"]["name"], content[:200])
 
                         # Add tool result to messages for next iteration
                         messages.append({
@@ -923,9 +929,13 @@ class PureLLMConversationEntity(ConversationEntity):
                 yield {"content": "Sorry, there was an error processing your request."}
                 return
 
-        # If we get here with no content, yield a fallback
-        _LOGGER.error("LLM fallback triggered after %d iterations - no response produced", iteration + 1)
-        yield {"content": "I apologize, but I couldn't complete that request."}
+        # If we get here with no content, use tool response_text as fallback
+        if last_tool_response_text:
+            _LOGGER.warning("LLM failed to respond after tool call, using tool response_text directly")
+            yield {"content": last_tool_response_text}
+        else:
+            _LOGGER.error("LLM fallback triggered after %d iterations - no response produced", iteration + 1)
+            yield {"content": "I apologize, but I couldn't complete that request."}
 
     # =========================================================================
     # Notification Helpers
