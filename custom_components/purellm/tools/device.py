@@ -464,6 +464,7 @@ async def control_device(
     }
 
     entities_to_control = []
+    matched_voice_script = None
 
     # Method 1: Direct entity_id
     if direct_entity_id:
