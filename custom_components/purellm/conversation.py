@@ -825,6 +825,11 @@ class PureLLMConversationEntity(ConversationEntity):
                     await stream.close()
 
                 # Process tool calls if any
+                # Generate synthetic IDs for tool calls missing them (common with local LLMs)
+                for i, tc in enumerate(tool_calls_buffer):
+                    if not tc.get("id") and tc.get("function", {}).get("name"):
+                        tc["id"] = f"call_{iteration}_{i}"
+
                 valid_tool_calls = [
                     tc for tc in tool_calls_buffer
                     if tc.get("id") and tc.get("function", {}).get("name")
