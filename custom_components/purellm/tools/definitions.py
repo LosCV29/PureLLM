@@ -107,10 +107,10 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     if config.enable_sports:
         tools.append(_tool(
             "get_sports_info",
-            "Get team info (schedule, scores). Include competition in team_name: 'Man City Champions League' for UCL, 'Alabama football' for college.",
+            "Get team info (schedule, scores). Include sport for ambiguous names: 'Panthers hockey' for NHL, 'Panthers football' for NFL. Include 'Champions League' or 'UCL' for European competition, 'football'/'basketball' for college.",
             {
-                "team_name": {"type": "string", "description": "Team + competition. MUST include 'Champions League' or 'UCL' for European competition games, otherwise returns domestic league only."},
-                "query_type": {"type": "string", "enum": ["last_game", "next_game", "standings", "both"], "description": "last_game, next_game, standings, or both (default)"}
+                "team_name": {"type": "string", "description": "Team + sport/competition. Add sport keyword for ambiguous names (e.g. 'Panthers hockey'). MUST include 'Champions League' or 'UCL' for European competition games."},
+                "query_type": {"type": "string", "enum": ["last_game", "next_game", "standings", "schedule", "both"], "description": "last_game, next_game, standings, schedule, or both (default)"}
             },
             ["team_name"]
         ))
