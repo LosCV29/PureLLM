@@ -537,7 +537,7 @@ class PureLLMConversationEntity(ConversationEntity):
     def _get_extra_system_prompt(
         self,
         user_input: conversation.ConversationInput,
-        chat_log: ChatLog,
+        chat_log: ChatLog | None,
     ) -> str | None:
         """Get extra system prompt from user_input, chat_log, or stored conversation.
 
@@ -560,10 +560,21 @@ class PureLLMConversationEntity(ConversationEntity):
 
         return None
 
+    async def async_process(
+        self,
+        user_input: conversation.ConversationInput,
+    ) -> conversation.ConversationResult:
+        """Process a conversation input from Home Assistant.
+
+        This is the main entry point called by Home Assistant's conversation
+        framework, including voice pipelines and assist_satellite services.
+        """
+        return await self._async_handle_message(user_input, None)
+
     async def _async_handle_message(
         self,
         user_input: conversation.ConversationInput,
-        chat_log: ChatLog,
+        chat_log: ChatLog | None,
     ) -> conversation.ConversationResult:
         """Handle an incoming chat message.
 
