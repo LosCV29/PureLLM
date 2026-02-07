@@ -22,7 +22,6 @@ _LOGGER = logging.getLogger(__name__)
 SERVICE_ASK_AND_ACT = "ask_and_act"
 
 # Schema for ask_and_act service
-# Simplified: LLM handles action execution via its tools
 ANSWER_SCHEMA = vol.Schema({
     vol.Required("id"): cv.string,
     vol.Required("sentences"): vol.All(cv.ensure_list, [cv.string]),
@@ -38,7 +37,6 @@ ASK_AND_ACT_SCHEMA = vol.Schema({
     vol.Required("satellite_entity_id"): cv.entity_id,
     vol.Required("question"): cv.string,
     vol.Required("answers"): vol.All(cv.ensure_list, [ANSWER_SCHEMA]),
-    vol.Optional("tts_entity_id"): cv.entity_id,  # Optional, defaults to tts.home_assistant_cloud
 })
 
 PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.UPDATE]
@@ -59,126 +57,107 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
-    This service leverages the LLM to:
-    1. Speak question via TTS
-    2. Listen for response via satellite
-    3. LLM executes the appropriate action based on response
-    4. LLM speaks confirmation
+    This service uses the LLM to handle the complete question-answer-action flow:
+    1. Speaks the question via the satellite's TTS
+    2. Listens for user response via the satellite's STT
+    3. LLM receives the response with context about what actions to take
+    4. LLM executes the appropriate tool calls based on user response
+    5. LLM speaks the confirmation
 
-    The LLM handles action execution via its control_device tool.
+    The LLM is given context about what actions to take for yes/no responses.
     """
     satellite_entity_id = call.data["satellite_entity_id"]
     question = call.data["question"]
     answers = call.data["answers"]
-    tts_entity_id = call.data.get("tts_entity_id", "tts.home_assistant_cloud")
 
-    # Derive media_player from satellite entity ID
-    # Pattern: assist_satellite.home_assistant_voice_XXXXXX_assist_satellite
-    #       -> media_player.home_assistant_voice_XXXXXX_media_player
-    satellite_suffix = satellite_entity_id.split(".")[-1]  # home_assistant_voice_XXXXXX_assist_satellite
-    if "_assist_satellite" in satellite_suffix:
-        media_player_suffix = satellite_suffix.replace("_assist_satellite", "_media_player")
-        media_player_entity_id = f"media_player.{media_player_suffix}"
-    else:
-        # Fallback - just try to construct it
-        media_player_entity_id = satellite_entity_id.replace("assist_satellite.", "media_player.").replace("_assist_satellite", "_media_player")
+    _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s", question, satellite_entity_id)
 
-    _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s, media_player=%s",
-                 question, satellite_entity_id, media_player_entity_id)
-
-    # Build the extra_system_prompt that instructs the LLM what to do
+    # Build the LLM system prompt from the answers configuration
+    # This tells the LLM exactly what to do for each response type
     prompt_parts = [
-        f"The user was just asked: \"{question}\"",
+        f'The user was just asked: "{question}"',
         "",
-        "YOU MUST FOLLOW THESE INSTRUCTIONS EXACTLY:",
+        "Based on their response, take ONE of these actions:",
         "",
     ]
 
     for answer in answers:
-        sentences = answer["sentences"]
-        sentences_str = ", ".join(f'"{s}"' for s in sentences)
+        answer_id = answer["id"]
+        sentences = ", ".join(f'"{s}"' for s in answer["sentences"])
 
         if "action" in answer:
             action = answer["action"]
             service = action["service"]
             target = action.get("target", {})
             data = action.get("data", {})
-            entity_id = target.get("entity_id", "")
 
-            if service.startswith("light.turn_on"):
-                brightness = data.get("brightness_pct", 100)
-                color_temp = data.get("color_temp_kelvin", 4000)
-                prompt_parts.append(f"If user says {sentences_str} or similar affirmative:")
-                prompt_parts.append(f"  1. FIRST call control_device(entity_id=\"{entity_id}\", action=\"turn_on\", brightness={brightness}, color_temp={color_temp})")
-                if "response" in answer:
-                    prompt_parts.append(f"  2. AFTER the tool call succeeds, say: \"{answer['response']}\"")
-            elif service.startswith("light.turn_off"):
-                prompt_parts.append(f"If user says {sentences_str} or similar:")
-                prompt_parts.append(f"  1. FIRST call control_device(entity_id=\"{entity_id}\", action=\"turn_off\")")
-                if "response" in answer:
-                    prompt_parts.append(f"  2. AFTER the tool call succeeds, say: \"{answer['response']}\"")
-            elif service.startswith("switch."):
-                action_type = "turn_on" if "turn_on" in service else "turn_off"
-                prompt_parts.append(f"If user says {sentences_str} or similar:")
-                prompt_parts.append(f"  1. FIRST call control_device(entity_id=\"{entity_id}\", action=\"{action_type}\")")
-                if "response" in answer:
-                    prompt_parts.append(f"  2. AFTER the tool call succeeds, say: \"{answer['response']}\"")
-        else:
-            # No action, just respond
-            prompt_parts.append(f"If user says {sentences_str} or similar:")
+            # Build the tool call instruction
+            if "entity_id" in target:
+                entity_id = target["entity_id"]
+                # Extract domain and action from service
+                if service == "light.turn_on":
+                    tool_params = [f'entity_id="{entity_id}"', 'action="turn_on"']
+                    if "brightness_pct" in data:
+                        tool_params.append(f'brightness={data["brightness_pct"]}')
+                    if "color_temp_kelvin" in data:
+                        tool_params.append(f'color_temp={data["color_temp_kelvin"]}')
+                    prompt_parts.append(
+                        f'- If user says {sentences}: Call control_device({", ".join(tool_params)})'
+                    )
+                elif service == "light.turn_off":
+                    prompt_parts.append(
+                        f'- If user says {sentences}: Call control_device(entity_id="{entity_id}", action="turn_off")'
+                    )
+                else:
+                    # Generic service call instruction
+                    prompt_parts.append(
+                        f'- If user says {sentences}: Call {service} on {entity_id}'
+                    )
+            else:
+                prompt_parts.append(
+                    f'- If user says {sentences}: Call {service}'
+                )
+
             if "response" in answer:
-                prompt_parts.append(f"  -> Just say: \"{answer['response']}\"")
-
-        prompt_parts.append("")
+                prompt_parts.append(f'  Then say: "{answer["response"]}"')
+        else:
+            # No action, just a response
+            response = answer.get("response", "Okay")
+            prompt_parts.append(f'- If user says {sentences}: Just say "{response}"')
 
     prompt_parts.extend([
-        "CRITICAL RULES:",
-        "- You MUST call control_device BEFORE saying anything",
-        "- Use entity_id parameter, NOT device parameter",
-        "- Do NOT say 'Done' or any response until AFTER the tool call completes",
-        "- If you don't call the tool first, the action will NOT happen",
+        "",
+        "CRITICAL: Use entity_id parameter (NOT device parameter) when calling control_device.",
+        "CRITICAL: You MUST call the tool - do not just describe what you would do.",
     ])
 
     extra_system_prompt = "\n".join(prompt_parts)
     _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
 
-    # Step 1: Speak the question via TTS
+    # Use start_conversation to speak the question AND listen for response
+    # start_conversation handles: TTS question -> STT listen -> LLM process -> TTS response
     try:
-        await hass.services.async_call(
-            "tts", "speak",
-            {
-                "entity_id": tts_entity_id,
-                "media_player_entity_id": media_player_entity_id,
-                "message": question,
-            },
-            blocking=True,
-        )
-        _LOGGER.debug("ask_and_act: TTS spoke question")
-    except Exception as err:
-        _LOGGER.error("ask_and_act: TTS failed: %s", err)
-        return {"error": f"TTS failed: {err}"}
-
-    # Step 2: Minimal delay - enter listening mode while TTS finishes
-    # This makes the transition feel seamless
-    await asyncio.sleep(0.3)
-
-    # Step 3: Listen for response (empty start_message = just listen)
-    try:
-        await hass.services.async_call(
+        result = await hass.services.async_call(
             "assist_satellite", "start_conversation",
             {
                 "entity_id": satellite_entity_id,
-                "start_message": "",
+                "start_message": question,
                 "extra_system_prompt": extra_system_prompt,
-                "preannounce": False,
+                "preannounce": False,  # No wake sound for minimal latency
             },
             blocking=True,
+            return_response=True,
         )
-        _LOGGER.info("ask_and_act: start_conversation completed")
-        return {"success": True}
+        _LOGGER.info("ask_and_act: start_conversation completed, result: %s", result)
+
+        return {
+            "success": True,
+            "result": result,
+        }
+
     except Exception as err:
         _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
-        return {"error": f"start_conversation failed: {err}"}
+        return {"error": f"Conversation failed: {err}"}
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
