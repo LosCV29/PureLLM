@@ -58,9 +58,13 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
-    Two approaches tried in order:
-    1. ask_question (HA 2025.7+) - speaks, listens, matches locally (no LLM needed)
-    2. TTS + start_conversation fallback - uses LLM to interpret and act
+    This service leverages the LLM to:
+    1. Speak question via TTS
+    2. Listen for response via satellite
+    3. LLM executes the appropriate action based on response
+    4. LLM speaks confirmation
+
+    The LLM handles action execution via its control_device tool.
     """
     satellite_entity_id = call.data["satellite_entity_id"]
     question = call.data["question"]
@@ -68,6 +72,8 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     tts_entity_id = call.data.get("tts_entity_id", "tts.home_assistant_cloud")
 
     # Derive media_player from satellite entity ID
+    # Pattern: assist_satellite.home_assistant_voice_XXXXXX_assist_satellite
+    #       -> media_player.home_assistant_voice_XXXXXX_media_player
     satellite_suffix = satellite_entity_id.split(".")[-1]
     if "_assist_satellite" in satellite_suffix:
         media_player_suffix = satellite_suffix.replace("_assist_satellite", "_media_player")
@@ -77,154 +83,10 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
             "assist_satellite.", "media_player."
         ).replace("_assist_satellite", "_media_player")
 
-    _LOGGER.info("ask_and_act: question='%s', satellite=%s, media_player=%s",
+    _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s, media_player=%s",
                  question, satellite_entity_id, media_player_entity_id)
 
-    # === PRIMARY: ask_question (HA 2025.7+) ===
-    # Speaks the question, listens, matches answers locally - no LLM needed
-    if hass.services.has_service("assist_satellite", "ask_question"):
-        _LOGGER.info("ask_and_act: Using ask_question service (HA 2025.7+)")
-        try:
-            qa_answers = [{"id": a["id"], "sentences": a["sentences"]} for a in answers]
-
-            result = await hass.services.async_call(
-                "assist_satellite", "ask_question",
-                {
-                    "entity_id": satellite_entity_id,
-                    "question": question,
-                    "answers": qa_answers,
-                    "preannounce": False,
-                },
-                blocking=True,
-                return_response=True,
-            )
-
-            _LOGGER.info("ask_and_act: ask_question result: %s", result)
-
-            # Extract matched answer ID from result
-            matched_id = _extract_match_id(result)
-
-            if matched_id:
-                for answer in answers:
-                    if answer["id"] == matched_id:
-                        # Execute the HA service action directly
-                        if "action" in answer:
-                            await _execute_service_action(hass, answer["action"])
-                        # Speak the response
-                        if "response" in answer:
-                            await _speak_tts(hass, tts_entity_id, media_player_entity_id, answer["response"])
-                        return {"success": True, "matched": matched_id}
-
-            _LOGGER.info("ask_and_act: No answer matched or timeout")
-            return {"success": True, "matched": None}
-
-        except Exception as err:
-            _LOGGER.warning("ask_and_act: ask_question failed: %s, trying start_conversation", err)
-
-    # === FALLBACK: TTS + start_conversation ===
-    # For older HA versions without ask_question
-    _LOGGER.info("ask_and_act: Using TTS + start_conversation fallback")
-
-    extra_system_prompt = _build_llm_prompt(question, answers)
-
-    # Step 1: Speak the question via TTS
-    try:
-        await hass.services.async_call(
-            "tts", "speak",
-            {
-                "entity_id": tts_entity_id,
-                "media_player_entity_id": media_player_entity_id,
-                "message": question,
-            },
-            blocking=True,
-        )
-        _LOGGER.debug("ask_and_act: TTS spoke question")
-    except Exception as err:
-        _LOGGER.error("ask_and_act: TTS failed: %s", err)
-        return {"error": f"TTS failed: {err}"}
-
-    # Step 2: Minimal delay then enter listening mode
-    await asyncio.sleep(0.3)
-
-    # Step 3: start_conversation (no start_message - omitting avoids empty-string issues)
-    try:
-        await hass.services.async_call(
-            "assist_satellite", "start_conversation",
-            {
-                "entity_id": satellite_entity_id,
-                "extra_system_prompt": extra_system_prompt,
-                "preannounce": False,
-            },
-            blocking=True,
-        )
-        _LOGGER.info("ask_and_act: start_conversation completed")
-        return {"success": True}
-    except Exception as err:
-        _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
-        return {"error": f"start_conversation failed: {err}"}
-
-
-def _extract_match_id(result: Any) -> str | None:
-    """Extract matched answer ID from ask_question result."""
-    if not isinstance(result, dict):
-        return None
-    # Try direct id
-    if result.get("id"):
-        return result["id"]
-    # Try nested match.id
-    match = result.get("match")
-    if isinstance(match, dict) and match.get("id"):
-        return match["id"]
-    # Try nested response.id
-    response = result.get("response")
-    if isinstance(response, dict) and response.get("id"):
-        return response["id"]
-    # Try data.id or result.id
-    for key in ("data", "response_data", "result"):
-        nested = result.get(key)
-        if isinstance(nested, dict) and nested.get("id"):
-            return nested["id"]
-    return None
-
-
-async def _execute_service_action(hass: HomeAssistant, action_cfg: dict) -> None:
-    """Execute a HA service action from the answer config."""
-    service = action_cfg["service"]
-    domain, svc_name = service.split(".", 1)
-
-    svc_data: dict[str, Any] = {}
-    if "target" in action_cfg:
-        svc_data.update(action_cfg["target"])
-    if "data" in action_cfg:
-        svc_data.update(action_cfg["data"])
-
-    _LOGGER.info("ask_and_act: Executing %s.%s with %s", domain, svc_name, svc_data)
-    await hass.services.async_call(domain, svc_name, svc_data, blocking=True)
-
-
-async def _speak_tts(
-    hass: HomeAssistant,
-    tts_entity_id: str,
-    media_player_entity_id: str,
-    message: str,
-) -> None:
-    """Speak a message via TTS."""
-    try:
-        await hass.services.async_call(
-            "tts", "speak",
-            {
-                "entity_id": tts_entity_id,
-                "media_player_entity_id": media_player_entity_id,
-                "message": message,
-            },
-            blocking=True,
-        )
-    except Exception as err:
-        _LOGGER.warning("ask_and_act: TTS response failed: %s", err)
-
-
-def _build_llm_prompt(question: str, answers: list[dict]) -> str:
-    """Build the extra_system_prompt for start_conversation fallback."""
+    # Build the extra_system_prompt that instructs the LLM what to do
     prompt_parts = [
         f"The user was just asked: \"{question}\"",
         "",
@@ -261,12 +123,8 @@ def _build_llm_prompt(question: str, answers: list[dict]) -> str:
                 prompt_parts.append(f"  1. FIRST call control_device(entity_id=\"{entity_id}\", action=\"{action_type}\")")
                 if "response" in answer:
                     prompt_parts.append(f"  2. AFTER the tool call succeeds, say: \"{answer['response']}\"")
-            else:
-                prompt_parts.append(f"If user says {sentences_str} or similar:")
-                prompt_parts.append(f"  1. FIRST call control_device(entity_id=\"{entity_id}\", action=\"{service}\")")
-                if "response" in answer:
-                    prompt_parts.append(f"  2. AFTER the tool call succeeds, say: \"{answer['response']}\"")
         else:
+            # No action, just respond
             prompt_parts.append(f"If user says {sentences_str} or similar:")
             if "response" in answer:
                 prompt_parts.append(f"  -> Just say: \"{answer['response']}\"")
@@ -281,7 +139,46 @@ def _build_llm_prompt(question: str, answers: list[dict]) -> str:
         "- If you don't call the tool first, the action will NOT happen",
     ])
 
-    return "\n".join(prompt_parts)
+    extra_system_prompt = "\n".join(prompt_parts)
+    _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
+
+    # Step 1: Speak the question via TTS
+    try:
+        await hass.services.async_call(
+            "tts", "speak",
+            {
+                "entity_id": tts_entity_id,
+                "media_player_entity_id": media_player_entity_id,
+                "message": question,
+            },
+            blocking=True,
+        )
+        _LOGGER.debug("ask_and_act: TTS spoke question")
+    except Exception as err:
+        _LOGGER.error("ask_and_act: TTS failed: %s", err)
+        return {"error": f"TTS failed: {err}"}
+
+    # Step 2: Minimal delay - enter listening mode while TTS finishes
+    # This makes the transition feel seamless
+    await asyncio.sleep(0.3)
+
+    # Step 3: Listen for response (empty start_message = just listen)
+    try:
+        await hass.services.async_call(
+            "assist_satellite", "start_conversation",
+            {
+                "entity_id": satellite_entity_id,
+                "start_message": "",
+                "extra_system_prompt": extra_system_prompt,
+                "preannounce": False,
+            },
+            blocking=True,
+        )
+        _LOGGER.info("ask_and_act: start_conversation completed")
+        return {"success": True}
+    except Exception as err:
+        _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
+        return {"error": f"start_conversation failed: {err}"}
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
