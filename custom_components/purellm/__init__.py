@@ -158,8 +158,9 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
         _LOGGER.error("ask_and_act: TTS failed: %s", err)
         return {"error": f"TTS failed: {err}"}
 
-    # Step 2: Wait for TTS to finish before entering listening mode
-    await asyncio.sleep(2.0)
+    # Step 2: Minimal delay - enter listening mode while TTS finishes
+    # This makes the transition feel seamless
+    await asyncio.sleep(0.3)
 
     # Step 3: Listen for response (empty start_message = just listen)
     try:
