@@ -172,34 +172,35 @@ async def get_weather_forecast(
                 if "rain" in current:
                     result["current"]["rain_1h"] = current["rain"].get("1h", 0)
 
-                # Add sunrise/sunset times from current data
-                if "sunrise" in current:
-                    sunrise_dt = datetime.fromtimestamp(current["sunrise"])
-                    result["current"]["sunrise"] = sunrise_dt.strftime("%-I:%M %p")
+                # Add sunrise/sunset times only when explicitly requested
+                if forecast_type == "sun_times":
+                    if "sunrise" in current:
+                        sunrise_dt = datetime.fromtimestamp(current["sunrise"])
+                        result["current"]["sunrise"] = sunrise_dt.strftime("%-I:%M %p")
 
-                    if sunrise_dt > now:
-                        result["current"]["time_until_sunrise"] = format_time_remaining(
-                            (sunrise_dt - now).total_seconds()
-                        )
-                    else:
-                        result["current"]["sunrise_passed"] = True
+                        if sunrise_dt > now:
+                            result["current"]["time_until_sunrise"] = format_time_remaining(
+                                (sunrise_dt - now).total_seconds()
+                            )
+                        else:
+                            result["current"]["sunrise_passed"] = True
 
-                if "sunset" in current:
-                    sunset_dt = datetime.fromtimestamp(current["sunset"])
-                    result["current"]["sunset"] = sunset_dt.strftime("%-I:%M %p")
+                    if "sunset" in current:
+                        sunset_dt = datetime.fromtimestamp(current["sunset"])
+                        result["current"]["sunset"] = sunset_dt.strftime("%-I:%M %p")
 
-                    if sunset_dt > now:
-                        result["current"]["time_until_sunset"] = format_time_remaining(
-                            (sunset_dt - now).total_seconds()
-                        )
-                    else:
-                        result["current"]["sunset_passed"] = True
+                        if sunset_dt > now:
+                            result["current"]["time_until_sunset"] = format_time_remaining(
+                                (sunset_dt - now).total_seconds()
+                            )
+                        else:
+                            result["current"]["sunset_passed"] = True
 
-                # Calculate daylight hours
-                if "sunrise" in current and "sunset" in current:
-                    daylight_seconds = current["sunset"] - current["sunrise"]
-                    daylight_hours = daylight_seconds / 3600
-                    result["current"]["daylight_hours"] = round(daylight_hours, 1)
+                    # Calculate daylight hours
+                    if "sunrise" in current and "sunset" in current:
+                        daylight_seconds = current["sunset"] - current["sunrise"]
+                        daylight_hours = daylight_seconds / 3600
+                        result["current"]["daylight_hours"] = round(daylight_hours, 1)
 
                 # Process hourly data for rain chances
                 hourly = data.get("hourly", [])
