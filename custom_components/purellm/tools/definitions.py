@@ -59,7 +59,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             "Get weather. Omit location for local weather. Include state for US cities (Austin, TX), country for international (Paris, France).",
             {
                 "location": {"type": "string", "description": "City with state/country. Omit for local."},
-                "forecast_type": {"type": "string", "enum": ["current", "tomorrow", "weekly"], "description": "current=today, tomorrow, weekly=5-day"}
+                "forecast_type": {"type": "string", "enum": ["current", "tomorrow", "weekly", "sun_times"], "description": "current=today, tomorrow, weekly=5-day, sun_times=sunrise/sunset"}
             }
         ))
 
