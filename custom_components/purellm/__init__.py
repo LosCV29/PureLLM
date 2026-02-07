@@ -142,7 +142,7 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     extra_system_prompt = "\n".join(prompt_parts)
     _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
 
-    # Step 1: Speak the question via TTS
+    # Step 1: Speak the question via TTS (non-blocking to avoid conflicts)
     try:
         await hass.services.async_call(
             "tts", "speak",
@@ -151,15 +151,15 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
                 "media_player_entity_id": media_player_entity_id,
                 "message": question,
             },
-            blocking=True,
+            blocking=False,
         )
-        _LOGGER.debug("ask_and_act: TTS spoke question")
+        _LOGGER.debug("ask_and_act: TTS started speaking question")
     except Exception as err:
         _LOGGER.error("ask_and_act: TTS failed: %s", err)
         return {"error": f"TTS failed: {err}"}
 
-    # Step 2: Wait for TTS to finish before entering listening mode
-    await asyncio.sleep(2.0)
+    # Step 2: Wait for TTS to finish playing before entering listening mode
+    await asyncio.sleep(3.0)
 
     # Step 3: Listen for response (empty start_message = just listen)
     try:
