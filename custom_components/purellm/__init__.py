@@ -162,12 +162,13 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     # This makes the transition feel seamless
     await asyncio.sleep(0.3)
 
-    # Step 3: Enter listening mode (omit start_message - empty string prevents listening)
+    # Step 3: Listen for response (empty start_message = skip announcement, just listen)
     try:
         await hass.services.async_call(
             "assist_satellite", "start_conversation",
             {
                 "entity_id": satellite_entity_id,
+                "start_message": "",
                 "extra_system_prompt": extra_system_prompt,
                 "preannounce": False,
             },
