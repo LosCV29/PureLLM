@@ -10,7 +10,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, Event, callback, ServiceCall
+from homeassistant.core import HomeAssistant, Event, SupportsResponse, callback, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
 from .const import DOMAIN
@@ -335,7 +335,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_ASK_AND_ACT,
             handle_ask_and_act,
             schema=ASK_AND_ACT_SCHEMA,
-            supports_response=True,
+            supports_response=SupportsResponse.OPTIONAL,
         )
         hass.data[DOMAIN][SERVICE_REGISTERED_KEY] = True
         _LOGGER.info("Registered purellm.ask_and_act service")
