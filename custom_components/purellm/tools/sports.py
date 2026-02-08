@@ -702,7 +702,21 @@ async def get_ufc_info(
         tomorrow_date = today_date + timedelta(days=1)
         yesterday_date = today_date - timedelta(days=1)
 
-        for event in calendar[:5]:
+        # Filter to only include events from today onwards
+        upcoming = []
+        for evt in calendar:
+            start = evt.get("startDate", "")
+            if start:
+                try:
+                    evt_date = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(hass_timezone).date()
+                    if evt_date >= today_date:
+                        upcoming.append(evt)
+                except Exception:
+                    pass
+        if not upcoming:
+            upcoming = calendar[-5:]  # fallback: show the most recent events
+
+        for event in upcoming[:5]:
             event_info = {
                 "name": event.get("label", "Unknown Event"),
                 "date": event.get("startDate", "")[:10] if event.get("startDate") else "TBD"
