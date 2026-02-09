@@ -695,8 +695,12 @@ class PureLLMConversationEntity(ConversationEntity):
         # Get extra_system_prompt (from ask_question, start_conversation, or stored)
         extra_system_prompt = self._get_extra_system_prompt(user_input, chat_log)
 
-        # Only get conversation history if this is a start_conversation call (has extra_system_prompt)
-        history = self._get_conversation_history(user_input.conversation_id) if extra_system_prompt else []
+        # Load conversation history if this conversation_id has previous turns.
+        # This enables multi-turn flows like:
+        #   - start_conversation / ask_and_act follow-ups (has extra_system_prompt)
+        #   - Native continuing conversation (shopping list chaining, etc.)
+        # The FRESH DATA system prompt rule prevents stale status data from being reused.
+        history = self._get_conversation_history(user_input.conversation_id)
 
         _LOGGER.info(
             "PureLLM processing: '%s' provider=%s conversation_id=%s history_turns=%d extra_prompt=%s",
@@ -746,14 +750,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
             _LOGGER.info("PureLLM response (%d chars): %s", len(final_response) if final_response else 0, (final_response or "")[:100])
 
-            # Only save conversation history for start_conversation calls
-            # (when extra_system_prompt exists). Never save status responses
-            # to history — it gives the LLM stale data to parrot.
-            if extra_system_prompt:
-                self._save_conversation_turn(
-                    conversation_id, user_text, final_response or "", extra_system_prompt
-                )
-
         except Exception as err:
             _LOGGER.error("PureLLM error: %s", err, exc_info=True)
             final_response = "Sorry, there was an error."
@@ -761,14 +757,24 @@ class PureLLMConversationEntity(ConversationEntity):
         # --- Continuing conversation (HA 2025.4+ native support) ---
         # If the response ends with a question, tell the voice pipeline to
         # keep the satellite listening after TTS finishes — no wake word needed.
-        # GUARD: Never continue if this is already a follow-up (has extra_system_prompt)
-        # to prevent infinite follow-up loops.
+        # GUARD: Never continue if this came from start_conversation/ask_and_act
+        # (has extra_system_prompt) to prevent infinite loops with those flows.
         keep_listening = (
             not extra_system_prompt
             and self._response_has_follow_up(final_response)
         )
         if keep_listening:
             _LOGGER.info("Continuing conversation: response ends with follow-up question")
+
+        # Save conversation history when:
+        # - Continuing conversation (keep_listening) — so next turn has context
+        #   (e.g., shopping list: "Added milk" → user says "eggs" → LLM knows to add)
+        # - start_conversation/ask_and_act flow (extra_system_prompt)
+        # - Conversation already has history (multi-turn chain in progress)
+        if keep_listening or extra_system_prompt or history:
+            self._save_conversation_turn(
+                conversation_id, user_text, final_response or "", extra_system_prompt
+            )
 
         response = intent.IntentResponse(language=user_input.language)
         response.async_set_speech(final_response or "No response.")
