@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from typing import Any
@@ -20,6 +21,8 @@ _LOGGER = logging.getLogger(__name__)
 
 # Service constants
 SERVICE_ASK_AND_ACT = "ask_and_act"
+ASK_AND_ACT_MARKER = "<!-- ASK_AND_ACT_DATA:"
+ASK_AND_ACT_MARKER_END = " -->"
 
 # Schema for ask_and_act service
 ANSWER_SCHEMA = vol.Schema({
@@ -86,11 +89,17 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s, media_player=%s",
                  question, satellite_entity_id, media_player_entity_id)
 
-    # Build the extra_system_prompt that instructs the LLM what to do
+    # Build the extra_system_prompt with embedded answers data for reliable
+    # code-based matching, plus LLM instructions as a fallback.
+    # Serialize answers for the conversation handler to parse and execute directly.
+    answers_json = json.dumps(answers)
+
     prompt_parts = [
+        f"{ASK_AND_ACT_MARKER}{answers_json}{ASK_AND_ACT_MARKER_END}",
+        "",
         f"The user was just asked: \"{question}\"",
         "",
-        "YOU MUST FOLLOW THESE INSTRUCTIONS EXACTLY:",
+        "Based on the user's response, reply with the appropriate short answer.",
         "",
     ]
 
@@ -98,45 +107,19 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
         sentences = answer["sentences"]
         sentences_str = ", ".join(f'"{s}"' for s in sentences)
 
-        if "action" in answer:
-            action = answer["action"]
-            service = action["service"]
-            target = action.get("target", {})
-            data = action.get("data", {})
-            entity_id = target.get("entity_id", "")
-
-            if service.startswith("light.turn_on"):
-                brightness = data.get("brightness_pct", 100)
-                color_temp = data.get("color_temp_kelvin", 4000)
-                prompt_parts.append(f"If user says {sentences_str} or similar affirmative:")
-                prompt_parts.append(f"  1. FIRST call control_device(entity_id=\"{entity_id}\", action=\"turn_on\", brightness={brightness}, color_temp={color_temp})")
-                if "response" in answer:
-                    prompt_parts.append(f"  2. AFTER the tool call succeeds, say: \"{answer['response']}\"")
-            elif service.startswith("light.turn_off"):
-                prompt_parts.append(f"If user says {sentences_str} or similar:")
-                prompt_parts.append(f"  1. FIRST call control_device(entity_id=\"{entity_id}\", action=\"turn_off\")")
-                if "response" in answer:
-                    prompt_parts.append(f"  2. AFTER the tool call succeeds, say: \"{answer['response']}\"")
-            elif service.startswith("switch."):
-                action_type = "turn_on" if "turn_on" in service else "turn_off"
-                prompt_parts.append(f"If user says {sentences_str} or similar:")
-                prompt_parts.append(f"  1. FIRST call control_device(entity_id=\"{entity_id}\", action=\"{action_type}\")")
-                if "response" in answer:
-                    prompt_parts.append(f"  2. AFTER the tool call succeeds, say: \"{answer['response']}\"")
-        else:
-            # No action, just respond
+        if "response" in answer:
             prompt_parts.append(f"If user says {sentences_str} or similar:")
-            if "response" in answer:
-                prompt_parts.append(f"  -> Just say: \"{answer['response']}\"")
+            prompt_parts.append(f"  -> Say: \"{answer['response']}\"")
+        else:
+            prompt_parts.append(f"If user says {sentences_str} or similar:")
+            prompt_parts.append(f"  -> Acknowledge briefly.")
 
         prompt_parts.append("")
 
     prompt_parts.extend([
-        "CRITICAL RULES:",
-        "- You MUST call control_device BEFORE saying anything",
-        "- Use entity_id parameter, NOT device parameter",
-        "- Do NOT say 'Done' or any response until AFTER the tool call completes",
-        "- If you don't call the tool first, the action will NOT happen",
+        "RULES:",
+        "- Keep your response very short (one or two words).",
+        "- Do NOT call any tools. The action will be handled automatically.",
     ])
 
     extra_system_prompt = "\n".join(prompt_parts)
