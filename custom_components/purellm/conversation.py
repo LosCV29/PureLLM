@@ -662,135 +662,17 @@ class PureLLMConversationEntity(ConversationEntity):
     def _response_has_follow_up(response: str | None) -> bool:
         """Check if the LLM response ends with a follow-up question.
 
-        Only triggers for responses that genuinely end with a question,
-        not for simple confirmations like "Done." or "Light on."
+        HA's native continuing conversation (2025.4+) uses the same heuristic:
+        if the response ends with '?' the voice pipeline keeps the satellite
+        listening without requiring the wake word again.
+
+        We add a length gate so trivial responses don't trigger it.
         """
         if not response:
             return False
         stripped = response.rstrip()
         # Must end with '?' and be longer than a trivial response
         return stripped.endswith("?") and len(stripped) > 20
-
-    async def _resolve_entity_for_device(
-        self, device_id: str | None, domain: str
-    ) -> str | None:
-        """Resolve a device_id to an entity_id for the given domain.
-
-        For example, domain='assist_satellite' returns the satellite entity,
-        domain='media_player' returns the media player entity for TTS polling.
-        """
-        if not device_id:
-            return None
-
-        from homeassistant.helpers import entity_registry as er
-
-        ent_reg = er.async_get(self.hass)
-        entities = er.async_entries_for_device(ent_reg, device_id)
-        for entity in entities:
-            if entity.domain == domain:
-                return entity.entity_id
-        return None
-
-    async def _schedule_follow_up_conversation(
-        self,
-        user_input: conversation.ConversationInput,
-        conversation_id: str,
-        assistant_response: str,
-        prior_extra_system_prompt: str | None,
-    ) -> None:
-        """Schedule a continuing conversation after the response is spoken.
-
-        Resolves the satellite and media player from the device_id,
-        builds context for the follow-up, and triggers the satellite
-        to listen after TTS playback finishes.
-        """
-        device_id = getattr(user_input, "device_id", None)
-        if not device_id:
-            _LOGGER.debug("Follow-up: no device_id, skipping (not a voice request)")
-            return
-
-        satellite_entity_id = await self._resolve_entity_for_device(
-            device_id, "assist_satellite"
-        )
-        if not satellite_entity_id:
-            _LOGGER.debug(
-                "Follow-up: no satellite entity for device %s", device_id
-            )
-            return
-
-        media_player_entity_id = await self._resolve_entity_for_device(
-            device_id, "media_player"
-        )
-
-        # Build context for the follow-up turn.
-        # IMPORTANT: Do NOT include the previous assistant response — it
-        # contains stale status data that the LLM will parrot instead of
-        # calling tools.  Only tell it the topic so it can resolve pronouns
-        # like "turn it off" or "yes, adjust that".
-        user_question = self._current_user_query
-        extra_system_prompt = (
-            "This is a follow-up to a previous voice conversation.\n"
-            f'The user originally asked: "{user_question}"\n'
-            "You already answered and asked if they needed anything else.\n"
-            "\n"
-            "CRITICAL: You have NO knowledge of current device states, temperatures,\n"
-            "weather, or any real-time data. You MUST call tools to get fresh data\n"
-            "for ANY question about current status. Never guess or assume."
-        )
-
-        _LOGGER.info(
-            "Follow-up: scheduling continuing conversation on %s (media=%s)",
-            satellite_entity_id, media_player_entity_id,
-        )
-
-        asyncio.create_task(
-            self._trigger_follow_up_listening(
-                satellite_entity_id,
-                media_player_entity_id,
-                extra_system_prompt,
-            )
-        )
-
-    async def _trigger_follow_up_listening(
-        self,
-        satellite_entity_id: str,
-        media_player_entity_id: str | None,
-        extra_system_prompt: str,
-    ) -> None:
-        """Wait for TTS playback to finish, then make the satellite listen.
-
-        Uses the same approach as ask_and_act: poll the media player until
-        idle, then call assist_satellite.start_conversation.
-        """
-        try:
-            # Wait for the TTS response to finish playing
-            if media_player_entity_id:
-                from . import _wait_for_media_player_idle
-
-                await _wait_for_media_player_idle(
-                    self.hass, media_player_entity_id
-                )
-            else:
-                # No media player to poll — use a conservative delay
-                await asyncio.sleep(4)
-
-            # Trigger the satellite to start listening (no announcement, just listen)
-            await self.hass.services.async_call(
-                "assist_satellite",
-                "start_conversation",
-                {
-                    "entity_id": satellite_entity_id,
-                    "start_message": "",          # Already spoke — just listen
-                    "extra_system_prompt": extra_system_prompt,
-                    "preannounce": False,
-                },
-                blocking=True,
-            )
-            _LOGGER.info(
-                "Follow-up: satellite %s is now listening", satellite_entity_id
-            )
-        except Exception as err:
-            _LOGGER.error("Follow-up: failed to trigger listening: %s", err)
 
     async def _async_handle_message(
         self,
@@ -872,27 +754,24 @@ class PureLLMConversationEntity(ConversationEntity):
                     conversation_id, user_text, final_response or "", extra_system_prompt
                 )
 
-            # --- Follow-up / Continuing conversation ---
-            # If the LLM ended its response with a question, schedule the
-            # satellite to light up and listen for the user's answer.
-            if self._response_has_follow_up(final_response):
-                await self._schedule_follow_up_conversation(
-                    user_input,
-                    conversation_id,
-                    final_response,
-                    extra_system_prompt,
-                )
-
         except Exception as err:
             _LOGGER.error("PureLLM error: %s", err, exc_info=True)
             final_response = "Sorry, there was an error."
+
+        # --- Continuing conversation (HA 2025.4+ native support) ---
+        # If the response ends with a question, tell the voice pipeline to
+        # keep the satellite listening after TTS finishes — no wake word needed.
+        keep_listening = self._response_has_follow_up(final_response)
+        if keep_listening:
+            _LOGGER.info("Continuing conversation: response ends with follow-up question")
 
         response = intent.IntentResponse(language=user_input.language)
         response.async_set_speech(final_response or "No response.")
 
         return conversation.ConversationResult(
             response=response,
-            conversation_id=conversation_id,  # Return same ID for continuing conversations
+            conversation_id=conversation_id,
+            continue_conversation=keep_listening,
         )
 
     async def _call_google(
