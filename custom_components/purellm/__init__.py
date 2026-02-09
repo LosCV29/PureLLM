@@ -58,14 +58,56 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     return True
 
 
+async def _wait_for_media_player_idle(
+    hass: HomeAssistant,
+    media_player_entity_id: str,
+    timeout: float = 15.0,
+    poll_interval: float = 0.3,
+) -> None:
+    """Wait for a media player to finish playing and return to idle.
+
+    After tts.speak returns, the audio is still playing on the media player.
+    This polls the media player state until it is no longer 'playing' or
+    until the timeout is reached.
+    """
+    elapsed = 0.0
+    # Short initial delay to let the media player state update
+    await asyncio.sleep(0.5)
+    elapsed += 0.5
+
+    while elapsed < timeout:
+        state = hass.states.get(media_player_entity_id)
+        if state is None:
+            _LOGGER.warning(
+                "ask_and_act: media_player %s not found, proceeding",
+                media_player_entity_id,
+            )
+            return
+        if state.state not in ("playing", "buffering"):
+            _LOGGER.debug(
+                "ask_and_act: media_player %s is %s, proceeding",
+                media_player_entity_id, state.state,
+            )
+            return
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
+    _LOGGER.warning(
+        "ask_and_act: timed out waiting for media_player %s to finish (state=%s)",
+        media_player_entity_id,
+        hass.states.get(media_player_entity_id).state if hass.states.get(media_player_entity_id) else "unknown",
+    )
+
+
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
     This service leverages the LLM to:
     1. Speak question via TTS
-    2. Listen for response via satellite
-    3. LLM executes the appropriate action based on response
-    4. LLM speaks confirmation
+    2. Wait for TTS audio to finish playing
+    3. Listen for response via satellite
+    4. LLM executes the appropriate action based on response
+    5. LLM speaks confirmation
 
     The LLM handles action execution via its control_device tool.
     """
@@ -141,11 +183,16 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
         _LOGGER.error("ask_and_act: TTS failed: %s", err)
         return {"error": f"TTS failed: {err}"}
 
-    # Step 2: Minimal delay - enter listening mode while TTS finishes
-    # This makes the transition feel seamless
-    await asyncio.sleep(0.3)
+    # Step 2: Wait for TTS audio to finish playing on the media player.
+    # tts.speak with blocking=True only waits for the audio to be queued,
+    # not for playback to complete. The satellite cannot enter listening mode
+    # while its media player is still actively playing audio.
+    await _wait_for_media_player_idle(hass, media_player_entity_id)
 
-    # Step 3: Listen for response (empty start_message = skip announcement, just listen)
+    # Step 3: Small buffer after playback ends before entering listening mode
+    await asyncio.sleep(0.5)
+
+    # Step 4: Listen for response (empty start_message = skip announcement, just listen)
     try:
         await hass.services.async_call(
             "assist_satellite", "start_conversation",
