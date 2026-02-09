@@ -62,7 +62,7 @@ async def _wait_for_media_player_idle(
     hass: HomeAssistant,
     media_player_entity_id: str,
     timeout: float = 15.0,
-    poll_interval: float = 0.3,
+    poll_interval: float = 0.2,
 ) -> None:
     """Wait for a media player to finish playing and return to idle.
 
@@ -71,10 +71,6 @@ async def _wait_for_media_player_idle(
     until the timeout is reached.
     """
     elapsed = 0.0
-    # Short initial delay to let the media player state update
-    await asyncio.sleep(0.5)
-    elapsed += 0.5
-
     while elapsed < timeout:
         state = hass.states.get(media_player_entity_id)
         if state is None:
@@ -189,10 +185,7 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     # while its media player is still actively playing audio.
     await _wait_for_media_player_idle(hass, media_player_entity_id)
 
-    # Step 3: Small buffer after playback ends before entering listening mode
-    await asyncio.sleep(0.5)
-
-    # Step 4: Listen for response (empty start_message = skip announcement, just listen)
+    # Step 3: Listen for response (empty start_message = skip announcement, just listen)
     try:
         await hass.services.async_call(
             "assist_satellite", "start_conversation",

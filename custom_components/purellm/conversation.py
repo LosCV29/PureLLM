@@ -596,12 +596,13 @@ class PureLLMConversationEntity(ConversationEntity):
             _LOGGER.warning("ask_and_act: failed to parse embedded answers: %s", err)
             return None
 
-        # Match user text against answer sentences (case-insensitive)
-        user_lower = user_text.lower().strip()
+        # Match user text against answer sentences (case-insensitive, punctuation-stripped)
+        # STT often adds trailing punctuation (e.g. "Yes." instead of "yes")
+        user_clean = user_text.lower().strip().rstrip(".,!?;:")
         matched_answer = None
         for answer in answers:
             for sentence in answer.get("sentences", []):
-                if sentence.lower().strip() == user_lower:
+                if sentence.lower().strip().rstrip(".,!?;:") == user_clean:
                     matched_answer = answer
                     break
             if matched_answer:
@@ -620,18 +621,19 @@ class PureLLMConversationEntity(ConversationEntity):
             service_str = action_config.get("service", "")
             service_parts = service_str.split(".", 1)
             if len(service_parts) == 2:
-                service_data = {}
-                if "target" in action_config:
-                    service_data.update(action_config["target"])
-                if "data" in action_config:
-                    service_data.update(action_config["data"])
+                service_data = action_config.get("data") or {}
+                target = action_config.get("target")
 
                 try:
-                    _LOGGER.info("ask_and_act: executing %s with %s", service_str, service_data)
+                    _LOGGER.info(
+                        "ask_and_act: executing %s target=%s data=%s",
+                        service_str, target, service_data,
+                    )
                     await self.hass.services.async_call(
                         service_parts[0],
                         service_parts[1],
                         service_data,
+                        target=target,
                         blocking=True,
                     )
                 except Exception as err:
