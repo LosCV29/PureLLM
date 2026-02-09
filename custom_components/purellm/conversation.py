@@ -723,27 +723,20 @@ class PureLLMConversationEntity(ConversationEntity):
         )
 
         # Build context for the follow-up turn.
-        # Include the previous exchange so the LLM knows what was discussed,
-        # plus a strong instruction to always use tools for fresh data.
-        context_parts = [
-            "This is a follow-up conversation. The user was just told:",
-            f'"{assistant_response}"',
-            "",
-            "Respond naturally to their follow-up.",
-            "CRITICAL: ALWAYS call tools for any device status, weather, or real-time data.",
-            "NEVER reuse information from the previous response — fetch fresh data with tools.",
-        ]
-
-        # Carry forward any prior extra_system_prompt context (for multi-turn chains)
-        if prior_extra_system_prompt:
-            from . import ASK_AND_ACT_MARKER
-            # Don't carry forward ask_and_act data into follow-ups
-            if ASK_AND_ACT_MARKER not in prior_extra_system_prompt:
-                context_parts.insert(0, "Prior context:")
-                context_parts.insert(1, prior_extra_system_prompt)
-                context_parts.insert(2, "---")
-
-        extra_system_prompt = "\n".join(context_parts)
+        # IMPORTANT: Do NOT include the previous assistant response — it
+        # contains stale status data that the LLM will parrot instead of
+        # calling tools.  Only tell it the topic so it can resolve pronouns
+        # like "turn it off" or "yes, adjust that".
+        user_question = self._current_user_query
+        extra_system_prompt = (
+            "This is a follow-up to a previous voice conversation.\n"
+            f'The user originally asked: "{user_question}"\n'
+            "You already answered and asked if they needed anything else.\n"
+            "\n"
+            "CRITICAL: You have NO knowledge of current device states, temperatures,\n"
+            "weather, or any real-time data. You MUST call tools to get fresh data\n"
+            "for ANY question about current status. Never guess or assume."
+        )
 
         _LOGGER.info(
             "Follow-up: scheduling continuing conversation on %s (media=%s)",
@@ -871,10 +864,13 @@ class PureLLMConversationEntity(ConversationEntity):
 
             _LOGGER.info("PureLLM response (%d chars): %s", len(final_response) if final_response else 0, (final_response or "")[:100])
 
-            # Always save conversation history for multi-turn continuity
-            self._save_conversation_turn(
-                conversation_id, user_text, final_response or "", extra_system_prompt
-            )
+            # Only save conversation history for start_conversation calls
+            # (when extra_system_prompt exists). Never save status responses
+            # to history — it gives the LLM stale data to parrot.
+            if extra_system_prompt:
+                self._save_conversation_turn(
+                    conversation_id, user_text, final_response or "", extra_system_prompt
+                )
 
             # --- Follow-up / Continuing conversation ---
             # If the LLM ended its response with a question, schedule the
