@@ -761,7 +761,12 @@ class PureLLMConversationEntity(ConversationEntity):
         # --- Continuing conversation (HA 2025.4+ native support) ---
         # If the response ends with a question, tell the voice pipeline to
         # keep the satellite listening after TTS finishes — no wake word needed.
-        keep_listening = self._response_has_follow_up(final_response)
+        # GUARD: Never continue if this is already a follow-up (has extra_system_prompt)
+        # to prevent infinite follow-up loops.
+        keep_listening = (
+            not extra_system_prompt
+            and self._response_has_follow_up(final_response)
+        )
         if keep_listening:
             _LOGGER.info("Continuing conversation: response ends with follow-up question")
 
