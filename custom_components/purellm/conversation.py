@@ -725,6 +725,19 @@ class PureLLMConversationEntity(ConversationEntity):
         if extra_system_prompt:
             system_prompt = f"{system_prompt}\n\nAdditional context:\n{extra_system_prompt}"
 
+        # When continuing a conversation (history exists), inject a strong
+        # reminder to always call tools. Without this, the LLM sees the
+        # pattern in history ("user says X, assistant says 'Added X'") and
+        # follows the pattern WITHOUT calling tools — faking the action.
+        if history:
+            system_prompt += (
+                "\n\nCONTINUING CONVERSATION — TOOL REMINDER: "
+                "You are in a multi-turn conversation. The history above shows "
+                "previous turns, but every action in those turns REQUIRED a tool call. "
+                "You MUST call the appropriate tool for EVERY new request. "
+                "NEVER respond as if you performed an action without calling the tool first."
+            )
+
         max_tokens = self._calculate_max_tokens(user_text)
 
         try:
