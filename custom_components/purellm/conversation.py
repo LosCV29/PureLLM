@@ -654,6 +654,151 @@ class PureLLMConversationEntity(ConversationEntity):
             conversation_id=conversation_id,
         )
 
+    # =========================================================================
+    # Follow-up Conversation (Continuing Conversation)
+    # =========================================================================
+
+    @staticmethod
+    def _response_has_follow_up(response: str | None) -> bool:
+        """Check if the LLM response ends with a follow-up question.
+
+        Only triggers for responses that genuinely end with a question,
+        not for simple confirmations like "Done." or "Light on."
+        """
+        if not response:
+            return False
+        stripped = response.rstrip()
+        # Must end with '?' and be longer than a trivial response
+        return stripped.endswith("?") and len(stripped) > 20
+
+    async def _resolve_entity_for_device(
+        self, device_id: str | None, domain: str
+    ) -> str | None:
+        """Resolve a device_id to an entity_id for the given domain.
+
+        For example, domain='assist_satellite' returns the satellite entity,
+        domain='media_player' returns the media player entity for TTS polling.
+        """
+        if not device_id:
+            return None
+
+        from homeassistant.helpers import entity_registry as er
+
+        ent_reg = er.async_get(self.hass)
+        entities = er.async_entries_for_device(ent_reg, device_id)
+        for entity in entities:
+            if entity.domain == domain:
+                return entity.entity_id
+        return None
+
+    async def _schedule_follow_up_conversation(
+        self,
+        user_input: conversation.ConversationInput,
+        conversation_id: str,
+        assistant_response: str,
+        prior_extra_system_prompt: str | None,
+    ) -> None:
+        """Schedule a continuing conversation after the response is spoken.
+
+        Resolves the satellite and media player from the device_id,
+        builds context for the follow-up, and triggers the satellite
+        to listen after TTS playback finishes.
+        """
+        device_id = getattr(user_input, "device_id", None)
+        if not device_id:
+            _LOGGER.debug("Follow-up: no device_id, skipping (not a voice request)")
+            return
+
+        satellite_entity_id = await self._resolve_entity_for_device(
+            device_id, "assist_satellite"
+        )
+        if not satellite_entity_id:
+            _LOGGER.debug(
+                "Follow-up: no satellite entity for device %s", device_id
+            )
+            return
+
+        media_player_entity_id = await self._resolve_entity_for_device(
+            device_id, "media_player"
+        )
+
+        # Build context for the follow-up turn.
+        # Include the previous exchange so the LLM knows what was discussed,
+        # plus a strong instruction to always use tools for fresh data.
+        context_parts = [
+            "This is a follow-up conversation. The user was just told:",
+            f'"{assistant_response}"',
+            "",
+            "Respond naturally to their follow-up.",
+            "CRITICAL: ALWAYS call tools for any device status, weather, or real-time data.",
+            "NEVER reuse information from the previous response — fetch fresh data with tools.",
+        ]
+
+        # Carry forward any prior extra_system_prompt context (for multi-turn chains)
+        if prior_extra_system_prompt:
+            from . import ASK_AND_ACT_MARKER
+            # Don't carry forward ask_and_act data into follow-ups
+            if ASK_AND_ACT_MARKER not in prior_extra_system_prompt:
+                context_parts.insert(0, "Prior context:")
+                context_parts.insert(1, prior_extra_system_prompt)
+                context_parts.insert(2, "---")
+
+        extra_system_prompt = "\n".join(context_parts)
+
+        _LOGGER.info(
+            "Follow-up: scheduling continuing conversation on %s (media=%s)",
+            satellite_entity_id, media_player_entity_id,
+        )
+
+        asyncio.create_task(
+            self._trigger_follow_up_listening(
+                satellite_entity_id,
+                media_player_entity_id,
+                extra_system_prompt,
+            )
+        )
+
+    async def _trigger_follow_up_listening(
+        self,
+        satellite_entity_id: str,
+        media_player_entity_id: str | None,
+        extra_system_prompt: str,
+    ) -> None:
+        """Wait for TTS playback to finish, then make the satellite listen.
+
+        Uses the same approach as ask_and_act: poll the media player until
+        idle, then call assist_satellite.start_conversation.
+        """
+        try:
+            # Wait for the TTS response to finish playing
+            if media_player_entity_id:
+                from . import _wait_for_media_player_idle
+
+                await _wait_for_media_player_idle(
+                    self.hass, media_player_entity_id
+                )
+            else:
+                # No media player to poll — use a conservative delay
+                await asyncio.sleep(4)
+
+            # Trigger the satellite to start listening (no announcement, just listen)
+            await self.hass.services.async_call(
+                "assist_satellite",
+                "start_conversation",
+                {
+                    "entity_id": satellite_entity_id,
+                    "start_message": "",          # Already spoke — just listen
+                    "extra_system_prompt": extra_system_prompt,
+                    "preannounce": False,
+                },
+                blocking=True,
+            )
+            _LOGGER.info(
+                "Follow-up: satellite %s is now listening", satellite_entity_id
+            )
+        except Exception as err:
+            _LOGGER.error("Follow-up: failed to trigger listening: %s", err)
+
     async def _async_handle_message(
         self,
         user_input: conversation.ConversationInput,
@@ -726,10 +871,20 @@ class PureLLMConversationEntity(ConversationEntity):
 
             _LOGGER.info("PureLLM response (%d chars): %s", len(final_response) if final_response else 0, (final_response or "")[:100])
 
-            # Only save conversation history for start_conversation calls (when extra_system_prompt exists)
-            if extra_system_prompt:
-                self._save_conversation_turn(
-                    conversation_id, user_text, final_response or "", extra_system_prompt
+            # Always save conversation history for multi-turn continuity
+            self._save_conversation_turn(
+                conversation_id, user_text, final_response or "", extra_system_prompt
+            )
+
+            # --- Follow-up / Continuing conversation ---
+            # If the LLM ended its response with a question, schedule the
+            # satellite to light up and listen for the user's answer.
+            if self._response_has_follow_up(final_response):
+                await self._schedule_follow_up_conversation(
+                    user_input,
+                    conversation_id,
+                    final_response,
+                    extra_system_prompt,
                 )
 
         except Exception as err:
