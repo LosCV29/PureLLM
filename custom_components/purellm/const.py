@@ -155,8 +155,7 @@ SPORTS: Copy response_text VERBATIM - never rephrase, restructure, or add inform
 CRITICAL: If response says "No recent completed game data available", say EXACTLY that. NEVER make up scores, opponents, or dates.
 When user asks about Champions League/UCL: MUST include 'Champions League' in team_name (e.g., 'Man City Champions League'). Without it, only domestic league games are returned.
 
-MUSIC ROOMS: Extract room separately from query. Spanish: sala=living room, cocina=kitchen, recámara=bedroom.
-STT mishearings: salad/salah/salla→sala, kosina→cocina, banyo→baño.
+MUSIC ROOMS: Extract room separately from query.
 For "album with [song] on it" use song_on_album param, NOT query.
 SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
 """

@@ -8,31 +8,12 @@ from datetime import datetime, timedelta
 from typing import Any, TYPE_CHECKING
 
 from ..utils.fuzzy_matching import find_entity_by_name
-from ..utils.helpers import format_human_readable_state, get_friendly_name, ROOM_NORMALIZATION_MAP
+from ..utils.helpers import format_human_readable_state, get_friendly_name
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
-
-
-def _normalize_spanish_room_names(text: str) -> str:
-    """Normalize STT mishearings of Spanish room names in response text.
-
-    Converts common mishearings like 'salad' → 'sala' for proper spoken responses.
-    Uses word boundary matching to avoid false positives.
-    """
-    if not text:
-        return text
-
-    result = text
-    for mishearing, correct in ROOM_NORMALIZATION_MAP.items():
-        # Use word boundary regex to only replace whole words
-        # Case-insensitive, preserves original case style
-        pattern = re.compile(r'\b' + re.escape(mishearing) + r'\b', re.IGNORECASE)
-        result = pattern.sub(correct, result)
-
-    return result
 
 
 async def check_device_status(
@@ -377,11 +358,7 @@ async def control_device(
     entity_ids_list = arguments.get("entity_ids", [])
     area_name = arguments.get("area", "").strip()
     domain_filter = arguments.get("domain", "").strip().lower()
-    device_name_raw = arguments.get("device", "").strip()
-    # Normalize STT mishearings of Spanish room names in device name (salat → sala, etc.)
-    device_name = _normalize_spanish_room_names(device_name_raw)
-    if device_name != device_name_raw:
-        _LOGGER.info("Normalized device name: '%s' → '%s'", device_name_raw, device_name)
+    device_name = arguments.get("device", "").strip()
 
     # Check if device_name is actually an entity_id (e.g., "light.master_dimmer_switch_light")
     # If so, treat it as a direct entity_id instead of running fuzzy matching
@@ -629,9 +606,9 @@ async def control_device(
                     is_open = sensor_state.state == "on"  # binary_sensor: on = open, off = closed
 
                     if entity_id == open_script and is_open:
-                        return {"response_text": _normalize_spanish_room_names(f"The {trigger_name} is already open.")}
+                        return {"response_text": f"The {trigger_name} is already open."}
                     elif entity_id == close_script and not is_open:
-                        return {"response_text": _normalize_spanish_room_names(f"The {trigger_name} is already closed.")}
+                        return {"response_text": f"The {trigger_name} is already closed."}
                 break
 
     # Build service calls first, then execute in parallel
@@ -674,9 +651,9 @@ async def control_device(
 
                 # Check if already in desired state
                 if current_state == "playing" and action in ("play", "resume"):
-                    return {"success": True, "response_text": _normalize_spanish_room_names(f"The {friendly_name} is already playing.")}
+                    return {"success": True, "response_text": f"The {friendly_name} is already playing."}
                 elif current_state == "paused" and action == "pause":
-                    return {"success": True, "response_text": _normalize_spanish_room_names(f"The {friendly_name} is already paused.")}
+                    return {"success": True, "response_text": f"The {friendly_name} is already paused."}
             if action in ("mute", "unmute"):
                 # Check current mute state if available
                 state = hass.states.get(entity_id)
@@ -684,9 +661,9 @@ async def control_device(
 
                 # Only skip if we know the current state for sure
                 if is_currently_muted is True and action == "mute":
-                    return {"success": True, "response_text": _normalize_spanish_room_names(f"The {friendly_name} is already muted.")}
+                    return {"success": True, "response_text": f"The {friendly_name} is already muted."}
                 elif is_currently_muted is False and action == "unmute":
-                    return {"success": True, "response_text": _normalize_spanish_room_names(f"The {friendly_name} is already unmuted.")}
+                    return {"success": True, "response_text": f"The {friendly_name} is already unmuted."}
 
                 # Explicitly set mute state
                 service_data["is_volume_muted"] = (action == "mute")
@@ -803,11 +780,6 @@ async def control_device(
             if len(controlled) > 5:
                 response += f" and {len(controlled) - 5} more"
             response += "."
-
-        # Normalize Spanish room name mishearings in response (salad → sala, etc.)
-        response = _normalize_spanish_room_names(response)
-        # Also normalize the controlled devices list so LLM doesn't use raw names
-        controlled = [_normalize_spanish_room_names(name) for name in controlled]
 
         result = {
             "success": True,

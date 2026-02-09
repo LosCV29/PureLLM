@@ -341,9 +341,8 @@ def _is_movie_soundtrack(album_name: str) -> bool:
 # Holiday keywords for shuffle playlist search
 HOLIDAY_KEYWORDS = {
     # Christmas
-    "christmas": ["christmas", "xmas", "holiday", "navidad"],
+    "christmas": ["christmas", "xmas", "holiday"],
     "xmas": ["christmas", "xmas", "holiday"],
-    "navidad": ["christmas", "navidad", "holiday"],
     # Halloween
     "halloween": ["halloween", "spooky", "scary", "horror"],
     "spooky": ["halloween", "spooky", "scary"],
@@ -696,8 +695,8 @@ class MusicController:
         album_type_filter = None  # For "studio", "live", "compilation", etc.
         album_year = None
         query_lower = query.lower()
-        latest_keywords = ["latest", "last", "newest", "new", "most recent", "recent", "nuevo", "última", "ultimo", "más reciente"]
-        first_keywords = ["first", "oldest", "debut", "earliest", "primero", "primera"]
+        latest_keywords = ["latest", "last", "newest", "new", "most recent", "recent"]
+        first_keywords = ["first", "oldest", "debut", "earliest"]
 
         if media_type == "album":
             # Check for ordinals (second, third, etc.)
