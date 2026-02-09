@@ -571,6 +571,87 @@ class PureLLMConversationEntity(ConversationEntity):
         """
         return await self._async_handle_message(user_input, None)
 
+    async def _try_ask_and_act_match(
+        self,
+        extra_system_prompt: str | None,
+        user_text: str,
+        user_input: conversation.ConversationInput,
+        conversation_id: str,
+    ) -> conversation.ConversationResult | None:
+        """Try to match user text against ask_and_act answers and execute directly.
+
+        Returns a ConversationResult if matched, or None to fall through to LLM.
+        """
+        from . import ASK_AND_ACT_MARKER, ASK_AND_ACT_MARKER_END
+
+        if not extra_system_prompt or ASK_AND_ACT_MARKER not in extra_system_prompt:
+            return None
+
+        # Parse embedded answers JSON from the extra_system_prompt
+        try:
+            start = extra_system_prompt.index(ASK_AND_ACT_MARKER) + len(ASK_AND_ACT_MARKER)
+            end = extra_system_prompt.index(ASK_AND_ACT_MARKER_END, start)
+            answers = json.loads(extra_system_prompt[start:end])
+        except (ValueError, json.JSONDecodeError) as err:
+            _LOGGER.warning("ask_and_act: failed to parse embedded answers: %s", err)
+            return None
+
+        # Match user text against answer sentences (case-insensitive)
+        user_lower = user_text.lower().strip()
+        matched_answer = None
+        for answer in answers:
+            for sentence in answer.get("sentences", []):
+                if sentence.lower().strip() == user_lower:
+                    matched_answer = answer
+                    break
+            if matched_answer:
+                break
+
+        if not matched_answer:
+            _LOGGER.debug("ask_and_act: no exact match for '%s', falling through to LLM", user_text)
+            return None
+
+        _LOGGER.info("ask_and_act: matched answer id='%s' for user text '%s'",
+                      matched_answer.get("id", "?"), user_text)
+
+        # Execute the action if one is configured
+        if "action" in matched_answer:
+            action_config = matched_answer["action"]
+            service_str = action_config.get("service", "")
+            service_parts = service_str.split(".", 1)
+            if len(service_parts) == 2:
+                service_data = {}
+                if "target" in action_config:
+                    service_data.update(action_config["target"])
+                if "data" in action_config:
+                    service_data.update(action_config["data"])
+
+                try:
+                    _LOGGER.info("ask_and_act: executing %s with %s", service_str, service_data)
+                    await self.hass.services.async_call(
+                        service_parts[0],
+                        service_parts[1],
+                        service_data,
+                        blocking=True,
+                    )
+                except Exception as err:
+                    _LOGGER.error("ask_and_act: action execution failed: %s", err)
+
+        # Build response
+        response_text = matched_answer.get("response", "OK")
+
+        # Save conversation turn for multi-turn continuity
+        self._save_conversation_turn(
+            conversation_id, user_text, response_text, extra_system_prompt
+        )
+
+        response = intent.IntentResponse(language=user_input.language)
+        response.async_set_speech(response_text)
+        return conversation.ConversationResult(
+            response=response,
+            conversation_id=conversation_id,
+        )
+
     async def _async_handle_message(
         self,
         user_input: conversation.ConversationInput,
@@ -603,6 +684,13 @@ class PureLLMConversationEntity(ConversationEntity):
 
         if extra_system_prompt:
             _LOGGER.debug("extra_system_prompt received (%d chars)", len(extra_system_prompt))
+
+        # --- ask_and_act: code-based answer matching and direct action execution ---
+        ask_act_result = await self._try_ask_and_act_match(
+            extra_system_prompt, user_text, user_input, conversation_id
+        )
+        if ask_act_result is not None:
+            return ask_act_result
 
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
