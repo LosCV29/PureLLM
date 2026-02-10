@@ -1,7 +1,6 @@
 """Lists tool handler for PolyVoice (shopping list, to-do list)."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any, TYPE_CHECKING
 
@@ -9,6 +8,41 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
+
+
+async def _get_items(hass: "HomeAssistant", entity_id: str, status: str) -> list[dict]:
+    """Fetch items from a todo list by status."""
+    result = await hass.services.async_call(
+        "todo", "get_items",
+        {"entity_id": entity_id, "status": status},
+        blocking=True,
+        return_response=True
+    )
+    if result and entity_id in result:
+        return result[entity_id].get("items", [])
+    return []
+
+
+async def _remove_all_items(hass: "HomeAssistant", entity_id: str, status: str) -> int:
+    """Remove all items with given status. Retries until empty. Returns count removed."""
+    total_removed = 0
+    for attempt in range(5):  # Max 5 passes to handle stragglers
+        items = await _get_items(hass, entity_id, status)
+        if not items:
+            break
+        for item in items:
+            name = item.get("summary")
+            if name:
+                try:
+                    await hass.services.async_call(
+                        "todo", "remove_item",
+                        {"entity_id": entity_id, "item": name},
+                        blocking=True
+                    )
+                    total_removed += 1
+                except Exception:
+                    _LOGGER.debug("Failed to remove '%s', will retry", name)
+    return total_removed
 
 
 async def manage_list(
@@ -79,17 +113,7 @@ async def manage_list(
             if not item:
                 return {"error": "Please specify an item to complete"}
 
-            # Get items from the list to find the right one
-            result = await hass.services.async_call(
-                "todo", "get_items",
-                {"entity_id": target_list, "status": "needs_action"},
-                blocking=True,
-                return_response=True
-            )
-
-            items = []
-            if result and target_list in result:
-                items = result[target_list].get("items", [])
+            items = await _get_items(hass, target_list, "needs_action")
 
             # Find matching item (case insensitive partial match)
             item_lower = item.lower()
@@ -122,7 +146,6 @@ async def manage_list(
             if not item:
                 return {"error": "Please specify an item to remove"}
 
-            # Get all items from the list
             result = await hass.services.async_call(
                 "todo", "get_items",
                 {"entity_id": target_list},
@@ -165,7 +188,6 @@ async def manage_list(
             if not item:
                 return {"error": "Please specify an item to remove"}
 
-            # Get all items from the list
             result = await hass.services.async_call(
                 "todo", "get_items",
                 {"entity_id": target_list},
@@ -188,15 +210,13 @@ async def manage_list(
             if not matched_items:
                 return {"error": f"Could not find '{item}' on the list"}
 
-            # Remove all matching items in parallel
-            await asyncio.gather(*(
-                hass.services.async_call(
+            # Remove sequentially — HA todo backend doesn't handle parallel well
+            for matched_item in matched_items:
+                await hass.services.async_call(
                     "todo", "remove_item",
                     {"entity_id": target_list, "item": matched_item},
                     blocking=True
                 )
-                for matched_item in matched_items
-            ))
 
             list_friendly = hass.states.get(target_list).attributes.get("friendly_name", "list")
             count = len(matched_items)
@@ -215,16 +235,7 @@ async def manage_list(
             show_completed = arguments.get("status", "").lower() in ("completed", "done", "checked")
             status_filter = "completed" if show_completed else "needs_action"
 
-            result = await hass.services.async_call(
-                "todo", "get_items",
-                {"entity_id": target_list, "status": status_filter},
-                blocking=True,
-                return_response=True
-            )
-
-            items = []
-            if result and target_list in result:
-                items = result[target_list].get("items", [])
+            items = await _get_items(hass, target_list, status_filter)
 
             list_friendly = hass.states.get(target_list).attributes.get("friendly_name", "list")
             status_label = "completed" if show_completed else "active"
@@ -253,16 +264,7 @@ async def manage_list(
             status_filter = "completed" if sort_completed else "needs_action"
             status_label = "completed" if sort_completed else "active"
 
-            result = await hass.services.async_call(
-                "todo", "get_items",
-                {"entity_id": target_list, "status": status_filter},
-                blocking=True,
-                return_response=True
-            )
-
-            items = []
-            if result and target_list in result:
-                items = result[target_list].get("items", [])
+            items = await _get_items(hass, target_list, status_filter)
 
             if len(items) < 2:
                 return {"message": f"List has fewer than 2 {status_label} items, nothing to sort"}
@@ -275,15 +277,9 @@ async def manage_list(
             if item_names == sorted_names:
                 return {"message": f"{status_label.capitalize()} items are already sorted alphabetically"}
 
-            # Remove all items in parallel
-            await asyncio.gather(*(
-                hass.services.async_call(
-                    "todo", "remove_item",
-                    {"entity_id": target_list, "item": name},
-                    blocking=True
-                )
-                for name in item_names
-            ))
+            # Remove all items (sequential + retry to guarantee empty)
+            removed = await _remove_all_items(hass, target_list, status_filter)
+            _LOGGER.debug("Sort: removed %d items before re-adding", removed)
 
             # Re-add in sorted order (sequential to preserve order)
             for name in sorted_names:
@@ -304,10 +300,8 @@ async def manage_list(
                 "success": True,
                 "action": "sorted",
                 "count": len(sorted_names),
-                "items": sorted_names,
-                "status": status_label,
                 "list": list_friendly,
-                "message": f"Sorted {len(sorted_names)} {status_label} items alphabetically on {list_friendly}"
+                "message": f"Alphabetized {len(sorted_names)} {status_label} items on {list_friendly}"
             }
 
         elif action == "clear":
@@ -316,39 +310,22 @@ async def manage_list(
             status_filter = "completed" if clear_completed else "needs_action"
             status_label = "completed" if clear_completed else "active"
 
-            result = await hass.services.async_call(
-                "todo", "get_items",
-                {"entity_id": target_list, "status": status_filter},
-                blocking=True,
-                return_response=True
-            )
-
-            items = []
-            if result and target_list in result:
-                items = result[target_list].get("items", [])
-
+            # Check if there are items to clear
+            items = await _get_items(hass, target_list, status_filter)
             if not items:
                 return {"message": f"No {status_label} items to clear"}
 
-            # Remove all items in parallel for speed
-            item_names = [i.get("summary") for i in items if i.get("summary")]
-            await asyncio.gather(*(
-                hass.services.async_call(
-                    "todo", "remove_item",
-                    {"entity_id": target_list, "item": name},
-                    blocking=True
-                )
-                for name in item_names
-            ))
+            # Remove all with retry loop to guarantee complete removal
+            total_removed = await _remove_all_items(hass, target_list, status_filter)
 
             list_friendly = hass.states.get(target_list).attributes.get("friendly_name", "list")
             return {
                 "success": True,
                 "action": "cleared",
-                "count": len(item_names),
+                "count": total_removed,
                 "status": status_label,
                 "list": list_friendly,
-                "message": f"Cleared {len(item_names)} {status_label} item{'s' if len(item_names) != 1 else ''} from {list_friendly}"
+                "message": f"Cleared {total_removed} {status_label} item{'s' if total_removed != 1 else ''} from {list_friendly}"
             }
 
         elif action == "list_all":
