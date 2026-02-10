@@ -505,13 +505,7 @@ class PureLLMConversationEntity(ConversationEntity):
         assistant_message: str,
         extra_system_prompt: str | None = None,
     ) -> None:
-        """Save a conversation turn to history.
-
-        Assistant messages are replaced with a brief marker ("[done]") to
-        prevent the LLM from pattern-matching previous responses and skipping
-        tool calls in continuing conversations.  The user messages provide
-        enough context for the LLM to understand the ongoing flow.
-        """
+        """Save a conversation turn to history."""
         if conversation_id not in self._conversation_history:
             self._conversation_history[conversation_id] = {
                 "messages": [],
@@ -528,10 +522,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
         messages = data["messages"]
         messages.append({"role": "user", "content": user_message})
-        # Save a minimal assistant marker instead of the full response.
-        # This gives the LLM turn-taking context without a copyable pattern
-        # like "Added X. Anything else?" that it would mimic without calling tools.
-        messages.append({"role": "assistant", "content": "[done]"})
+        messages.append({"role": "assistant", "content": assistant_message})
 
         # Trim to max history (keep most recent)
         max_messages = MAX_CONVERSATION_HISTORY * 2  # pairs of user/assistant
