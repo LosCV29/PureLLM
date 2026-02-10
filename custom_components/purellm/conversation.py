@@ -775,12 +775,12 @@ class PureLLMConversationEntity(ConversationEntity):
         if keep_listening:
             _LOGGER.info("Continuing conversation: response ends with follow-up question")
 
-        # Save conversation history when:
-        # - Continuing conversation (keep_listening) — so next turn has context
-        #   (e.g., shopping list: "Added milk" → user says "eggs" → LLM knows to add)
+        # Save conversation history ONLY when:
+        # - Continuing conversation (keep_listening) — shopping list loop needs context
         # - start_conversation/ask_and_act flow (extra_system_prompt)
-        # - Conversation already has history (multi-turn chain in progress)
-        if keep_listening or extra_system_prompt or history:
+        # Do NOT save for regular one-shot turns — stale history causes the LLM
+        # to copy previous answers instead of calling tools for fresh data.
+        if keep_listening or extra_system_prompt:
             self._save_conversation_turn(
                 conversation_id, user_text, final_response or "", extra_system_prompt,
                 keep_only_last=keep_listening,
