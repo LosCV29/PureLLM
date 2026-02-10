@@ -504,6 +504,7 @@ class PureLLMConversationEntity(ConversationEntity):
         user_message: str,
         assistant_message: str,
         extra_system_prompt: str | None = None,
+        keep_only_last: bool = False,
     ) -> None:
         """Save a conversation turn to history."""
         if conversation_id not in self._conversation_history:
@@ -520,30 +521,22 @@ class PureLLMConversationEntity(ConversationEntity):
         if extra_system_prompt:
             data["extra_system_prompt"] = extra_system_prompt
 
-        messages = data["messages"]
-        messages.append({"role": "user", "content": user_message})
+        # For continuing conversations (shopping list, etc.), keep only the
+        # last turn to give context without building a copyable pattern.
+        if keep_only_last:
+            data["messages"] = [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": "Anything else?"},
+            ]
+        else:
+            messages = data["messages"]
+            messages.append({"role": "user", "content": user_message})
+            messages.append({"role": "assistant", "content": assistant_message})
 
-        # If the response ends with a follow-up question (e.g., "Got it. Anything else?"),
-        # save only the question part. This prevents the LLM from pattern-matching
-        # the full "confirmation + question" and skipping tool calls on later turns.
-        saved_message = assistant_message
-        stripped = assistant_message.rstrip()
-        if stripped.endswith("?"):
-            # Find the last sentence that contains '?' — that's the follow-up
-            # Split on common sentence boundaries
-            for sep in [". ", "! ", "\n"]:
-                if sep in stripped:
-                    last_part = stripped.rsplit(sep, 1)[-1].strip()
-                    if last_part.endswith("?"):
-                        saved_message = last_part
-                        break
-
-        messages.append({"role": "assistant", "content": saved_message})
-
-        # Trim to max history (keep most recent)
-        max_messages = MAX_CONVERSATION_HISTORY * 2  # pairs of user/assistant
-        if len(messages) > max_messages:
-            data["messages"] = messages[-max_messages:]
+            # Trim to max history (keep most recent)
+            max_messages = MAX_CONVERSATION_HISTORY * 2
+            if len(messages) > max_messages:
+                data["messages"] = messages[-max_messages:]
 
         _LOGGER.debug(
             "Saved conversation turn for %s (history: %d messages)",
@@ -789,7 +782,8 @@ class PureLLMConversationEntity(ConversationEntity):
         # - Conversation already has history (multi-turn chain in progress)
         if keep_listening or extra_system_prompt or history:
             self._save_conversation_turn(
-                conversation_id, user_text, final_response or "", extra_system_prompt
+                conversation_id, user_text, final_response or "", extra_system_prompt,
+                keep_only_last=keep_listening,
             )
 
         response = intent.IntentResponse(language=user_input.language)
