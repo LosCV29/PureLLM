@@ -521,12 +521,27 @@ class PureLLMConversationEntity(ConversationEntity):
         if extra_system_prompt:
             data["extra_system_prompt"] = extra_system_prompt
 
-        # For continuing conversations (shopping list, etc.), keep only the
-        # last turn to give context without building a copyable pattern.
+        # For continuing conversations (shopping list, thermostat, etc.),
+        # keep only the last turn. Save the full user message (topic context)
+        # but strip the assistant's data — keep only the follow-up question.
+        # This prevents the LLM from pattern-matching confirmations while
+        # still knowing what "it" refers to from the user message.
         if keep_only_last:
+            # Extract just the follow-up question from the assistant response
+            # e.g., "AC is at 72°F. Want me to adjust it?" → "Want me to adjust it?"
+            # e.g., "Got it. Anything else?" → "Anything else?"
+            saved_assistant = assistant_message
+            stripped = assistant_message.rstrip()
+            if stripped.endswith("?"):
+                for sep in [". ", "! ", "\n"]:
+                    if sep in stripped:
+                        last_part = stripped.rsplit(sep, 1)[-1].strip()
+                        if last_part.endswith("?"):
+                            saved_assistant = last_part
+                            break
             data["messages"] = [
                 {"role": "user", "content": user_message},
-                {"role": "assistant", "content": assistant_message},
+                {"role": "assistant", "content": saved_assistant},
             ]
         else:
             messages = data["messages"]
