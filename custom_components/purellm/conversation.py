@@ -505,7 +505,13 @@ class PureLLMConversationEntity(ConversationEntity):
         assistant_message: str,
         extra_system_prompt: str | None = None,
     ) -> None:
-        """Save a conversation turn to history."""
+        """Save a conversation turn to history.
+
+        Assistant messages are replaced with a brief marker ("[done]") to
+        prevent the LLM from pattern-matching previous responses and skipping
+        tool calls in continuing conversations.  The user messages provide
+        enough context for the LLM to understand the ongoing flow.
+        """
         if conversation_id not in self._conversation_history:
             self._conversation_history[conversation_id] = {
                 "messages": [],
@@ -522,23 +528,10 @@ class PureLLMConversationEntity(ConversationEntity):
 
         messages = data["messages"]
         messages.append({"role": "user", "content": user_message})
-
-        # When tools were called and response ends with a follow-up question,
-        # save ONLY the follow-up question (e.g., "Anything else?") and strip
-        # the confirmation (e.g., "Got it."). This prevents the LLM from
-        # pattern-matching "Got it. Anything else?" without calling tools.
-        saved_response = assistant_message
-        if getattr(self, "_tools_called_this_turn", False) and assistant_message.rstrip().endswith("?"):
-            parts = assistant_message.rstrip().split(".")
-            question = next(
-                (p.strip() for p in reversed(parts) if p.strip().endswith("?")),
-                assistant_message,
-            )
-            if question != assistant_message:
-                saved_response = question
-                _LOGGER.debug("Stripped confirmation from history, saved: '%s'", saved_response)
-
-        messages.append({"role": "assistant", "content": saved_response})
+        # Save a minimal assistant marker instead of the full response.
+        # This gives the LLM turn-taking context without a copyable pattern
+        # like "Added X. Anything else?" that it would mimic without calling tools.
+        messages.append({"role": "assistant", "content": "[done]"})
 
         # Trim to max history (keep most recent)
         max_messages = MAX_CONVERSATION_HISTORY * 2  # pairs of user/assistant
@@ -687,8 +680,8 @@ class PureLLMConversationEntity(ConversationEntity):
         if not response:
             return False
         stripped = response.rstrip()
-        # Must end with '?' and be longer than a trivial "Why?" / "What?"
-        return stripped.endswith("?") and len(stripped) > 10
+        # Must end with '?' and be longer than a trivial response
+        return stripped.endswith("?") and len(stripped) > 20
 
     async def _async_handle_message(
         self,
@@ -704,7 +697,6 @@ class PureLLMConversationEntity(ConversationEntity):
         user_text = user_input.text.strip()
         self._current_user_query = user_text
         self._current_user_input = user_input
-        self._tools_called_this_turn = False
 
         # Get or create conversation_id for tracking
         conversation_id = user_input.conversation_id or str(uuid.uuid4())
@@ -871,7 +863,6 @@ class PureLLMConversationEntity(ConversationEntity):
                     function_calls.append(part["functionCall"])
 
             if function_calls:
-                self._tools_called_this_turn = True
                 contents.append({"role": "model", "parts": parts})
                 function_responses = []
 
@@ -1024,7 +1015,6 @@ class PureLLMConversationEntity(ConversationEntity):
                         _LOGGER.debug("LLM repeated tool call (deduped): %s", tc['function']['name'])
 
                 if unique_tool_calls:
-                    self._tools_called_this_turn = True
                     _LOGGER.info("Executing %d tool call(s)", len(unique_tool_calls))
 
                     # Add assistant message with tool calls to conversation
