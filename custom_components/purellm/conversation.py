@@ -921,7 +921,6 @@ class PureLLMConversationEntity(ConversationEntity):
         messages.append({"role": "user", "content": user_text})
 
         called_tools: set[str] = set()
-        last_tool_response_text: str = ""  # Track last tool response for fallback
 
         for iteration in range(5):  # Max 5 tool iterations
             kwargs = {
@@ -951,10 +950,9 @@ class PureLLMConversationEntity(ConversationEntity):
 
                         delta = chunk.choices[0].delta
 
-                        # Yield content deltas immediately for streaming TTS
+                        # Accumulate content (yield later only if no tool calls)
                         if delta.content:
                             accumulated_content += delta.content
-                            yield {"content": delta.content}
 
                         # Accumulate tool calls (new format)
                         if delta.tool_calls:
@@ -1054,7 +1052,6 @@ class PureLLMConversationEntity(ConversationEntity):
                         # Get content for the message
                         if isinstance(result, dict) and "response_text" in result:
                             content = result["response_text"]
-                            last_tool_response_text = content
                         else:
                             content = json.dumps(result, ensure_ascii=False)
 
@@ -1070,8 +1067,9 @@ class PureLLMConversationEntity(ConversationEntity):
                     # Continue to next iteration to get LLM's response after tools
                     continue
 
-                # No tool calls - we're done
+                # No tool calls - yield content and we're done
                 if accumulated_content:
+                    yield {"content": accumulated_content}
                     return
 
                 _LOGGER.debug("LLM iteration %d: no content and no tool calls, breaking", iteration)
@@ -1082,13 +1080,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 yield {"content": "Sorry, there was an error processing your request."}
                 return
 
-        # If we get here with no content, use tool response_text as fallback
-        if last_tool_response_text:
-            _LOGGER.info("LLM failed to respond after tool call, using tool response_text directly")
-            yield {"content": last_tool_response_text}
-        else:
-            _LOGGER.error("LLM fallback triggered after %d iterations - no response produced", iteration + 1)
-            yield {"content": "I apologize, but I couldn't complete that request."}
+        # If we get here, the LLM failed to produce a response after all iterations
+        _LOGGER.error("LLM produced no response after %d iterations", iteration + 1)
+        yield {"content": "Sorry, the LLM failed to respond. Please try again."}
 
     # =========================================================================
     # Notification Helpers
