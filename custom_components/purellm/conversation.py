@@ -526,7 +526,7 @@ class PureLLMConversationEntity(ConversationEntity):
         if keep_only_last:
             data["messages"] = [
                 {"role": "user", "content": user_message},
-                {"role": "assistant", "content": "Anything else?"},
+                {"role": "assistant", "content": assistant_message},
             ]
         else:
             messages = data["messages"]
