@@ -841,13 +841,18 @@ class PureLLMConversationEntity(ConversationEntity):
         # Add current user message
         contents.append({"role": "user", "parts": [{"text": user_text}]})
 
-        # Detect dismissals for follow-up tool forcing
+        # Detect dismissals and greetings for follow-up tool forcing
         _dismissals = {"no", "nope", "done", "stop", "never mind", "nevermind",
                        "no thanks", "no thank you", "thats all", "that's all",
                        "thats it", "that's it", "nothing", "all done", "im good",
                        "i'm good", "not right now", "cancel"}
+        _greetings = {"hi", "hey", "hello", "yo", "sup", "whats up", "what's up",
+                      "howdy", "hola", "good morning", "good afternoon",
+                      "good evening", "good night", "what up", "wassup", "whaddup"}
         is_followup = bool(history)
-        is_dismissal = user_text.lower().strip().rstrip(".!,") in _dismissals
+        _user_clean = user_text.lower().strip().rstrip(".!,?")
+        is_dismissal = _user_clean in _dismissals
+        is_greeting = _user_clean in _greetings
 
         for iteration in range(5):
             payload = {
@@ -857,7 +862,7 @@ class PureLLMConversationEntity(ConversationEntity):
             if function_declarations:
                 payload["tools"] = [{"functionDeclarations": function_declarations}]
                 # Force tool calling on follow-up action requests
-                if is_followup and not is_dismissal and iteration == 0:
+                if is_followup and not is_dismissal and not is_greeting and iteration == 0:
                     payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
                 else:
                     payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
@@ -935,13 +940,18 @@ class PureLLMConversationEntity(ConversationEntity):
         ]
 
         # Add conversation history if present
-        # Detect dismissals — these don't need tool calls ("done", "no", etc.)
+        # Detect dismissals and greetings — these don't need tool calls
         _dismissals = {"no", "nope", "done", "stop", "never mind", "nevermind",
                        "no thanks", "no thank you", "thats all", "that's all",
                        "thats it", "that's it", "nothing", "all done", "im good",
                        "i'm good", "not right now", "cancel"}
+        _greetings = {"hi", "hey", "hello", "yo", "sup", "whats up", "what's up",
+                      "howdy", "hola", "good morning", "good afternoon",
+                      "good evening", "good night", "what up", "wassup", "whaddup"}
         is_followup = bool(history)
-        is_dismissal = user_text.lower().strip().rstrip(".!,") in _dismissals
+        _user_clean = user_text.lower().strip().rstrip(".!,?")
+        is_dismissal = _user_clean in _dismissals
+        is_greeting = _user_clean in _greetings
 
         if history:
             messages.extend(history)
@@ -965,8 +975,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Force tool calling on follow-up action requests.
                 # Local LLMs fabricate confirmations without calling tools.
                 # "required" forces at least one tool call before responding.
-                # Skip for dismissals ("done", "no") which need no tool.
-                if is_followup and not is_dismissal and iteration == 0:
+                # Skip for dismissals ("done", "no") and greetings ("yo", "hey")
+                # which need no tool.
+                if is_followup and not is_dismissal and not is_greeting and iteration == 0:
                     kwargs["tool_choice"] = "required"
                 else:
                     kwargs["tool_choice"] = "auto"
