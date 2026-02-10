@@ -838,12 +838,16 @@ class PureLLMConversationEntity(ConversationEntity):
             for msg in history:
                 role = "model" if msg["role"] == "assistant" else "user"
                 contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-            # Remind the LLM to actually call tools
-            contents.append({"role": "user", "parts": [{"text": "REMINDER: You MUST call the appropriate tool before confirming any action. Do NOT assume success without a tool call."}]})
-            contents.append({"role": "model", "parts": [{"text": "Understood, I will call the tool."}]})
-
         # Add current user message
         contents.append({"role": "user", "parts": [{"text": user_text}]})
+
+        # Detect dismissals for follow-up tool forcing
+        _dismissals = {"no", "nope", "done", "stop", "never mind", "nevermind",
+                       "no thanks", "no thank you", "thats all", "that's all",
+                       "thats it", "that's it", "nothing", "all done", "im good",
+                       "i'm good", "not right now", "cancel"}
+        is_followup = bool(history)
+        is_dismissal = user_text.lower().strip().rstrip(".!,") in _dismissals
 
         for iteration in range(5):
             payload = {
@@ -852,6 +856,11 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             if function_declarations:
                 payload["tools"] = [{"functionDeclarations": function_declarations}]
+                # Force tool calling on follow-up action requests
+                if is_followup and not is_dismissal and iteration == 0:
+                    payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
+                else:
+                    payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
 
             url = f"{self.base_url}/models/{self.model}:generateContent"
             headers = {"x-goog-api-key": self.api_key}
@@ -926,11 +935,16 @@ class PureLLMConversationEntity(ConversationEntity):
         ]
 
         # Add conversation history if present
+        # Detect dismissals — these don't need tool calls ("done", "no", etc.)
+        _dismissals = {"no", "nope", "done", "stop", "never mind", "nevermind",
+                       "no thanks", "no thank you", "thats all", "that's all",
+                       "thats it", "that's it", "nothing", "all done", "im good",
+                       "i'm good", "not right now", "cancel"}
+        is_followup = bool(history)
+        is_dismissal = user_text.lower().strip().rstrip(".!,") in _dismissals
+
         if history:
             messages.extend(history)
-            # Remind the LLM to actually call tools — local models tend to
-            # fabricate action confirmations from context without calling tools.
-            messages.append({"role": "system", "content": "This is a follow-up response. You MUST call the appropriate tool before confirming any action. Do NOT assume success without a tool call."})
 
         # Add current user message
         messages.append({"role": "user", "content": user_text})
@@ -948,7 +962,14 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             if tools:
                 kwargs["tools"] = tools
-                kwargs["tool_choice"] = "auto"
+                # Force tool calling on follow-up action requests.
+                # Local LLMs fabricate confirmations without calling tools.
+                # "required" forces at least one tool call before responding.
+                # Skip for dismissals ("done", "no") which need no tool.
+                if is_followup and not is_dismissal and iteration == 0:
+                    kwargs["tool_choice"] = "required"
+                else:
+                    kwargs["tool_choice"] = "auto"
 
             accumulated_content = ""
             tool_calls_buffer: list[dict] = []
