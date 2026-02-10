@@ -838,6 +838,9 @@ class PureLLMConversationEntity(ConversationEntity):
             for msg in history:
                 role = "model" if msg["role"] == "assistant" else "user"
                 contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+            # Remind the LLM to actually call tools
+            contents.append({"role": "user", "parts": [{"text": "REMINDER: You MUST call the appropriate tool before confirming any action. Do NOT assume success without a tool call."}]})
+            contents.append({"role": "model", "parts": [{"text": "Understood, I will call the tool."}]})
 
         # Add current user message
         contents.append({"role": "user", "parts": [{"text": user_text}]})
@@ -925,6 +928,9 @@ class PureLLMConversationEntity(ConversationEntity):
         # Add conversation history if present
         if history:
             messages.extend(history)
+            # Remind the LLM to actually call tools — local models tend to
+            # fabricate action confirmations from context without calling tools.
+            messages.append({"role": "system", "content": "This is a follow-up response. You MUST call the appropriate tool before confirming any action. Do NOT assume success without a tool call."})
 
         # Add current user message
         messages.append({"role": "user", "content": user_text})
