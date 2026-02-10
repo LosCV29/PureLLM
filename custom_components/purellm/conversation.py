@@ -687,8 +687,8 @@ class PureLLMConversationEntity(ConversationEntity):
         if not response:
             return False
         stripped = response.rstrip()
-        # Must end with '?' and be longer than a trivial response
-        return stripped.endswith("?") and len(stripped) > 20
+        # Must end with '?' and be longer than a trivial "Why?" / "What?"
+        return stripped.endswith("?") and len(stripped) > 10
 
     async def _async_handle_message(
         self,
