@@ -522,7 +522,23 @@ class PureLLMConversationEntity(ConversationEntity):
 
         messages = data["messages"]
         messages.append({"role": "user", "content": user_message})
-        messages.append({"role": "assistant", "content": assistant_message})
+
+        # If the response ends with a follow-up question (e.g., "Got it. Anything else?"),
+        # save only the question part. This prevents the LLM from pattern-matching
+        # the full "confirmation + question" and skipping tool calls on later turns.
+        saved_message = assistant_message
+        stripped = assistant_message.rstrip()
+        if stripped.endswith("?"):
+            # Find the last sentence that contains '?' — that's the follow-up
+            # Split on common sentence boundaries
+            for sep in [". ", "! ", "\n"]:
+                if sep in stripped:
+                    last_part = stripped.rsplit(sep, 1)[-1].strip()
+                    if last_part.endswith("?"):
+                        saved_message = last_part
+                        break
+
+        messages.append({"role": "assistant", "content": saved_message})
 
         # Trim to max history (keep most recent)
         max_messages = MAX_CONVERSATION_HISTORY * 2  # pairs of user/assistant
