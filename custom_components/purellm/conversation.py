@@ -505,7 +505,13 @@ class PureLLMConversationEntity(ConversationEntity):
         assistant_message: str,
         extra_system_prompt: str | None = None,
     ) -> None:
-        """Save a conversation turn to history."""
+        """Save a conversation turn to history.
+
+        Assistant messages are replaced with a brief marker ("[done]") to
+        prevent the LLM from pattern-matching previous responses and skipping
+        tool calls in continuing conversations.  The user messages provide
+        enough context for the LLM to understand the ongoing flow.
+        """
         if conversation_id not in self._conversation_history:
             self._conversation_history[conversation_id] = {
                 "messages": [],
@@ -522,7 +528,10 @@ class PureLLMConversationEntity(ConversationEntity):
 
         messages = data["messages"]
         messages.append({"role": "user", "content": user_message})
-        messages.append({"role": "assistant", "content": assistant_message})
+        # Save a minimal assistant marker instead of the full response.
+        # This gives the LLM turn-taking context without a copyable pattern
+        # like "Added X. Anything else?" that it would mimic without calling tools.
+        messages.append({"role": "assistant", "content": "[done]"})
 
         # Trim to max history (keep most recent)
         max_messages = MAX_CONVERSATION_HISTORY * 2  # pairs of user/assistant
@@ -724,19 +733,6 @@ class PureLLMConversationEntity(ConversationEntity):
         # Append extra_system_prompt if provided (from start_conversation)
         if extra_system_prompt:
             system_prompt = f"{system_prompt}\n\nAdditional context:\n{extra_system_prompt}"
-
-        # When continuing a conversation (history exists), inject a strong
-        # reminder to always call tools. Without this, the LLM sees the
-        # pattern in history ("user says X, assistant says 'Added X'") and
-        # follows the pattern WITHOUT calling tools — faking the action.
-        if history:
-            system_prompt += (
-                "\n\nCONTINUING CONVERSATION — TOOL REMINDER: "
-                "You are in a multi-turn conversation. The history above shows "
-                "previous turns, but every action in those turns REQUIRED a tool call. "
-                "You MUST call the appropriate tool for EVERY new request. "
-                "NEVER respond as if you performed an action without calling the tool first."
-            )
 
         max_tokens = self._calculate_max_tokens(user_text)
 
