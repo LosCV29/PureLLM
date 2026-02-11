@@ -133,6 +133,29 @@ DYNAMIC_MODEL_PROVIDERS = [
 ]
 
 
+async def fetch_frigate_cameras(frigate_url: str) -> list[str]:
+    """Fetch available camera names from Frigate API.
+
+    Returns a sorted list of camera names, or empty list if fetch fails.
+    """
+    if not frigate_url:
+        return []
+
+    try:
+        url = f"{frigate_url.rstrip('/')}/api/config"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    config = await resp.json()
+                    cameras = list(config.get("cameras", {}).keys())
+                    cameras.sort()
+                    return cameras
+    except Exception as err:
+        _LOGGER.debug("Failed to fetch Frigate cameras from %s: %s", frigate_url, err)
+
+    return []
+
+
 async def fetch_provider_models(
     provider: str, base_url: str, api_key: str
 ) -> list[str]:
@@ -1124,6 +1147,32 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             for key in frigate_dict
         ]
 
+        # Fetch available cameras from Frigate API for dropdown
+        frigate_url = current.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL)
+        available_cameras = await fetch_frigate_cameras(frigate_url)
+
+        if available_cameras:
+            frigate_cam_options = [
+                selector.SelectOptionDict(value=cam, label=cam)
+                for cam in available_cameras
+            ]
+            frigate_cam_selector = selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=frigate_cam_options,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                    custom_value=True,
+                )
+            )
+        else:
+            # Fallback to text input if Frigate is unreachable or URL not set
+            frigate_cam_selector = selector.TextSelector(
+                selector.TextSelectorConfig(
+                    type=selector.TextSelectorType.TEXT,
+                )
+            )
+            if frigate_url:
+                description += "\n\n⚠ Could not fetch cameras from Frigate. Check URL or enter name manually."
+
         return self.async_show_form(
             step_id="camera_names",
             description_placeholders={"camera_info": description},
@@ -1140,11 +1189,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                             type=selector.TextSelectorType.TEXT,
                         )
                     ),
-                    vol.Optional("frigate_camera_name"): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.TEXT,
-                        )
-                    ),
+                    vol.Optional("frigate_camera_name"): frigate_cam_selector,
                     vol.Optional("friendly_name"): selector.TextSelector(
                         selector.TextSelectorConfig(
                             type=selector.TextSelectorType.TEXT,
