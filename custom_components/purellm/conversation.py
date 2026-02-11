@@ -72,8 +72,6 @@ from .const import (
     CONF_NOTIFY_ON_SEARCH,
     CONF_VOICE_SCRIPTS,
     DEFAULT_VOICE_SCRIPTS,
-    CONF_CAMERA_FRIENDLY_NAMES,
-    DEFAULT_CAMERA_FRIENDLY_NAMES,
     CONF_FRIGATE_URL,
     DEFAULT_FRIGATE_URL,
     CONF_CAMERA_RTSP_URLS,
@@ -314,15 +312,6 @@ class PureLLMConversationEntity(ConversationEntity):
         # Only the Frigate URL and optional friendly-name overrides are stored.
         self.frigate_url = config.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL)
         self.frigate_camera_names: dict[str, str] = {}  # populated from Frigate API
-
-        # Optional friendly display-name overrides (camera_name: Display Name)
-        camera_names_str = config.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES)
-        raw_camera_names = parse_entity_config(camera_names_str) if camera_names_str else {}
-        self.camera_friendly_names = {}
-        for key, friendly_name in raw_camera_names.items():
-            if key.startswith("camera."):
-                key = key[7:]
-            self.camera_friendly_names[key] = friendly_name
 
         # Optional manual RTSP URL overrides (camera_name: rtsp://...)
         rtsp_urls_str = config.get(CONF_CAMERA_RTSP_URLS, DEFAULT_CAMERA_RTSP_URLS)
@@ -1532,7 +1521,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Camera via Frigate API + local vision LLM analysis
                 "check_camera": lambda: camera_tool.check_camera(
                     arguments, self._session, self.frigate_url,
-                    camera_friendly_names=self.camera_friendly_names or None,
                     llm_base_url=self.base_url,
                     llm_api_key=self.api_key,
                     llm_model=self.model,

@@ -111,9 +111,6 @@ from .const import (
     # Voice Scripts
     CONF_VOICE_SCRIPTS,
     DEFAULT_VOICE_SCRIPTS,
-    # Camera Friendly Names
-    CONF_CAMERA_FRIENDLY_NAMES,
-    DEFAULT_CAMERA_FRIENDLY_NAMES,
     # Frigate
     CONF_FRIGATE_URL,
     DEFAULT_FRIGATE_URL,
@@ -129,29 +126,6 @@ DYNAMIC_MODEL_PROVIDERS = [
     PROVIDER_LM_STUDIO,
     PROVIDER_GOOGLE,
 ]
-
-
-async def fetch_frigate_cameras(frigate_url: str) -> list[str]:
-    """Fetch available camera names from Frigate API.
-
-    Returns a sorted list of camera names, or empty list if fetch fails.
-    """
-    if not frigate_url:
-        return []
-
-    try:
-        url = f"{frigate_url.rstrip('/')}/api/config"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    config = await resp.json()
-                    cameras = list(config.get("cameras", {}).keys())
-                    cameras.sort()
-                    return cameras
-    except Exception as err:
-        _LOGGER.debug("Failed to fetch Frigate cameras from %s: %s", frigate_url, err)
-
-    return []
 
 
 async def fetch_provider_models(
@@ -412,7 +386,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "entities": "PureLLM Default Entities",
                 "device_aliases": "Device Aliases",
                 "voice_scripts": "Voice Scripts",
-                "camera_names": "Camera Display Names",
                 "sofabaton": "SofaBaton Activities",
                 "music_rooms": "Music Room Mapping",
                 "notifications": "Notification Settings",
@@ -1033,122 +1006,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                                 selector.SelectOptionDict(value="add", label="Add New"),
                                 selector.SelectOptionDict(value="update", label="Update Selected"),
                                 selector.SelectOptionDict(value="delete", label="Delete Selected"),
-                            ],
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
-                }
-            ),
-        )
-
-    async def async_step_camera_names(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle camera friendly-name overrides.
-
-        Camera names and RTSP URLs are fetched directly from Frigate's API
-        (source of truth).  This page only lets the user set optional
-        friendly display names for cameras (e.g. 'back_yard' → 'Backyard').
-        """
-        current = {**self._entry.data, **self._entry.options}
-
-        def _parse_kv(raw: str) -> dict[str, str]:
-            result = {}
-            if raw:
-                for line in raw.split("\n"):
-                    line = line.strip()
-                    if ": " in line:
-                        key, val = line.split(": ", 1)
-                        result[key.strip()] = val.strip()
-            return result
-
-        # Parse current friendly-name overrides
-        friendly_dict = _parse_kv(current.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES))
-
-        # Fetch live camera list from Frigate
-        frigate_url = current.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL)
-        available_cameras = await fetch_frigate_cameras(frigate_url)
-
-        if user_input is not None:
-            camera_name = user_input.get("camera_name", "").strip()
-            friendly_name = user_input.get("friendly_name", "").strip()
-            action = user_input.get("action", "set")
-
-            if action == "remove" and camera_name:
-                friendly_dict.pop(camera_name, None)
-            elif action == "set" and camera_name and friendly_name:
-                friendly_dict[camera_name] = friendly_name
-            elif not camera_name and not friendly_name:
-                return self.async_create_entry(title="", data=self._entry.options)
-
-            def _serialize_kv(d: dict[str, str]) -> str:
-                return "\n".join([f"{k}: {v}" for k, v in d.items()]) if d else ""
-
-            new_options = {
-                **self._entry.options,
-                CONF_CAMERA_FRIENDLY_NAMES: _serialize_kv(friendly_dict),
-            }
-            self.hass.config_entries.async_update_entry(self._entry, options=new_options)
-            friendly_dict = _parse_kv(new_options.get(CONF_CAMERA_FRIENDLY_NAMES, ""))
-
-        # Build description
-        if available_cameras:
-            cam_lines = []
-            for cam in available_cameras:
-                display = friendly_dict.get(cam, cam.replace("_", " ").title())
-                if cam in friendly_dict:
-                    cam_lines.append(f"**{cam}** → {display}")
-                else:
-                    cam_lines.append(f"**{cam}** (default: {display})")
-            description = (
-                "**Cameras from Frigate:**\n" + "\n".join(cam_lines)
-                + "\n\nOptionally set a custom display name for any camera."
-            )
-        else:
-            if frigate_url:
-                description = "Could not fetch cameras from Frigate. Check your Frigate URL in Entities settings."
-            else:
-                description = "No Frigate URL configured. Set it in Entities settings first."
-            if friendly_dict:
-                lines = [f"**{k}** → {v}" for k, v in friendly_dict.items()]
-                description += "\n\n**Current overrides:**\n" + "\n".join(lines)
-
-        # Camera name selector: dropdown from Frigate if available, text fallback
-        if available_cameras:
-            cam_options = [
-                selector.SelectOptionDict(value=cam, label=cam)
-                for cam in available_cameras
-            ]
-            cam_selector = selector.SelectSelector(
-                selector.SelectSelectorConfig(
-                    options=cam_options,
-                    mode=selector.SelectSelectorMode.DROPDOWN,
-                    custom_value=True,
-                )
-            )
-        else:
-            cam_selector = selector.TextSelector(
-                selector.TextSelectorConfig(
-                    type=selector.TextSelectorType.TEXT,
-                )
-            )
-
-        return self.async_show_form(
-            step_id="camera_names",
-            description_placeholders={"camera_info": description},
-            data_schema=vol.Schema(
-                {
-                    vol.Optional("camera_name"): cam_selector,
-                    vol.Optional("friendly_name"): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.TEXT,
-                        )
-                    ),
-                    vol.Optional("action", default="set"): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=[
-                                selector.SelectOptionDict(value="set", label="Set Display Name"),
-                                selector.SelectOptionDict(value="remove", label="Remove Override"),
                             ],
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )

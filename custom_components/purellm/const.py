@@ -221,15 +221,6 @@ CONF_VOICE_SCRIPTS: Final = "voice_scripts"
 DEFAULT_VOICE_SCRIPTS: Final = "[]"
 
 # =============================================================================
-# CAMERA FRIENDLY NAMES - User-configurable camera location names
-# =============================================================================
-CONF_CAMERA_FRIENDLY_NAMES: Final = "camera_friendly_names"
-
-# Default camera friendly names (empty - will use camera.py defaults if not configured)
-# Format: location_key: Friendly Name (one per line)
-DEFAULT_CAMERA_FRIENDLY_NAMES: Final = ""
-
-# =============================================================================
 # SOFABATON ACTIVITIES - Switch entities for SofaBaton X2 remote activities
 # =============================================================================
 CONF_SOFABATON_ACTIVITIES: Final = "sofabaton_activities"

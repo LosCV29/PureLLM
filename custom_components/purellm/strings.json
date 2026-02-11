@@ -32,7 +32,6 @@
           "entities": "PureLLM Default Entities",
           "device_aliases": "Device Aliases",
           "voice_scripts": "Voice Scripts",
-          "camera_names": "Frigate Camera Mapping",
           "sofabaton": "SofaBaton Activities",
           "music_rooms": "Music Room Mapping",
           "notifications": "Notification Settings",
@@ -110,17 +109,6 @@
           "open_script": "Open/On Script (called for open/turn_on actions)",
           "close_script": "Close/Off Script (called for close/turn_off actions)",
           "sensor_entity": "State Sensor (optional - checks state before executing)",
-          "action": "Action"
-        }
-      },
-      "camera_names": {
-        "title": "Frigate Camera Mapping",
-        "description": "{camera_info}",
-        "data": {
-          "select_camera": "Select Existing Camera",
-          "location_key": "Location Key (what you say, e.g., 'porch', 'driveway')",
-          "frigate_camera_name": "Frigate Camera Name (e.g., 'front_porch_cam')",
-          "friendly_name": "Display Name (e.g., 'Front Porch')",
           "action": "Action"
         }
       },
