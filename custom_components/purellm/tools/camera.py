@@ -22,30 +22,6 @@ _LOGGER = logging.getLogger(__name__)
 # Video clip settings
 VIDEO_CLIP_DURATION = 5  # seconds of video to capture
 
-# Default camera friendly names
-DEFAULT_CAMERA_FRIENDLY_NAMES = {
-    "doorbell": "Doorbell",
-    "driveway": "Driveway",
-    "garden": "Garden",
-    "kitchen": "Kitchen",
-    "nursery": "Nursery",
-    "sala": "Sala",
-    "porch": "Front Porch",
-    "garage": "Garage",
-    "backyard": "Backyard",
-    "living_room": "Living Room",
-    "front_door": "Front Door",
-}
-
-# Common natural-language aliases → actual Frigate camera names
-_LOCATION_ALIASES: dict[str, str] = {
-    "backyard": "garden",
-    "back yard": "garden",
-    "front door": "doorbell",
-    "front_door": "doorbell",
-    "living room": "sala",
-    "living_room": "sala",
-}
 
 
 def _resolve_camera(
@@ -55,16 +31,14 @@ def _resolve_camera(
 ) -> tuple[str | None, str]:
     """Resolve a location key to Frigate camera name and friendly name.
 
-    Checks explicit frigate_camera_names config first, then falls back to
-    built-in _LOCATION_ALIASES, then uses the location key as-is.
+    Checks explicit frigate_camera_names config first, then uses the
+    location key as-is.  No built-in aliases — all mappings come from
+    user configuration.
     """
-    friendly_names = camera_friendly_names or DEFAULT_CAMERA_FRIENDLY_NAMES
+    friendly_names = camera_friendly_names or {}
 
     frigate_names = frigate_camera_names or {}
-    frigate_name = frigate_names.get(location)
-
-    if not frigate_name:
-        frigate_name = _LOCATION_ALIASES.get(location, location)
+    frigate_name = frigate_names.get(location, location)
 
     friendly_name = friendly_names.get(
         frigate_name,
