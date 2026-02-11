@@ -344,18 +344,12 @@ async def check_camera(
         }
 
     try:
-        # Kick off the video clip capture and Frigate snapshot in parallel.
-        # The snapshot is an instant HTTP GET while the clip takes ~5s, so
-        # this adds zero extra latency.
+        # Capture the video clip first, then grab the Frigate snapshot.
+        # Fetching the snapshot *after* the clip ensures it reflects the
+        # end of the recording window rather than a stale frame from
+        # before the clip started.
         _LOGGER.info("Capturing %ds video clip from %s", VIDEO_CLIP_DURATION, frigate_name)
-        clip_task = asyncio.create_task(
-            _capture_video_clip(rtsp_url, VIDEO_CLIP_DURATION)
-        )
-        snap_task = asyncio.create_task(
-            _fetch_frigate_snapshot(session, frigate_url, frigate_name)
-        )
-
-        video_clip = await clip_task
+        video_clip = await _capture_video_clip(rtsp_url, VIDEO_CLIP_DURATION)
 
         if not video_clip:
             _LOGGER.error("Video clip capture failed for %s", frigate_name)
@@ -368,7 +362,7 @@ async def check_camera(
             }
 
         snapshot_url = None
-        snapshot = await snap_task
+        snapshot = await _fetch_frigate_snapshot(session, frigate_url, frigate_name)
         if snapshot and config_dir:
             try:
                 snapshot_url = await _save_snapshot(config_dir, frigate_name, snapshot)
