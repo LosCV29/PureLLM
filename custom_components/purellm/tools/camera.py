@@ -27,17 +27,9 @@ _LOGGER = logging.getLogger(__name__)
 VIDEO_CLIP_DURATION = 5  # seconds of video to capture
 
 
-def _frigate_headers(api_key: str) -> dict[str, str]:
-    """Build authorization headers for Frigate API requests."""
-    if api_key:
-        return {"Authorization": f"Bearer {api_key}"}
-    return {}
-
-
 async def fetch_frigate_cameras(
     session: "aiohttp.ClientSession",
     frigate_url: str,
-    api_key: str = "",
 ) -> dict[str, str]:
     """Fetch camera names and RTSP input URLs from Frigate's /api/config.
 
@@ -50,10 +42,9 @@ async def fetch_frigate_cameras(
         return {}
 
     url = f"{frigate_url.rstrip('/')}/api/config"
-    headers = _frigate_headers(api_key)
     try:
         async with asyncio.timeout(10):
-            async with session.get(url, headers=headers) as resp:
+            async with session.get(url) as resp:
                 if resp.status != 200:
                     _LOGGER.warning("Frigate config request failed (%s)", resp.status)
                     return {}
@@ -216,7 +207,6 @@ async def _fetch_frigate_snapshot(
     frigate_url: str,
     camera_name: str,
     height: int = 720,
-    api_key: str = "",
 ) -> bytes | None:
     """Fetch a live snapshot from Frigate's latest-frame API.
 
@@ -225,10 +215,9 @@ async def _fetch_frigate_snapshot(
     reliable than trying to extract a frame from a captured RTSP clip.
     """
     url = f"{frigate_url.rstrip('/')}/api/{camera_name}/latest.jpg?h={height}"
-    headers = _frigate_headers(api_key)
     try:
         async with asyncio.timeout(10):
-            async with session.get(url, headers=headers) as resp:
+            async with session.get(url) as resp:
                 if resp.status != 200:
                     _LOGGER.warning(
                         "Frigate snapshot request failed (%s) for %s",
@@ -348,7 +337,6 @@ async def check_camera(
     llm_model: str = "",
     config_dir: str = "",
     camera_rtsp_urls: dict[str, str] | None = None,
-    frigate_api_key: str = "",
 ) -> dict[str, Any]:
     """Check a camera with video scene analysis.
 
@@ -372,7 +360,7 @@ async def check_camera(
         return {"error": "Frigate URL not configured"}
 
     # Fetch actual cameras from Frigate - this is the source of truth
-    frigate_cameras = await fetch_frigate_cameras(session, frigate_url, frigate_api_key)
+    frigate_cameras = await fetch_frigate_cameras(session, frigate_url)
 
     if not frigate_cameras:
         return {
@@ -414,7 +402,7 @@ async def check_camera(
             }
 
         snapshot_url = None
-        snapshot = await _fetch_frigate_snapshot(session, frigate_url, camera_name, api_key=frigate_api_key)
+        snapshot = await _fetch_frigate_snapshot(session, frigate_url, camera_name)
         if snapshot and config_dir:
             try:
                 snapshot_url = await _save_snapshot(config_dir, camera_name, snapshot)
