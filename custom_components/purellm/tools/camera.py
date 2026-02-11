@@ -306,6 +306,7 @@ async def _analyze_video_with_llm(
 
 
 
+
 def _save_snapshot_sync(config_dir: str, frigate_name: str, image_bytes: bytes) -> str:
     """Save snapshot to HA's www directory and return the local URL (sync)."""
     www_dir = os.path.join(config_dir, "www", "purellm")
@@ -387,20 +388,51 @@ async def check_camera(
     frigate_host = urlparse(frigate_url).hostname
     rtsp_url = f"rtsp://{frigate_host}:8554/{camera_name}"
 
+    # Build ordered list of RTSP URLs to try for video capture.
+    # 1. go2rtc restream (preferred — avoids competing NVR connections)
+    # 2. Direct NVR RTSP URL from Frigate config (if go2rtc is unavailable)
+    # 3. Manual override from camera_rtsp_urls config (if provided)
+    rtsp_candidates: list[tuple[str, str]] = []
+    rtsp_candidates.append(("go2rtc", rtsp_url))
+
+    direct_rtsp = frigate_cameras.get(camera_name, "")
+    if direct_rtsp:
+        rtsp_candidates.append(("direct", direct_rtsp))
+
+    if camera_rtsp_urls and camera_name in camera_rtsp_urls:
+        rtsp_candidates.append(("manual", camera_rtsp_urls[camera_name]))
+
     try:
-        _LOGGER.info("Capturing %ds video clip from %s via Frigate restream (url=%s)", VIDEO_CLIP_DURATION, camera_name, rtsp_url)
-        video_clip = await _capture_video_clip(rtsp_url, VIDEO_CLIP_DURATION)
+        video_clip = None
+        used_source = ""
+
+        for source_label, candidate_url in rtsp_candidates:
+            _LOGGER.info(
+                "Capturing %ds video clip from %s via %s (url=%s)",
+                VIDEO_CLIP_DURATION, camera_name, source_label, candidate_url,
+            )
+            video_clip = await _capture_video_clip(candidate_url, VIDEO_CLIP_DURATION)
+            if video_clip:
+                used_source = source_label
+                break
+            _LOGGER.warning(
+                "Video capture via %s failed for %s, trying next source",
+                source_label, camera_name,
+            )
 
         if not video_clip:
-            _LOGGER.error("Video clip capture failed for %s (url=%s)", camera_name, rtsp_url)
+            tried = ", ".join(f"{lbl}={u}" for lbl, u in rtsp_candidates)
+            _LOGGER.error("All video capture attempts failed for %s. Tried: %s", camera_name, tried)
             return {
                 "location": friendly_name,
                 "status": "error",
                 "source": "none",
-                "error": f"Failed to capture video clip from {friendly_name} camera. "
-                         f"ffmpeg could not connect to the RTSP stream. URL: {rtsp_url}",
+                "error": f"Failed to capture video from {friendly_name} camera. "
+                         f"Could not connect to any RTSP stream. "
+                         f"Tried: {', '.join(lbl for lbl, _ in rtsp_candidates)}.",
             }
 
+        # Fetch snapshot for display in notifications
         snapshot_url = None
         snapshot = await _fetch_frigate_snapshot(session, frigate_url, camera_name)
         if snapshot and config_dir:
@@ -411,8 +443,8 @@ async def check_camera(
 
         # Analyze with vision LLM
         _LOGGER.info(
-            "Sending video clip (%s bytes) to %s for analysis",
-            len(video_clip), llm_model,
+            "Sending video clip (%s bytes, source=%s) to %s for analysis",
+            len(video_clip), used_source, llm_model,
         )
         analysis = await _analyze_video_with_llm(
             session, video_clip, llm_base_url, llm_api_key, llm_model,
