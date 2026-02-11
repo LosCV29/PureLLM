@@ -1416,8 +1416,6 @@ class PureLLMConversationEntity(ConversationEntity):
             if camera_entity:
                 data["url"] = f"entityId:{camera_entity}"
                 data["clickAction"] = f"entityId:{camera_entity}"
-                # iOS: attach live camera view to the notification
-                data["entity_id"] = camera_entity
 
             # Image attachment - iOS needs explicit content-type
             if image_url:
