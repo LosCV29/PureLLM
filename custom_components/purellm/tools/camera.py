@@ -323,7 +323,7 @@ def _save_snapshot_sync(config_dir: str, frigate_name: str, image_bytes: bytes) 
     with open(filepath, "wb") as f:
         f.write(image_bytes)
 
-    return f"/api/purellm/camera/{frigate_name}/snapshot?t={int(time.time())}"
+    return f"/api/purellm/camera/{frigate_name}/snapshot.jpg?t={int(time.time())}"
 
 
 async def _save_snapshot(config_dir: str, frigate_name: str, image_bytes: bytes) -> str:

@@ -66,7 +66,7 @@ class PureLLMSnapshotView(HomeAssistantView):
     directory existed at HA startup, which is not guaranteed.
     """
 
-    url = "/api/purellm/camera/{camera_name}/snapshot"
+    url = "/api/purellm/camera/{camera_name}/snapshot.jpg"
     name = "api:purellm:camera:snapshot"
     requires_auth = False
 
@@ -82,7 +82,9 @@ class PureLLMSnapshotView(HomeAssistantView):
         if not os.path.isfile(filepath):
             return web.Response(status=404, text="Snapshot not found")
 
-        return web.FileResponse(filepath, headers={"Content-Type": "image/jpeg"})
+        with open(filepath, "rb") as fh:
+            data = fh.read()
+        return web.Response(body=data, content_type="image/jpeg")
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
