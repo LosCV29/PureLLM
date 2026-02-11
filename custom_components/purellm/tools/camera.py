@@ -96,11 +96,11 @@ def _build_rtsp_url(base_url: str, frigate_name: str) -> str:
     """Derive the RTSP restream URL from the Frigate HTTP base URL.
 
     Frigate's go2rtc serves RTSP on port 8554 at the same host.
-    We use the sub-stream for faster/lighter capture.
+    Uses the main (full-resolution) stream.
     """
     parsed = urlparse(base_url)
     host = parsed.hostname or "localhost"
-    return f"rtsp://{host}:8554/{frigate_name}_sub"
+    return f"rtsp://{host}:8554/{frigate_name}"
 
 
 async def _capture_video_clip(
@@ -110,7 +110,7 @@ async def _capture_video_clip(
 ) -> bytes | None:
     """Capture a video clip from Frigate's RTSP restream using ffmpeg.
 
-    Connects to Frigate's go2rtc RTSP restream and transcodes to a compact
+    Connects to Frigate's go2rtc RTSP main stream and transcodes to a compact
     MP4 suitable for sending to a vision LLM.  The MP4 uses fragmented
     format so it can be piped to stdout without seeking.
     """
@@ -124,7 +124,6 @@ async def _capture_video_clip(
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "28",
-        "-vf", "scale='min(1280,iw)':'-2'",
         "-an",
         "-movflags", "frag_keyframe+empty_moov",
         "-f", "mp4",
