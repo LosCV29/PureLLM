@@ -1377,20 +1377,13 @@ class PureLLMConversationEntity(ConversationEntity):
             description = camera_result.get("description", "")
             snapshot_url = camera_result.get("snapshot_url", "")
 
-            # Convert relative /local/ path to absolute URL for companion app
-            if snapshot_url and snapshot_url.startswith("/local/"):
-                try:
-                    ha_url = get_url(self.hass).rstrip("/")
-                    snapshot_url = f"{ha_url}{snapshot_url}"
-                except Exception:
-                    _LOGGER.warning("Could not resolve HA base URL for snapshot")
+            # Keep /local/ path as-is — iOS/Android Companion App resolves
+            # these natively via the webhook connection.  Converting to an
+            # absolute internal URL breaks delivery when the phone is off-LAN.
 
             _LOGGER.info("Sending camera notification for: %s", location)
 
-            source = camera_result.get("source", "unknown")
-            source_label = {"video_clip": "live video", "snapshot": "snapshot"}.get(source, source)
-
-            title = f"📷 {location} ({source_label})"
+            title = f"📷 {location}"
             message = description if description else "Camera check completed."
 
             notification_data = self._build_notification_data(title, message, image_url=snapshot_url)
