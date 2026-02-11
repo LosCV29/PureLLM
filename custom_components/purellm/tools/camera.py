@@ -64,11 +64,31 @@ def _resolve_camera(
 
     Uses flexible substring matching so that e.g. a user saying
     "backyard camera" correctly resolves to the ``backyard`` config key.
+    Also performs reverse lookup through friendly name values so that a
+    user saying "backyard" can resolve to a camera whose friendly name
+    is "Backyard" even when the underlying config key is different
+    (e.g. "garden").
     """
     friendly_names = camera_friendly_names or {}
     frigate_names = frigate_camera_names or {}
 
     matched_key = _best_key_match(frigate_names, location)
+
+    # If no match on config keys, try reverse-matching against friendly name
+    # values.  This lets "backyard" resolve when the config key is "garden"
+    # but the friendly name is "Backyard".
+    if matched_key is None and friendly_names:
+        reverse = {v.lower().replace("_", " "): k for k, v in friendly_names.items()}
+        rev_hit = _best_key_match(reverse, location)
+        if rev_hit:
+            resolved_key = reverse[rev_hit]
+            # The resolved key may itself be a frigate_names key
+            if resolved_key in frigate_names:
+                matched_key = resolved_key
+            else:
+                # The friendly-name key might be the frigate name directly
+                return resolved_key, friendly_names.get(resolved_key, rev_hit.title())
+
     frigate_name = frigate_names[matched_key] if matched_key else location
 
     friendly_name = friendly_names.get(
