@@ -77,6 +77,8 @@ from .const import (
     DEFAULT_FRIGATE_URL,
     CONF_FRIGATE_CAMERA_NAMES,
     DEFAULT_FRIGATE_CAMERA_NAMES,
+    CONF_CAMERA_RTSP_URLS,
+    DEFAULT_CAMERA_RTSP_URLS,
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
     DEFAULT_API_KEY,
@@ -312,6 +314,8 @@ class PureLLMConversationEntity(ConversationEntity):
         self.frigate_url = config.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL)
         frigate_names_str = config.get(CONF_FRIGATE_CAMERA_NAMES, DEFAULT_FRIGATE_CAMERA_NAMES)
         self.frigate_camera_names = parse_entity_config(frigate_names_str) if frigate_names_str else {}
+        rtsp_urls_str = config.get(CONF_CAMERA_RTSP_URLS, DEFAULT_CAMERA_RTSP_URLS)
+        self.camera_rtsp_urls = parse_entity_config(rtsp_urls_str) if rtsp_urls_str else {}
 
         # Camera friendly names configuration
         camera_names_str = config.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES)
@@ -1487,7 +1491,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     arguments, self._session, self.google_places_api_key,
                     latitude, longitude, self._track_api_call
                 ),
-                # Camera via Frigate with local vision LLM analysis
+                # Camera via direct RTSP with local vision LLM analysis
                 "check_camera": lambda: camera_tool.check_camera(
                     arguments, self._session, self.frigate_url,
                     self.frigate_camera_names or None,
@@ -1496,6 +1500,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     llm_api_key=self.api_key,
                     llm_model=self.model,
                     config_dir=self.hass.config.config_dir,
+                    camera_rtsp_urls=self.camera_rtsp_urls or None,
                 ),
                 # Web search
                 "web_search": lambda: search_tool.web_search(

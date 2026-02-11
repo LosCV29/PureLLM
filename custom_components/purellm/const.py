@@ -113,6 +113,7 @@ CONF_CAMERA_ENTITIES: Final = "camera_entities"  # Deprecated - kept for config 
 # Frigate settings
 CONF_FRIGATE_URL: Final = "frigate_url"
 CONF_FRIGATE_CAMERA_NAMES: Final = "frigate_camera_names"
+CONF_CAMERA_RTSP_URLS: Final = "camera_rtsp_urls"
 
 # Thermostat settings - user-configurable temperature range and step
 CONF_THERMOSTAT_MIN_TEMP: Final = "thermostat_min_temp"
@@ -128,6 +129,7 @@ DEFAULT_DEVICE_ALIASES: Final = ""
 DEFAULT_CAMERA_ENTITIES: Final = ""
 DEFAULT_FRIGATE_URL: Final = ""
 DEFAULT_FRIGATE_CAMERA_NAMES: Final = ""  # location_key: frigate_camera_name, one per line
+DEFAULT_CAMERA_RTSP_URLS: Final = ""  # frigate_camera_name: rtsp://url, one per line
 
 # Thermostat defaults (Fahrenheit by default)
 DEFAULT_THERMOSTAT_MIN_TEMP: Final = 60
