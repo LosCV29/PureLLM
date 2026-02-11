@@ -16,6 +16,7 @@ import logging
 import os
 import time
 from typing import Any, TYPE_CHECKING
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     import aiohttp
@@ -339,10 +340,9 @@ async def check_camera(
 ) -> dict[str, Any]:
     """Check a camera with video scene analysis.
 
-    Fetches the list of cameras and their RTSP input URLs directly from
-    Frigate's ``/api/config`` endpoint so that camera names always match
-    the actual Frigate integration.  Manually configured RTSP URLs
-    (``camera_rtsp_urls``) take priority when present.
+    Fetches camera names from Frigate's ``/api/config`` endpoint and
+    captures video via Frigate's go2rtc restream (``rtsp://<host>:8554/<cam>``)
+    to avoid competing RTSP connections to the NVR.
 
     A live snapshot for display is fetched from Frigate's
     ``/api/<camera>/latest.jpg`` endpoint.
@@ -381,23 +381,14 @@ async def check_camera(
     # Display name derived from Frigate camera name
     friendly_name = camera_name.replace("_", " ").title()
 
-    # Get RTSP URL: manual override first, then Frigate's config
-    manual_urls = camera_rtsp_urls or {}
-    rtsp_url = manual_urls.get(camera_name) or frigate_cameras.get(camera_name)
-
-    if not rtsp_url:
-        return {
-            "location": friendly_name,
-            "status": "error",
-            "error": f"No RTSP input URL found for {friendly_name} camera in Frigate config.",
-        }
+    # Use Frigate's go2rtc restream instead of the NVR's direct RTSP URL.
+    # This avoids opening a competing RTSP connection to the NVR which
+    # causes intermittent failures when the NVR's connection limit is hit.
+    frigate_host = urlparse(frigate_url).hostname
+    rtsp_url = f"rtsp://{frigate_host}:8554/{camera_name}"
 
     try:
-        # Capture the video clip first, then grab the Frigate snapshot.
-        # Fetching the snapshot *after* the clip ensures it reflects the
-        # end of the recording window rather than a stale frame from
-        # before the clip started.
-        _LOGGER.info("Capturing %ds video clip from %s (url=%s)", VIDEO_CLIP_DURATION, camera_name, rtsp_url)
+        _LOGGER.info("Capturing %ds video clip from %s via Frigate restream (url=%s)", VIDEO_CLIP_DURATION, camera_name, rtsp_url)
         video_clip = await _capture_video_clip(rtsp_url, VIDEO_CLIP_DURATION)
 
         if not video_clip:
