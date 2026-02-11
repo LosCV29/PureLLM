@@ -117,10 +117,6 @@ from .const import (
     # Frigate
     CONF_FRIGATE_URL,
     DEFAULT_FRIGATE_URL,
-    CONF_FRIGATE_CAMERA_NAMES,
-    DEFAULT_FRIGATE_CAMERA_NAMES,
-    CONF_CAMERA_RTSP_URLS,
-    DEFAULT_CAMERA_RTSP_URLS,
     # SofaBaton Activities
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
@@ -416,7 +412,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "entities": "PureLLM Default Entities",
                 "device_aliases": "Device Aliases",
                 "voice_scripts": "Voice Scripts",
-                "camera_names": "Camera Friendly Names",
+                "camera_names": "Camera Display Names",
                 "sofabaton": "SofaBaton Activities",
                 "music_rooms": "Music Room Mapping",
                 "notifications": "Notification Settings",
@@ -1048,12 +1044,11 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_camera_names(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle Frigate camera mapping configuration.
+        """Handle camera friendly-name overrides.
 
-        Maps voice location keys to Frigate camera names, friendly display names,
-        and direct RTSP URLs for video capture.
-        E.g., location_key='porch' -> frigate_name='front_porch_cam',
-              friendly='Front Porch', rtsp='rtsp://admin:pass@host:554/stream'
+        Camera names and RTSP URLs are fetched directly from Frigate's API
+        (source of truth).  This page only lets the user set optional
+        friendly display names for cameras (e.g. 'back_yard' → 'Backyard').
         """
         current = {**self._entry.data, **self._entry.options}
 
@@ -1067,152 +1062,93 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                         result[key.strip()] = val.strip()
             return result
 
-        # Parse current mappings
-        frigate_dict = _parse_kv(current.get(CONF_FRIGATE_CAMERA_NAMES, DEFAULT_FRIGATE_CAMERA_NAMES))
+        # Parse current friendly-name overrides
         friendly_dict = _parse_kv(current.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES))
-        rtsp_dict = _parse_kv(current.get(CONF_CAMERA_RTSP_URLS, DEFAULT_CAMERA_RTSP_URLS))
+
+        # Fetch live camera list from Frigate
+        frigate_url = current.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL)
+        available_cameras = await fetch_frigate_cameras(frigate_url)
 
         if user_input is not None:
-            selected = user_input.get("select_camera", "")
-            location_key = user_input.get("location_key", "").strip().lower().replace(" ", "_")
-            frigate_name = user_input.get("frigate_camera_name", "").strip()
+            camera_name = user_input.get("camera_name", "").strip()
             friendly_name = user_input.get("friendly_name", "").strip()
-            rtsp_url = user_input.get("rtsp_url", "").strip()
-            action = user_input.get("action", "add")
+            action = user_input.get("action", "set")
 
-            if action == "delete" and selected:
-                frigate_dict.pop(selected, None)
-                friendly_dict.pop(selected, None)
-                # Remove RTSP URL keyed by frigate name or location key
-                old_frigate = frigate_dict.get(selected, selected)
-                rtsp_dict.pop(old_frigate, None)
-                rtsp_dict.pop(selected, None)
-            elif action == "update" and selected:
-                # Remove old entries
-                old_frigate = frigate_dict.get(selected, selected)
-                frigate_dict.pop(selected, None)
-                friendly_dict.pop(selected, None)
-                rtsp_dict.pop(old_frigate, None)
-                rtsp_dict.pop(selected, None)
-                key = location_key if location_key else selected
-                if frigate_name:
-                    frigate_dict[key] = frigate_name
-                if friendly_name:
-                    friendly_dict[key] = friendly_name
-                if rtsp_url:
-                    # Key RTSP URL by frigate camera name for lookup
-                    rtsp_key = frigate_name if frigate_name else frigate_dict.get(key, key)
-                    rtsp_dict[rtsp_key] = rtsp_url
-            elif action == "add" and location_key and frigate_name:
-                frigate_dict[location_key] = frigate_name
-                if friendly_name:
-                    friendly_dict[location_key] = friendly_name
-                else:
-                    friendly_dict[location_key] = location_key.replace("_", " ").title()
-                if rtsp_url:
-                    rtsp_dict[frigate_name] = rtsp_url
-            elif not selected and not location_key and not frigate_name:
+            if action == "remove" and camera_name:
+                friendly_dict.pop(camera_name, None)
+            elif action == "set" and camera_name and friendly_name:
+                friendly_dict[camera_name] = friendly_name
+            elif not camera_name and not friendly_name:
                 return self.async_create_entry(title="", data=self._entry.options)
 
             def _serialize_kv(d: dict[str, str]) -> str:
                 return "\n".join([f"{k}: {v}" for k, v in d.items()]) if d else ""
 
-            # Save all three mappings
             new_options = {
                 **self._entry.options,
-                CONF_FRIGATE_CAMERA_NAMES: _serialize_kv(frigate_dict),
                 CONF_CAMERA_FRIENDLY_NAMES: _serialize_kv(friendly_dict),
-                CONF_CAMERA_RTSP_URLS: _serialize_kv(rtsp_dict),
             }
             self.hass.config_entries.async_update_entry(self._entry, options=new_options)
-
-            # Reload for display
-            frigate_dict = _parse_kv(new_options.get(CONF_FRIGATE_CAMERA_NAMES, ""))
             friendly_dict = _parse_kv(new_options.get(CONF_CAMERA_FRIENDLY_NAMES, ""))
-            rtsp_dict = _parse_kv(new_options.get(CONF_CAMERA_RTSP_URLS, ""))
 
-        # Build description showing current mappings
-        if frigate_dict:
-            mapping_lines = []
-            for key in frigate_dict:
-                fname = frigate_dict.get(key, "?")
-                dname = friendly_dict.get(key, key.replace("_", " ").title())
-                rurl = rtsp_dict.get(fname, rtsp_dict.get(key, "not set"))
-                mapping_lines.append(
-                    f"**{key}** → Frigate: `{fname}` | Display: {dname} | RTSP: `{rurl}`"
-                )
-            description = "**Current Frigate camera mappings:**\n" + "\n".join(mapping_lines) + "\n\nSelect one to edit/delete, or add a new one below."
-        else:
-            description = "No Frigate cameras configured. Add your first camera mapping below.\n\nEnter a location key (what you say, e.g., 'porch'), the Frigate camera name, a friendly display name, and the direct RTSP URL."
-
-        # Build select options for existing mappings
-        select_options = [
-            selector.SelectOptionDict(
-                value=key,
-                label=f"{key} → {frigate_dict.get(key, '?')} ({friendly_dict.get(key, '')})"
-            )
-            for key in frigate_dict
-        ]
-
-        # Fetch available cameras from Frigate API for dropdown
-        frigate_url = current.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL)
-        available_cameras = await fetch_frigate_cameras(frigate_url)
-
+        # Build description
         if available_cameras:
-            frigate_cam_options = [
+            cam_lines = []
+            for cam in available_cameras:
+                display = friendly_dict.get(cam, cam.replace("_", " ").title())
+                if cam in friendly_dict:
+                    cam_lines.append(f"**{cam}** → {display}")
+                else:
+                    cam_lines.append(f"**{cam}** (default: {display})")
+            description = (
+                "**Cameras from Frigate:**\n" + "\n".join(cam_lines)
+                + "\n\nOptionally set a custom display name for any camera."
+            )
+        else:
+            if frigate_url:
+                description = "Could not fetch cameras from Frigate. Check your Frigate URL in Entities settings."
+            else:
+                description = "No Frigate URL configured. Set it in Entities settings first."
+            if friendly_dict:
+                lines = [f"**{k}** → {v}" for k, v in friendly_dict.items()]
+                description += "\n\n**Current overrides:**\n" + "\n".join(lines)
+
+        # Camera name selector: dropdown from Frigate if available, text fallback
+        if available_cameras:
+            cam_options = [
                 selector.SelectOptionDict(value=cam, label=cam)
                 for cam in available_cameras
             ]
-            frigate_cam_selector = selector.SelectSelector(
+            cam_selector = selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=frigate_cam_options,
+                    options=cam_options,
                     mode=selector.SelectSelectorMode.DROPDOWN,
                     custom_value=True,
                 )
             )
         else:
-            # Fallback to text input if Frigate is unreachable or URL not set
-            frigate_cam_selector = selector.TextSelector(
+            cam_selector = selector.TextSelector(
                 selector.TextSelectorConfig(
                     type=selector.TextSelectorType.TEXT,
                 )
             )
-            if frigate_url:
-                description += "\n\n⚠ Could not fetch cameras from Frigate. Check URL or enter name manually."
 
         return self.async_show_form(
             step_id="camera_names",
             description_placeholders={"camera_info": description},
             data_schema=vol.Schema(
                 {
-                    vol.Optional("select_camera"): selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=select_options,
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
-                    ),
-                    vol.Optional("location_key"): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.TEXT,
-                        )
-                    ),
-                    vol.Optional("frigate_camera_name"): frigate_cam_selector,
+                    vol.Optional("camera_name"): cam_selector,
                     vol.Optional("friendly_name"): selector.TextSelector(
                         selector.TextSelectorConfig(
                             type=selector.TextSelectorType.TEXT,
                         )
                     ),
-                    vol.Optional("rtsp_url"): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.TEXT,
-                        )
-                    ),
-                    vol.Optional("action", default="add"): selector.SelectSelector(
+                    vol.Optional("action", default="set"): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=[
-                                selector.SelectOptionDict(value="add", label="Add New"),
-                                selector.SelectOptionDict(value="update", label="Update Selected"),
-                                selector.SelectOptionDict(value="delete", label="Delete Selected"),
+                                selector.SelectOptionDict(value="set", label="Set Display Name"),
+                                selector.SelectOptionDict(value="remove", label="Remove Override"),
                             ],
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )

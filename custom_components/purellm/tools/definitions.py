@@ -180,7 +180,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         tools.append(_tool(
             "check_camera",
             camera_desc,
-            {"location": {"type": "string", "description": "Camera location key"}, "query": {"type": "string", "description": "What to look for (optional)"}},
+            {"location": {"type": "string", "description": "Camera name (e.g. backyard, front_porch)"}, "query": {"type": "string", "description": "What to look for (optional)"}},
             ["location"]
         ))
 
