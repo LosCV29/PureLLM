@@ -1,7 +1,9 @@
 """Camera tool handlers - Frigate integration with local LLM video analysis.
 
-Captures video clips from Frigate and sends them to Qwen3-VL (via vLLM)
-for real-time scene analysis using the OpenAI-compatible video_url format.
+Captures video clips directly from camera RTSP streams and sends them to
+Qwen3-VL (via vLLM) for real-time scene analysis using the OpenAI-compatible
+video_url format.  Snapshots are extracted from the captured clip so they are
+guaranteed fresh (not Frigate's cached latest.jpg).
 """
 from __future__ import annotations
 
@@ -11,7 +13,6 @@ import logging
 import os
 import time
 from typing import Any, TYPE_CHECKING
-from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     import aiohttp
@@ -73,49 +74,16 @@ def _resolve_camera(
     return frigate_name, friendly_name
 
 
-async def _fetch_snapshot(
-    session: "aiohttp.ClientSession",
-    base_url: str,
-    frigate_name: str,
-) -> bytes | None:
-    """Download a snapshot JPEG from Frigate's latest.jpg endpoint."""
-    url = f"{base_url}/api/{frigate_name}/latest.jpg"
-    try:
-        async with asyncio.timeout(10):
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    _LOGGER.error("Frigate snapshot returned %s for %s", resp.status, frigate_name)
-                    return None
-                return await resp.read()
-    except Exception as err:
-        _LOGGER.error("Failed to fetch snapshot for %s: %s", frigate_name, err)
-        return None
-
-
-def _build_rtsp_url(base_url: str, frigate_name: str) -> str:
-    """Derive the RTSP restream URL from the Frigate HTTP base URL.
-
-    Frigate's go2rtc serves RTSP on port 8554 at the same host.
-    Uses the main (full-resolution) stream.
-    """
-    parsed = urlparse(base_url)
-    host = parsed.hostname or "localhost"
-    return f"rtsp://{host}:8554/{frigate_name}"
-
-
 async def _capture_video_clip(
-    base_url: str,
-    frigate_name: str,
+    rtsp_url: str,
     duration: int = VIDEO_CLIP_DURATION,
 ) -> bytes | None:
-    """Capture a video clip from Frigate's RTSP restream using ffmpeg.
+    """Capture a video clip from a direct RTSP stream using ffmpeg.
 
-    Connects to Frigate's go2rtc RTSP main stream and transcodes to a compact
+    Connects to the camera's native RTSP stream and transcodes to a compact
     MP4 suitable for sending to a vision LLM.  The MP4 uses fragmented
     format so it can be piped to stdout without seeking.
     """
-    rtsp_url = _build_rtsp_url(base_url, frigate_name)
-
     cmd = [
         "ffmpeg", "-y",
         "-rtsp_transport", "tcp",
@@ -150,13 +118,13 @@ async def _capture_video_clip(
             return None
 
         _LOGGER.info(
-            "Captured %ds video clip from %s (%s bytes)",
-            duration, frigate_name, len(stdout),
+            "Captured %ds video clip (%s bytes)",
+            duration, len(stdout),
         )
         return stdout
 
     except asyncio.TimeoutError:
-        _LOGGER.error("ffmpeg clip capture timed out after %ds for %s", duration + 20, frigate_name)
+        _LOGGER.error("ffmpeg clip capture timed out after %ds", duration + 20)
         try:
             proc.kill()
         except Exception:
@@ -166,7 +134,58 @@ async def _capture_video_clip(
         _LOGGER.error("ffmpeg not found - cannot capture video clips")
         return None
     except Exception as err:
-        _LOGGER.error("Video clip capture failed for %s: %s", frigate_name, err, exc_info=True)
+        _LOGGER.error("Video clip capture failed: %s", err, exc_info=True)
+        return None
+
+
+async def _extract_snapshot_from_clip(video_bytes: bytes) -> bytes | None:
+    """Extract the last frame of a captured MP4 clip as a JPEG.
+
+    Pipes the MP4 through ffmpeg, seeks to the end, and grabs one frame.
+    This guarantees the snapshot is from the actual recording, not a cache.
+    """
+    cmd = [
+        "ffmpeg", "-y",
+        "-sseof", "-0.5",       # seek to 0.5s before end of input
+        "-i", "pipe:0",         # read MP4 from stdin
+        "-frames:v", "1",       # grab one frame
+        "-q:v", "2",            # JPEG quality (2 = high quality)
+        "-f", "image2",
+        "pipe:1",
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(input=video_bytes), timeout=15
+        )
+
+        if proc.returncode != 0:
+            err_msg = stderr.decode(errors="replace")[-300:] if stderr else "unknown"
+            _LOGGER.warning("Snapshot extraction failed (rc=%s): %s", proc.returncode, err_msg)
+            return None
+
+        if not stdout or len(stdout) < 100:
+            _LOGGER.warning("Snapshot extraction produced too-small output (%s bytes)", len(stdout) if stdout else 0)
+            return None
+
+        _LOGGER.info("Extracted snapshot from clip (%s bytes)", len(stdout))
+        return stdout
+
+    except asyncio.TimeoutError:
+        _LOGGER.warning("Snapshot extraction timed out")
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return None
+    except Exception as err:
+        _LOGGER.warning("Snapshot extraction failed: %s", err)
         return None
 
 
@@ -270,21 +289,20 @@ async def check_camera(
     llm_api_key: str = "",
     llm_model: str = "",
     config_dir: str = "",
+    camera_rtsp_urls: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Check a camera with video scene analysis.
 
-    Captures a video clip from Frigate via ffmpeg and sends it to
-    Qwen3-VL for analysis. No fallbacks — if capture or analysis
-    fails, the failure is reported directly.
+    Captures a video clip from the camera's direct RTSP stream using ffmpeg,
+    extracts a fresh snapshot from the clip, and sends the video to Qwen3-VL
+    for analysis.  No fallbacks — if capture or analysis fails, the failure
+    is reported directly.
     """
     location = arguments.get("location", "").lower().strip()
     query = arguments.get("query", "")
 
     if not location:
         return {"error": "No camera location specified"}
-
-    if not frigate_url:
-        return {"error": "Frigate URL not configured"}
 
     if not llm_base_url or not llm_model:
         return {"error": "Vision LLM not configured"}
@@ -293,22 +311,28 @@ async def check_camera(
         location, frigate_camera_names, camera_friendly_names
     )
 
-    base_url = frigate_url.rstrip("/")
+    # Look up the direct RTSP URL for this camera
+    rtsp_urls = camera_rtsp_urls or {}
+    rtsp_url = rtsp_urls.get(frigate_name)
+
+    if not rtsp_url:
+        # Also try the raw location key in case the mapping uses that
+        rtsp_url = rtsp_urls.get(location)
+
+    if not rtsp_url:
+        _LOGGER.error("No RTSP URL configured for camera %s", frigate_name)
+        return {
+            "location": friendly_name,
+            "status": "error",
+            "source": "none",
+            "error": f"No RTSP URL configured for {friendly_name} camera. "
+                     "Add the camera's RTSP URL in PureLLM settings → Camera Friendly Names.",
+        }
 
     try:
-        # Grab a snapshot for the notification image
-        snapshot = await _fetch_snapshot(session, base_url, frigate_name)
-
-        snapshot_url = f"{base_url}/api/{frigate_name}/latest.jpg"
-        if snapshot and config_dir:
-            try:
-                snapshot_url = await _save_snapshot(config_dir, frigate_name, snapshot)
-            except Exception as err:
-                _LOGGER.warning("Failed to save snapshot: %s", err)
-
-        # Capture video clip
+        # Capture video clip from direct RTSP stream
         _LOGGER.info("Capturing %ds video clip from %s", VIDEO_CLIP_DURATION, frigate_name)
-        video_clip = await _capture_video_clip(base_url, frigate_name, VIDEO_CLIP_DURATION)
+        video_clip = await _capture_video_clip(rtsp_url, VIDEO_CLIP_DURATION)
 
         if not video_clip:
             _LOGGER.error("Video clip capture failed for %s", frigate_name)
@@ -317,9 +341,17 @@ async def check_camera(
                 "status": "error",
                 "source": "none",
                 "error": f"Failed to capture video clip from {friendly_name} camera. "
-                         "ffmpeg could not connect to the Frigate RTSP restream.",
-                "snapshot_url": snapshot_url if snapshot else None,
+                         "ffmpeg could not connect to the RTSP stream.",
             }
+
+        # Extract a fresh snapshot from the captured clip (not cached)
+        snapshot_url = None
+        snapshot = await _extract_snapshot_from_clip(video_clip)
+        if snapshot and config_dir:
+            try:
+                snapshot_url = await _save_snapshot(config_dir, frigate_name, snapshot)
+            except Exception as err:
+                _LOGGER.warning("Failed to save snapshot: %s", err)
 
         # Analyze with vision LLM
         _LOGGER.info(
@@ -339,7 +371,7 @@ async def check_camera(
                 "source": "none",
                 "error": f"Vision LLM failed to analyze video from {friendly_name} camera. "
                          "The video was captured but the LLM did not return a response.",
-                "snapshot_url": snapshot_url if snapshot else None,
+                "snapshot_url": snapshot_url,
             }
 
         return {
@@ -357,5 +389,3 @@ async def check_camera(
             "status": "error",
             "error": f"Failed to check {friendly_name} camera: {str(err)}",
         }
-
-
