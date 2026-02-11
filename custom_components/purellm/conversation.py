@@ -971,13 +971,17 @@ class PureLLMConversationEntity(ConversationEntity):
         called_tools: set[str] = set()
 
         for iteration in range(5):  # Max 5 tool iterations
+            # Disable streaming when tools are present — LM Studio silently
+            # drops tool_calls in streaming mode.  Use non-streaming for tool
+            # iterations and streaming only for the final text response.
+            use_stream = not bool(tools)
             kwargs = {
                 "model": self.model,
                 "messages": messages,
                 "temperature": self.temperature,
                 "max_tokens": max_tokens,
                 "top_p": self.top_p,
-                "stream": True,
+                "stream": use_stream,
             }
             if tools:
                 kwargs["tools"] = tools
@@ -997,55 +1001,48 @@ class PureLLMConversationEntity(ConversationEntity):
             self._track_api_call("llm")
 
             try:
-                stream = await self.client.chat.completions.create(**kwargs)
+                if use_stream:
+                    # Streaming path (no tools)
+                    stream = await self.client.chat.completions.create(**kwargs)
+                    try:
+                        async for chunk in stream:
+                            if not chunk.choices:
+                                continue
+                            delta = chunk.choices[0].delta
+                            if delta.content:
+                                accumulated_content += delta.content
+                    finally:
+                        await stream.close()
+                else:
+                    # Non-streaming path (tools present) — required for LM Studio
+                    # to correctly return tool_calls in the response.
+                    response = await self.client.chat.completions.create(**kwargs)
+                    message = response.choices[0].message
 
-                try:
-                    async for chunk in stream:
-                        if not chunk.choices:
-                            continue
+                    if message.content:
+                        accumulated_content = message.content
 
-                        delta = chunk.choices[0].delta
+                    if message.tool_calls:
+                        for tc in message.tool_calls:
+                            tool_calls_buffer.append({
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
+                                }
+                            })
 
-                        # Accumulate content (yield later only if no tool calls)
-                        if delta.content:
-                            accumulated_content += delta.content
-
-                        # Accumulate tool calls (new format)
-                        if delta.tool_calls:
-                            for tc_delta in delta.tool_calls:
-                                # Default index to 0 if missing (common with local LLMs)
-                                idx = tc_delta.index if tc_delta.index is not None else 0
-                                while len(tool_calls_buffer) <= idx:
-                                    tool_calls_buffer.append({
-                                        "id": None,
-                                        "type": "function",
-                                        "function": {"name": "", "arguments": ""}
-                                    })
-
-                                current = tool_calls_buffer[idx]
-                                if tc_delta.id:
-                                    current["id"] = tc_delta.id
-                                if tc_delta.function:
-                                    if tc_delta.function.name:
-                                        current["function"]["name"] += tc_delta.function.name
-                                    if tc_delta.function.arguments:
-                                        current["function"]["arguments"] += tc_delta.function.arguments
-
-                        # Handle legacy function_call format (some local LLMs use this)
-                        if hasattr(delta, "function_call") and delta.function_call and not delta.tool_calls:
-                            if not tool_calls_buffer:
-                                tool_calls_buffer.append({
-                                    "id": "call_legacy_0",
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""}
-                                })
-                            current = tool_calls_buffer[0]
-                            if delta.function_call.name:
-                                current["function"]["name"] += delta.function_call.name
-                            if delta.function_call.arguments:
-                                current["function"]["arguments"] += delta.function_call.arguments
-                finally:
-                    await stream.close()
+                    # Handle legacy function_call format (some local LLMs)
+                    if hasattr(message, "function_call") and message.function_call and not message.tool_calls:
+                        tool_calls_buffer.append({
+                            "id": "call_legacy_0",
+                            "type": "function",
+                            "function": {
+                                "name": message.function_call.name,
+                                "arguments": message.function_call.arguments,
+                            }
+                        })
 
                 # Debug: log what the LLM produced
                 if not accumulated_content and not tool_calls_buffer:
