@@ -113,7 +113,9 @@ from .const import (
     DEFAULT_VOICE_SCRIPTS,
     # Frigate
     CONF_FRIGATE_URL,
+    CONF_FRIGATE_API_KEY,
     DEFAULT_FRIGATE_URL,
+    DEFAULT_FRIGATE_API_KEY,
     # SofaBaton Activities
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
@@ -591,9 +593,11 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 else:
                     processed_input[CONF_CALENDAR_ENTITIES] = cal_list
 
-            # Handle Frigate URL
+            # Handle Frigate URL and API key
             if CONF_FRIGATE_URL in user_input:
                 processed_input[CONF_FRIGATE_URL] = user_input[CONF_FRIGATE_URL]
+            if CONF_FRIGATE_API_KEY in user_input:
+                processed_input[CONF_FRIGATE_API_KEY] = user_input[CONF_FRIGATE_API_KEY]
 
             # Handle thermostat settings
             if CONF_THERMOSTAT_MIN_TEMP in user_input:
@@ -691,6 +695,14 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     ): selector.TextSelector(
                         selector.TextSelectorConfig(
                             type=selector.TextSelectorType.URL,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_FRIGATE_API_KEY,
+                        default=current.get(CONF_FRIGATE_API_KEY, DEFAULT_FRIGATE_API_KEY),
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD,
                         )
                     ),
                     vol.Optional(

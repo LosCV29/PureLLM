@@ -73,7 +73,9 @@ from .const import (
     CONF_VOICE_SCRIPTS,
     DEFAULT_VOICE_SCRIPTS,
     CONF_FRIGATE_URL,
+    CONF_FRIGATE_API_KEY,
     DEFAULT_FRIGATE_URL,
+    DEFAULT_FRIGATE_API_KEY,
     CONF_CAMERA_RTSP_URLS,
     DEFAULT_CAMERA_RTSP_URLS,
     CONF_SOFABATON_ACTIVITIES,
@@ -311,6 +313,7 @@ class PureLLMConversationEntity(ConversationEntity):
         # directly from Frigate's API at runtime (source of truth).
         # Only the Frigate URL and optional friendly-name overrides are stored.
         self.frigate_url = config.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL)
+        self.frigate_api_key = config.get(CONF_FRIGATE_API_KEY, DEFAULT_FRIGATE_API_KEY)
         self.frigate_camera_names: dict[str, str] = {}  # populated from Frigate API
 
         # Optional manual RTSP URL overrides (camera_name: rtsp://...)
@@ -463,7 +466,7 @@ class PureLLMConversationEntity(ConversationEntity):
             if not self._session:
                 return
             cameras = await camera_tool.fetch_frigate_cameras(
-                self._session, self.frigate_url
+                self._session, self.frigate_url, self.frigate_api_key
             )
             if cameras:
                 self.frigate_camera_names = cameras
@@ -1526,6 +1529,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     llm_model=self.model,
                     config_dir=self.hass.config.config_dir,
                     camera_rtsp_urls=self.camera_rtsp_urls or None,
+                    frigate_api_key=self.frigate_api_key,
                 ),
                 # Web search
                 "web_search": lambda: search_tool.web_search(
