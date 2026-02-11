@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 # Video clip settings
-VIDEO_CLIP_DURATION = 5  # seconds of video to capture
+VIDEO_CLIP_DURATION = 3  # seconds of video to capture
 
 
 async def fetch_frigate_cameras(
@@ -153,9 +153,10 @@ async def _capture_video_clip(
         "-rtsp_transport", "tcp",
         "-t", str(duration),
         "-i", rtsp_url,
+        "-vf", "scale=640:-2",
         "-c:v", "libx264",
         "-preset", "ultrafast",
-        "-crf", "28",
+        "-crf", "30",
         "-an",
         "-movflags", "frag_keyframe+empty_moov",
         "-f", "mp4",
@@ -169,7 +170,7 @@ async def _capture_video_clip(
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=duration + 20
+            proc.communicate(), timeout=duration + 15
         )
 
         if proc.returncode != 0:
@@ -188,7 +189,7 @@ async def _capture_video_clip(
         return stdout
 
     except asyncio.TimeoutError:
-        _LOGGER.error("ffmpeg clip capture timed out after %ds", duration + 20)
+        _LOGGER.error("ffmpeg clip capture timed out after %ds", duration + 15)
         try:
             proc.kill()
         except Exception:
@@ -389,7 +390,11 @@ async def check_camera(
 
     try:
         _LOGGER.info("Capturing %ds video clip from %s via Frigate restream (url=%s)", VIDEO_CLIP_DURATION, camera_name, rtsp_url)
-        video_clip = await _capture_video_clip(rtsp_url, VIDEO_CLIP_DURATION)
+
+        # Run video capture and snapshot fetch in parallel
+        video_task = _capture_video_clip(rtsp_url, VIDEO_CLIP_DURATION)
+        snapshot_task = _fetch_frigate_snapshot(session, frigate_url, camera_name)
+        video_clip, snapshot = await asyncio.gather(video_task, snapshot_task)
 
         if not video_clip:
             _LOGGER.error("Video clip capture failed for %s (url=%s)", camera_name, rtsp_url)
@@ -402,7 +407,6 @@ async def check_camera(
             }
 
         snapshot_url = None
-        snapshot = await _fetch_frigate_snapshot(session, frigate_url, camera_name)
         if snapshot and config_dir:
             try:
                 snapshot_url = await _save_snapshot(config_dir, camera_name, snapshot)
