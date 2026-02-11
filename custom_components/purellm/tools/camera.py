@@ -63,7 +63,6 @@ async def _capture_video_clip(
         "-rtsp_transport", "tcp",
         "-t", str(duration),
         "-i", rtsp_url,
-        "-vf", "fps=4,scale=640:-2",
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "28",
