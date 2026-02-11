@@ -24,6 +24,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import intent
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.network import get_url
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
@@ -1357,6 +1358,14 @@ class PureLLMConversationEntity(ConversationEntity):
             location = camera_result.get("location", "Camera")
             description = camera_result.get("description", "")
             snapshot_url = camera_result.get("snapshot_url", "")
+
+            # Convert relative /local/ path to absolute URL for companion app
+            if snapshot_url and snapshot_url.startswith("/local/"):
+                try:
+                    ha_url = get_url(self.hass).rstrip("/")
+                    snapshot_url = f"{ha_url}{snapshot_url}"
+                except Exception:
+                    _LOGGER.warning("Could not resolve HA base URL for snapshot")
 
             _LOGGER.info("Sending camera notification for: %s", location)
 
