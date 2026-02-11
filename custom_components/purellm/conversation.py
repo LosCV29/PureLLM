@@ -76,8 +76,6 @@ from .const import (
     DEFAULT_CAMERA_FRIENDLY_NAMES,
     CONF_FRIGATE_URL,
     DEFAULT_FRIGATE_URL,
-    CONF_FRIGATE_CAMERA_NAMES,
-    DEFAULT_FRIGATE_CAMERA_NAMES,
     CONF_CAMERA_RTSP_URLS,
     DEFAULT_CAMERA_RTSP_URLS,
     CONF_SOFABATON_ACTIVITIES,
@@ -311,23 +309,24 @@ class PureLLMConversationEntity(ConversationEntity):
         # Voice scripts configuration
         self.voice_scripts = _parse_json_list(CONF_VOICE_SCRIPTS, DEFAULT_VOICE_SCRIPTS)
 
-        # Frigate configuration
+        # Frigate configuration - camera names and RTSP URLs are fetched
+        # directly from Frigate's API at runtime (source of truth).
+        # Only the Frigate URL and optional friendly-name overrides are stored.
         self.frigate_url = config.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL)
-        frigate_names_str = config.get(CONF_FRIGATE_CAMERA_NAMES, DEFAULT_FRIGATE_CAMERA_NAMES)
-        self.frigate_camera_names = parse_entity_config(frigate_names_str) if frigate_names_str else {}
-        rtsp_urls_str = config.get(CONF_CAMERA_RTSP_URLS, DEFAULT_CAMERA_RTSP_URLS)
-        self.camera_rtsp_urls = parse_entity_config(rtsp_urls_str) if rtsp_urls_str else {}
+        self.frigate_camera_names: dict[str, str] = {}  # populated from Frigate API
 
-        # Camera friendly names configuration
+        # Optional friendly display-name overrides (camera_name: Display Name)
         camera_names_str = config.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES)
         raw_camera_names = parse_entity_config(camera_names_str) if camera_names_str else {}
         self.camera_friendly_names = {}
-        for entity_id, friendly_name in raw_camera_names.items():
-            if entity_id.startswith("camera."):
-                location_key = entity_id[7:]
-            else:
-                location_key = entity_id
-            self.camera_friendly_names[location_key] = friendly_name
+        for key, friendly_name in raw_camera_names.items():
+            if key.startswith("camera."):
+                key = key[7:]
+            self.camera_friendly_names[key] = friendly_name
+
+        # Optional manual RTSP URL overrides (camera_name: rtsp://...)
+        rtsp_urls_str = config.get(CONF_CAMERA_RTSP_URLS, DEFAULT_CAMERA_RTSP_URLS)
+        self.camera_rtsp_urls = parse_entity_config(rtsp_urls_str) if rtsp_urls_str else {}
 
         # SofaBaton activities configuration
         self.sofabaton_activities = _parse_json_list(CONF_SOFABATON_ACTIVITIES, DEFAULT_SOFABATON_ACTIVITIES)
@@ -416,6 +415,10 @@ class PureLLMConversationEntity(ConversationEntity):
         # This saves 100-300ms on the first real query
         asyncio.create_task(self._warmup_provider_connection())
 
+        # Fetch Frigate camera names in background for tool descriptions
+        if self.enable_cameras and self.frigate_url:
+            asyncio.create_task(self._fetch_frigate_camera_names())
+
         # Listen for config updates
         self.entry.async_on_unload(
             self.entry.add_update_listener(self._async_config_updated)
@@ -457,6 +460,32 @@ class PureLLMConversationEntity(ConversationEntity):
         except Exception as e:
             # Connection warmup is best-effort, never fail startup
             _LOGGER.debug("Connection warmup skipped: %s", e)
+
+    async def _fetch_frigate_camera_names(self) -> None:
+        """Fetch camera names from Frigate API for tool descriptions.
+
+        Populates ``self.frigate_camera_names`` with the actual camera names
+        from Frigate so the LLM tool description lists them correctly.
+        This is best-effort; if Frigate is unreachable the dict stays empty.
+        """
+        from .tools import camera as camera_tool
+
+        try:
+            if not self._session:
+                return
+            cameras = await camera_tool.fetch_frigate_cameras(
+                self._session, self.frigate_url
+            )
+            if cameras:
+                self.frigate_camera_names = cameras
+                # Invalidate cached tools so the description is rebuilt
+                self._tools = None
+                _LOGGER.info(
+                    "Loaded %d cameras from Frigate: %s",
+                    len(cameras), list(cameras.keys()),
+                )
+        except Exception as e:
+            _LOGGER.debug("Failed to fetch Frigate cameras at startup: %s", e)
 
     @staticmethod
     async def _async_config_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
@@ -1500,11 +1529,10 @@ class PureLLMConversationEntity(ConversationEntity):
                     arguments, self._session, self.google_places_api_key,
                     latitude, longitude, self._track_api_call
                 ),
-                # Camera via direct RTSP with local vision LLM analysis
+                # Camera via Frigate API + local vision LLM analysis
                 "check_camera": lambda: camera_tool.check_camera(
                     arguments, self._session, self.frigate_url,
-                    self.frigate_camera_names or None,
-                    self.camera_friendly_names or None,
+                    camera_friendly_names=self.camera_friendly_names or None,
                     llm_base_url=self.base_url,
                     llm_api_key=self.api_key,
                     llm_model=self.model,

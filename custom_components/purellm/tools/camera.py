@@ -1,9 +1,12 @@
 """Camera tool handlers - Frigate integration with local LLM video analysis.
 
-Captures video clips directly from camera RTSP streams and sends them to
-Qwen3-VL (via vLLM) for real-time scene analysis using the OpenAI-compatible
-video_url format.  Live snapshots are fetched from Frigate's
-``/api/<camera>/latest.jpg`` endpoint for reliable still-image display.
+Fetches camera names and RTSP URLs directly from Frigate's ``/api/config``
+endpoint so that camera resolution uses the actual names configured in the
+Frigate integration rather than requiring manual mapping in PureLLM.
+
+Captures video clips from camera RTSP streams and sends them to Qwen3-VL
+(via vLLM) for real-time scene analysis.  Live snapshots are fetched from
+Frigate's ``/api/<camera>/latest.jpg`` endpoint for still-image display.
 """
 from __future__ import annotations
 
@@ -23,94 +26,125 @@ _LOGGER = logging.getLogger(__name__)
 VIDEO_CLIP_DURATION = 5  # seconds of video to capture
 
 
+async def fetch_frigate_cameras(
+    session: "aiohttp.ClientSession",
+    frigate_url: str,
+) -> dict[str, str]:
+    """Fetch camera names and RTSP input URLs from Frigate's /api/config.
 
-def _best_key_match(lookup: dict[str, str], location: str) -> str | None:
-    """Find the best matching key in *lookup* for the given location string.
-
-    Tries, in order:
-      1. Exact match.
-      2. A config key that is a substring of *location* (e.g. key ``backyard``
-         matches location ``backyard camera``).  Longest match wins so that
-         ``front porch`` beats ``front``.
-      3. *location* is a substring of a config key.
+    Returns a dict mapping ``camera_name -> rtsp_url``.  The RTSP URL is
+    taken from the first ``ffmpeg`` input that has the ``record`` role,
+    falling back to the first input with any ``detect`` role, then the
+    first input found.
     """
-    if location in lookup:
-        return location
+    if not frigate_url:
+        return {}
 
-    # Normalise underscores so "back_yard" can match "back yard camera"
-    norm = {k.replace("_", " "): k for k in lookup}
+    url = f"{frigate_url.rstrip('/')}/api/config"
+    try:
+        async with asyncio.timeout(10):
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    _LOGGER.warning("Frigate config request failed (%s)", resp.status)
+                    return {}
+                config = await resp.json()
+    except Exception as err:
+        _LOGGER.warning("Failed to fetch Frigate config: %s", err)
+        return {}
 
-    # key is a substring of location  (longest first → most specific)
-    candidates = [n for n in norm if n in location]
+    cameras: dict[str, str] = {}
+    for cam_name, cam_config in config.get("cameras", {}).items():
+        inputs = cam_config.get("ffmpeg", {}).get("inputs", [])
+        if not inputs:
+            cameras[cam_name] = ""
+            continue
+
+        # Prefer input with "record" role, then "detect", then first available
+        best_url = ""
+        for inp in inputs:
+            path = inp.get("path", "")
+            if not path:
+                continue
+            roles = inp.get("roles", [])
+            if "record" in roles:
+                best_url = path
+                break
+            if "detect" in roles and not best_url:
+                best_url = path
+            if not best_url:
+                best_url = path
+
+        cameras[cam_name] = best_url
+
+    _LOGGER.debug("Fetched %d cameras from Frigate: %s", len(cameras), list(cameras.keys()))
+    return cameras
+
+
+def _match_camera(
+    location: str,
+    frigate_cameras: dict[str, str],
+    friendly_names: dict[str, str] | None = None,
+) -> str | None:
+    """Match a spoken location to an actual Frigate camera name.
+
+    Matching strategy (first match wins):
+      1. Exact match against Frigate camera names.
+      2. Normalised match (underscores ↔ spaces, strip common suffixes
+         like "camera", "cam").
+      3. Substring: a camera name is contained in the location or vice-versa.
+      4. Reverse lookup through friendly-name values.
+    """
+    if not frigate_cameras:
+        return None
+
+    cam_names = list(frigate_cameras.keys())
+
+    # Strip common suffixes from user's spoken location
+    loc = location.lower().strip()
+    for suffix in (" camera", " cam"):
+        if loc.endswith(suffix):
+            loc = loc[: -len(suffix)].strip()
+
+    # Build normalised lookup:  "back yard" -> "back_yard"
+    norm_to_real: dict[str, str] = {}
+    for name in cam_names:
+        norm_to_real[name] = name
+        norm_to_real[name.replace("_", " ")] = name
+
+    # 1. Exact
+    if loc in norm_to_real:
+        return norm_to_real[loc]
+    # Also try with underscores
+    loc_under = loc.replace(" ", "_")
+    if loc_under in norm_to_real:
+        return norm_to_real[loc_under]
+
+    # 2. Substring: camera name is in location or location is in camera name
+    #    Longest match wins for specificity.
+    candidates = [(n, real) for n, real in norm_to_real.items() if n in loc]
     if candidates:
-        best = max(candidates, key=len)
-        return norm[best]
+        best = max(candidates, key=lambda x: len(x[0]))
+        return best[1]
 
-    # location is a substring of a key
-    candidates = [n for n in norm if location in n]
+    candidates = [(n, real) for n, real in norm_to_real.items() if loc in n]
     if candidates:
-        best = min(candidates, key=len)
-        return norm[best]
+        best = min(candidates, key=lambda x: len(x[0]))
+        return best[1]
+
+    # 3. Reverse lookup through friendly names
+    if friendly_names:
+        for cam_key, fname in friendly_names.items():
+            fname_lower = fname.lower().replace("_", " ")
+            if loc == fname_lower or loc in fname_lower or fname_lower in loc:
+                # Map the friendly-name key back to a Frigate camera
+                if cam_key in frigate_cameras:
+                    return cam_key
+                # The friendly-name key might itself need normalising
+                cam_key_norm = cam_key.replace(" ", "_")
+                if cam_key_norm in frigate_cameras:
+                    return cam_key_norm
 
     return None
-
-
-def _resolve_camera(
-    location: str,
-    frigate_camera_names: dict[str, str] | None,
-    camera_friendly_names: dict[str, str] | None,
-) -> tuple[str | None, str]:
-    """Resolve a location key to Frigate camera name and friendly name.
-
-    Uses flexible substring matching so that e.g. a user saying
-    "backyard camera" correctly resolves to the ``backyard`` config key.
-    Also performs reverse lookup through friendly name values so that a
-    user saying "backyard" can resolve to a camera whose friendly name
-    is "Backyard" even when the underlying config key is different
-    (e.g. "garden").
-    """
-    friendly_names = camera_friendly_names or {}
-    frigate_names = frigate_camera_names or {}
-
-    matched_key = _best_key_match(frigate_names, location)
-
-    # If no match on config keys, try reverse-matching against friendly name
-    # values.  This lets "backyard" resolve when the config key is "garden"
-    # but the friendly name is "Backyard".
-    if matched_key is None and friendly_names:
-        reverse = {v.lower().replace("_", " "): k for k, v in friendly_names.items()}
-        rev_hit = _best_key_match(reverse, location)
-        if rev_hit:
-            resolved_key = reverse[rev_hit]
-            # The resolved key may itself be a frigate_names key
-            if resolved_key in frigate_names:
-                matched_key = resolved_key
-            else:
-                # Try fuzzy-matching the resolved key against frigate_names
-                fuzzy_key = _best_key_match(frigate_names, resolved_key)
-                if fuzzy_key:
-                    matched_key = fuzzy_key
-                else:
-                    # No Frigate mapping exists for this key.  Use the
-                    # raw *location* as the Frigate camera name — this
-                    # is correct when the spoken location ("garden")
-                    # matches the actual Frigate camera name.
-                    friendly = friendly_names.get(
-                        resolved_key, rev_hit.title()
-                    )
-                    return location.replace(" ", "_"), friendly
-
-    frigate_name = frigate_names[matched_key] if matched_key else location
-
-    friendly_name = friendly_names.get(
-        frigate_name,
-        friendly_names.get(
-            matched_key or location,
-            frigate_name.replace("_", " ").title(),
-        ),
-    )
-
-    return frigate_name, friendly_name
 
 
 async def _capture_video_clip(
@@ -307,7 +341,6 @@ async def check_camera(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
     frigate_url: str,
-    frigate_camera_names: dict[str, str] | None = None,
     camera_friendly_names: dict[str, str] | None = None,
     llm_base_url: str = "",
     llm_api_key: str = "",
@@ -317,9 +350,13 @@ async def check_camera(
 ) -> dict[str, Any]:
     """Check a camera with video scene analysis.
 
-    Captures a video clip from the camera's direct RTSP stream using ffmpeg
-    and sends it to Qwen3-VL for analysis.  A live snapshot for display is
-    fetched from Frigate's ``/api/<camera>/latest.jpg`` endpoint.
+    Fetches the list of cameras and their RTSP input URLs directly from
+    Frigate's ``/api/config`` endpoint so that camera names always match
+    the actual Frigate integration.  Manually configured RTSP URLs
+    (``camera_rtsp_urls``) take priority when present.
+
+    A live snapshot for display is fetched from Frigate's
+    ``/api/<camera>/latest.jpg`` endpoint.
     """
     location = arguments.get("location", "").lower().strip()
     query = arguments.get("query", "")
@@ -330,28 +367,44 @@ async def check_camera(
     if not llm_base_url or not llm_model:
         return {"error": "Vision LLM not configured"}
 
-    frigate_name, friendly_name = _resolve_camera(
-        location, frigate_camera_names, camera_friendly_names
+    if not frigate_url:
+        return {"error": "Frigate URL not configured"}
+
+    # Fetch actual cameras from Frigate - this is the source of truth
+    frigate_cameras = await fetch_frigate_cameras(session, frigate_url)
+
+    if not frigate_cameras:
+        return {
+            "status": "error",
+            "error": "Could not fetch cameras from Frigate. Check that the Frigate URL is correct and Frigate is running.",
+        }
+
+    # Match spoken location to a Frigate camera name
+    camera_name = _match_camera(location, frigate_cameras, camera_friendly_names)
+
+    if not camera_name:
+        available = ", ".join(frigate_cameras.keys())
+        return {
+            "status": "error",
+            "error": f"No camera matching '{location}' found in Frigate. Available cameras: {available}.",
+        }
+
+    # Determine friendly display name
+    friendly_names = camera_friendly_names or {}
+    friendly_name = friendly_names.get(
+        camera_name,
+        camera_name.replace("_", " ").title(),
     )
 
-    # Look up the direct RTSP URL for this camera
-    rtsp_urls = camera_rtsp_urls or {}
-    rtsp_url = rtsp_urls.get(frigate_name)
+    # Get RTSP URL: manual override first, then Frigate's config
+    manual_urls = camera_rtsp_urls or {}
+    rtsp_url = manual_urls.get(camera_name) or frigate_cameras.get(camera_name)
 
     if not rtsp_url:
-        # Fuzzy-match against RTSP URL keys using frigate name and raw location
-        rtsp_key = _best_key_match(rtsp_urls, frigate_name) or _best_key_match(rtsp_urls, location)
-        if rtsp_key:
-            rtsp_url = rtsp_urls[rtsp_key]
-
-    if not rtsp_url:
-        _LOGGER.error("No RTSP URL configured for camera %s", frigate_name)
         return {
             "location": friendly_name,
             "status": "error",
-            "source": "none",
-            "error": f"No RTSP URL configured for {friendly_name} camera. "
-                     "Add the camera's RTSP URL in PureLLM settings → Camera Friendly Names.",
+            "error": f"No RTSP input URL found for {friendly_name} camera in Frigate config.",
         }
 
     try:
@@ -359,11 +412,11 @@ async def check_camera(
         # Fetching the snapshot *after* the clip ensures it reflects the
         # end of the recording window rather than a stale frame from
         # before the clip started.
-        _LOGGER.info("Capturing %ds video clip from %s", VIDEO_CLIP_DURATION, frigate_name)
+        _LOGGER.info("Capturing %ds video clip from %s", VIDEO_CLIP_DURATION, camera_name)
         video_clip = await _capture_video_clip(rtsp_url, VIDEO_CLIP_DURATION)
 
         if not video_clip:
-            _LOGGER.error("Video clip capture failed for %s", frigate_name)
+            _LOGGER.error("Video clip capture failed for %s", camera_name)
             return {
                 "location": friendly_name,
                 "status": "error",
@@ -373,10 +426,10 @@ async def check_camera(
             }
 
         snapshot_url = None
-        snapshot = await _fetch_frigate_snapshot(session, frigate_url, frigate_name)
+        snapshot = await _fetch_frigate_snapshot(session, frigate_url, camera_name)
         if snapshot and config_dir:
             try:
-                snapshot_url = await _save_snapshot(config_dir, frigate_name, snapshot)
+                snapshot_url = await _save_snapshot(config_dir, camera_name, snapshot)
             except Exception as err:
                 _LOGGER.warning("Failed to save snapshot: %s", err)
 
@@ -391,7 +444,7 @@ async def check_camera(
         )
 
         if not analysis:
-            _LOGGER.error("Vision LLM returned no analysis for %s", frigate_name)
+            _LOGGER.error("Vision LLM returned no analysis for %s", camera_name)
             return {
                 "location": friendly_name,
                 "status": "error",
@@ -410,7 +463,7 @@ async def check_camera(
         }
 
     except Exception as err:
-        _LOGGER.error("Error checking camera %s: %s", location, err, exc_info=True)
+        _LOGGER.error("Error checking camera %s: %s", camera_name, err, exc_info=True)
         return {
             "location": friendly_name,
             "status": "error",
