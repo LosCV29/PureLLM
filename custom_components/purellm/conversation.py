@@ -1211,7 +1211,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
         if image_url:
             data["image"] = image_url
-            data["attachment"] = {"url": image_url}
+            data["attachment"] = {"url": image_url, "content-type": "jpeg"}
 
         return {"title": title, "message": message, "data": data}
 
@@ -1375,11 +1375,7 @@ class PureLLMConversationEntity(ConversationEntity):
         try:
             location = camera_result.get("location", "Camera")
             description = camera_result.get("description", "")
-            snapshot_url = camera_result.get("snapshot_url", "")
-
-            # Keep /local/ path as-is — iOS/Android Companion App resolves
-            # these natively via the webhook connection.  Converting to an
-            # absolute internal URL breaks delivery when the phone is off-LAN.
+            snapshot_url = camera_result.get("snapshot_url") or ""
 
             _LOGGER.info("Sending camera notification for: %s", location)
 
@@ -1538,7 +1534,7 @@ class PureLLMConversationEntity(ConversationEntity):
                         await self._send_restaurant_notification(result)
                     elif tool_name == "book_restaurant" and result.get("reservation_url"):
                         await self._send_reservation_notification(result)
-                    elif tool_name == "check_camera" and self.notify_on_camera and result.get("snapshot_url"):
+                    elif tool_name == "check_camera" and self.notify_on_camera and result.get("status") == "checked":
                         await self._send_camera_notification(result)
                     elif tool_name == "web_search" and self.notify_on_search and result.get("source_url"):
                         await self._send_search_notification(result)

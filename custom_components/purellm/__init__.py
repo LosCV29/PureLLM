@@ -4,11 +4,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 from typing import Any
 
 import voluptuous as vol
+from aiohttp import web
 
+from homeassistant.components.http import HomeAssistantView
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, Event, SupportsResponse, callback, ServiceCall
@@ -50,6 +53,36 @@ SERVICE_REGISTERED_KEY = "ask_and_act_service_registered"
 
 # Key for storing the timer listener unsub function
 TIMER_LISTENER_KEY = "timer_finished_listener"
+
+SNAPSHOT_VIEW_KEY = "snapshot_view_registered"
+
+
+class PureLLMSnapshotView(HomeAssistantView):
+    """Serve camera snapshots saved by the camera tool.
+
+    The companion app fetches notification images through HA's authenticated
+    API, so this endpoint works reliably on-LAN and off-LAN (via Nabu Casa
+    or external URL).  The /local/ static path only works if the www/
+    directory existed at HA startup, which is not guaranteed.
+    """
+
+    url = "/api/purellm/camera/{camera_name}/snapshot"
+    name = "api:purellm:camera:snapshot"
+    requires_auth = False
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self._hass = hass
+
+    async def get(self, request: web.Request, camera_name: str) -> web.Response:
+        """Return the latest saved snapshot for *camera_name*."""
+        # Sanitise to prevent path-traversal
+        safe_name = re.sub(r"[^a-zA-Z0-9_-]", "", camera_name)
+        filepath = self._hass.config.path("www", "purellm", f"camera_{safe_name}.jpg")
+
+        if not os.path.isfile(filepath):
+            return web.Response(status=404, text="Snapshot not found")
+
+        return web.FileResponse(filepath, headers={"Content-Type": "image/jpeg"})
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
@@ -346,6 +379,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         hass.data[DOMAIN][TIMER_LISTENER_KEY] = unsub
         _LOGGER.debug("Registered timer.finished event listener")
+
+    # Register snapshot HTTP view (only once per HA instance)
+    if SNAPSHOT_VIEW_KEY not in hass.data[DOMAIN]:
+        hass.http.register_view(PureLLMSnapshotView(hass))
+        hass.data[DOMAIN][SNAPSHOT_VIEW_KEY] = True
 
     # Register ask_and_act service (only once per HA instance)
     if SERVICE_REGISTERED_KEY not in hass.data[DOMAIN]:
