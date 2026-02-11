@@ -1375,11 +1375,7 @@ class PureLLMConversationEntity(ConversationEntity):
         try:
             location = camera_result.get("location", "Camera")
             description = camera_result.get("description", "")
-            snapshot_url = camera_result.get("snapshot_url", "")
-
-            # Keep /local/ path as-is — iOS/Android Companion App resolves
-            # these natively via the webhook connection.  Converting to an
-            # absolute internal URL breaks delivery when the phone is off-LAN.
+            snapshot_url = camera_result.get("snapshot_url") or ""
 
             _LOGGER.info("Sending camera notification for: %s", location)
 

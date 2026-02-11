@@ -308,7 +308,12 @@ async def _analyze_video_with_llm(
 
 
 def _save_snapshot_sync(config_dir: str, frigate_name: str, image_bytes: bytes) -> str:
-    """Save snapshot to HA's www directory and return the local URL (sync)."""
+    """Save snapshot to HA's www directory and return an API URL.
+
+    Uses the /api/purellm/camera/<name>/snapshot endpoint (registered
+    in __init__.py) instead of /local/ because HA only registers the
+    /local static route if the www/ directory existed at startup.
+    """
     www_dir = os.path.join(config_dir, "www", "purellm")
     os.makedirs(www_dir, exist_ok=True)
 
@@ -318,7 +323,7 @@ def _save_snapshot_sync(config_dir: str, frigate_name: str, image_bytes: bytes) 
     with open(filepath, "wb") as f:
         f.write(image_bytes)
 
-    return f"/local/purellm/{filename}?t={int(time.time())}"
+    return f"/api/purellm/camera/{frigate_name}/snapshot?t={int(time.time())}"
 
 
 async def _save_snapshot(config_dir: str, frigate_name: str, image_bytes: bytes) -> str:
