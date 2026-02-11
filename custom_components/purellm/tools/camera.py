@@ -24,6 +24,37 @@ VIDEO_CLIP_DURATION = 5  # seconds of video to capture
 
 
 
+def _best_key_match(lookup: dict[str, str], location: str) -> str | None:
+    """Find the best matching key in *lookup* for the given location string.
+
+    Tries, in order:
+      1. Exact match.
+      2. A config key that is a substring of *location* (e.g. key ``backyard``
+         matches location ``backyard camera``).  Longest match wins so that
+         ``front porch`` beats ``front``.
+      3. *location* is a substring of a config key.
+    """
+    if location in lookup:
+        return location
+
+    # Normalise underscores so "back_yard" can match "back yard camera"
+    norm = {k.replace("_", " "): k for k in lookup}
+
+    # key is a substring of location  (longest first → most specific)
+    candidates = [n for n in norm if n in location]
+    if candidates:
+        best = max(candidates, key=len)
+        return norm[best]
+
+    # location is a substring of a key
+    candidates = [n for n in norm if location in n]
+    if candidates:
+        best = min(candidates, key=len)
+        return norm[best]
+
+    return None
+
+
 def _resolve_camera(
     location: str,
     frigate_camera_names: dict[str, str] | None,
@@ -31,18 +62,21 @@ def _resolve_camera(
 ) -> tuple[str | None, str]:
     """Resolve a location key to Frigate camera name and friendly name.
 
-    Checks explicit frigate_camera_names config first, then uses the
-    location key as-is.  No built-in aliases — all mappings come from
-    user configuration.
+    Uses flexible substring matching so that e.g. a user saying
+    "backyard camera" correctly resolves to the ``backyard`` config key.
     """
     friendly_names = camera_friendly_names or {}
-
     frigate_names = frigate_camera_names or {}
-    frigate_name = frigate_names.get(location, location)
+
+    matched_key = _best_key_match(frigate_names, location)
+    frigate_name = frigate_names[matched_key] if matched_key else location
 
     friendly_name = friendly_names.get(
         frigate_name,
-        friendly_names.get(location, frigate_name.replace("_", " ").title()),
+        friendly_names.get(
+            matched_key or location,
+            frigate_name.replace("_", " ").title(),
+        ),
     )
 
     return frigate_name, friendly_name
@@ -295,8 +329,10 @@ async def check_camera(
     rtsp_url = rtsp_urls.get(frigate_name)
 
     if not rtsp_url:
-        # Also try the raw location key in case the mapping uses that
-        rtsp_url = rtsp_urls.get(location)
+        # Fuzzy-match against RTSP URL keys using frigate name and raw location
+        rtsp_key = _best_key_match(rtsp_urls, frigate_name) or _best_key_match(rtsp_urls, location)
+        if rtsp_key:
+            rtsp_url = rtsp_urls[rtsp_key]
 
     if not rtsp_url:
         _LOGGER.error("No RTSP URL configured for camera %s", frigate_name)
