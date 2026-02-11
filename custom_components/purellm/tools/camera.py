@@ -441,6 +441,7 @@ async def check_camera(
 
         return {
             "location": friendly_name,
+            "camera_name": camera_name,
             "status": "checked",
             "source": "video_clip",
             "description": analysis,

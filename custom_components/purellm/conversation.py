@@ -1371,18 +1371,75 @@ class PureLLMConversationEntity(ConversationEntity):
             _LOGGER.error("Error sending reservation notification: %s", err, exc_info=True)
 
     async def _send_camera_notification(self, camera_result: dict[str, Any]) -> None:
-        """Send notification with camera snapshot to configured devices."""
+        """Send camera snapshot notification using the SgtBatten blueprint approach.
+
+        Constructs absolute URLs and iOS-specific attachment fields so the
+        notification image works reliably through Nabu Casa and on iOS devices.
+        """
         try:
             location = camera_result.get("location", "Camera")
             description = camera_result.get("description", "")
             snapshot_url = camera_result.get("snapshot_url") or ""
+            camera_name = camera_result.get("camera_name", "")
 
-            _LOGGER.info("Sending camera notification for: %s", location)
+            _LOGGER.info(
+                "Sending camera notification for: %s (camera_name=%s)",
+                location, camera_name,
+            )
+
+            # --- Absolute URL (SgtBatten approach) ---
+            # iOS companion app needs a full URL, not a relative path.
+            # get_url returns the external URL (e.g. Nabu Casa) when available.
+            base_url = ""
+            try:
+                from homeassistant.helpers.network import get_url
+                base_url = get_url(self.hass, prefer_external=True).rstrip("/")
+            except Exception:
+                _LOGGER.debug("Could not determine HA base URL for camera notification")
+
+            image_url = (
+                f"{base_url}{snapshot_url}"
+                if base_url and snapshot_url
+                else snapshot_url
+            )
 
             title = f"📷 {location}"
             message = description if description else "Camera check completed."
 
-            notification_data = self._build_notification_data(title, message, image_url=snapshot_url)
+            # --- Notification payload ---
+            data: dict[str, Any] = {
+                "push": {"interruption-level": "time-sensitive"},
+            }
+
+            # Tap action -> open camera entity in HA
+            camera_entity = f"camera.{camera_name}" if camera_name else ""
+            if camera_entity:
+                data["url"] = f"entityId:{camera_entity}"
+                data["clickAction"] = f"entityId:{camera_entity}"
+                # iOS: attach live camera view to the notification
+                data["entity_id"] = camera_entity
+
+            # Image attachment - iOS needs explicit content-type
+            if image_url:
+                data["image"] = image_url
+                data["attachment"] = {
+                    "url": image_url,
+                    "content-type": "jpeg",
+                }
+
+            # Action buttons
+            actions = []
+            if camera_entity:
+                actions.append({
+                    "action": "URI",
+                    "title": "View Live",
+                    "uri": f"entityId:{camera_entity}",
+                    "icon": "sfsymbols:video.fill",
+                })
+            if actions:
+                data["actions"] = actions
+
+            notification_data = {"title": title, "message": message, "data": data}
             await self._send_notification(notification_data, "camera")
 
         except Exception as err:
