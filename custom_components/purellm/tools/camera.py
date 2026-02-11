@@ -86,8 +86,19 @@ def _resolve_camera(
             if resolved_key in frigate_names:
                 matched_key = resolved_key
             else:
-                # The friendly-name key might be the frigate name directly
-                return resolved_key, friendly_names.get(resolved_key, rev_hit.title())
+                # Try fuzzy-matching the resolved key against frigate_names
+                fuzzy_key = _best_key_match(frigate_names, resolved_key)
+                if fuzzy_key:
+                    matched_key = fuzzy_key
+                else:
+                    # No Frigate mapping exists for this key.  Use the
+                    # raw *location* as the Frigate camera name — this
+                    # is correct when the spoken location ("garden")
+                    # matches the actual Frigate camera name.
+                    friendly = friendly_names.get(
+                        resolved_key, rev_hit.title()
+                    )
+                    return location.replace(" ", "_"), friendly
 
     frigate_name = frigate_names[matched_key] if matched_key else location
 
