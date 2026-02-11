@@ -1494,15 +1494,6 @@ class PureLLMConversationEntity(ConversationEntity):
                     llm_model=self.model,
                     config_dir=self.hass.config.config_dir,
                 ),
-                "quick_camera_check": lambda: camera_tool.quick_camera_check(
-                    arguments, self._session, self.frigate_url,
-                    self.frigate_camera_names or None,
-                    self.camera_friendly_names or None,
-                    llm_base_url=self.base_url,
-                    llm_api_key=self.api_key,
-                    llm_model=self.model,
-                    config_dir=self.hass.config.config_dir,
-                ),
                 # Web search
                 "web_search": lambda: search_tool.web_search(
                     arguments, self._session, self.tavily_api_key, self._track_api_call
@@ -1521,7 +1512,7 @@ class PureLLMConversationEntity(ConversationEntity):
                         await self._send_restaurant_notification(result)
                     elif tool_name == "book_restaurant" and result.get("reservation_url"):
                         await self._send_reservation_notification(result)
-                    elif tool_name in ("check_camera", "quick_camera_check") and self.notify_on_camera and result.get("snapshot_url"):
+                    elif tool_name == "check_camera" and self.notify_on_camera and result.get("snapshot_url"):
                         await self._send_camera_notification(result)
                     elif tool_name == "web_search" and self.notify_on_search and result.get("source_url"):
                         await self._send_search_notification(result)
