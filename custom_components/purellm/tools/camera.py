@@ -1,7 +1,7 @@
-"""Camera tool handlers - Frigate integration with Gemini vision analysis.
+"""Camera tool handlers - Frigate integration with local LLM vision analysis.
 
-Captures snapshots from Frigate and uses Google Gemini to analyze
-the scene, providing real visual descriptions instead of just event logs.
+Captures snapshots from Frigate and uses the local vision-capable LLM
+(via OpenAI-compatible API / vLLM) to analyze the scene.
 """
 from __future__ import annotations
 
@@ -16,10 +16,6 @@ if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
-
-# Gemini vision defaults
-GEMINI_VISION_URL = "https://generativelanguage.googleapis.com/v1beta"
-GEMINI_VISION_MODEL = "gemini-2.0-flash"
 
 # Default camera friendly names
 DEFAULT_CAMERA_FRIENDLY_NAMES = {
@@ -98,16 +94,16 @@ async def _capture_frames(
     return frames
 
 
-async def _analyze_with_gemini(
+async def _analyze_with_vision_llm(
     session: "aiohttp.ClientSession",
     frames: list[bytes],
-    google_api_key: str,
+    llm_base_url: str,
+    llm_api_key: str,
+    llm_model: str,
     location: str,
     query: str = "",
 ) -> str | None:
-    """Send camera frames to Gemini for vision analysis."""
-    parts = []
-
+    """Send camera frames to vision LLM via OpenAI-compatible API (vLLM, etc)."""
     prompt = (
         f"You are analyzing live security camera frames from the {location} camera. "
         f"There are {len(frames)} frame(s) captured over a few seconds. "
@@ -118,45 +114,49 @@ async def _analyze_with_gemini(
         "Describe what you see: people, vehicles, animals, activity, weather/lighting "
         "conditions, and anything notable. Be concise but descriptive (2-3 sentences)."
     )
-    parts.append({"text": prompt})
+
+    # Build content array with text + images (OpenAI vision format)
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
 
     for frame in frames:
         b64 = base64.b64encode(frame).decode("utf-8")
-        parts.append({
-            "inlineData": {
-                "mimeType": "image/jpeg",
-                "data": b64,
-            }
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
         })
 
     payload = {
-        "contents": [{"parts": parts}],
-        "generationConfig": {"maxOutputTokens": 300, "temperature": 0.3},
+        "model": llm_model,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 300,
+        "temperature": 0.3,
     }
 
-    url = f"{GEMINI_VISION_URL}/models/{GEMINI_VISION_MODEL}:generateContent"
-    headers = {"x-goog-api-key": google_api_key}
+    url = f"{llm_base_url.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {llm_api_key}",
+        "Content-Type": "application/json",
+    }
 
     try:
-        async with asyncio.timeout(30):
+        async with asyncio.timeout(60):
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
                     error = await resp.text()
-                    _LOGGER.error("Gemini vision API error %s: %s", resp.status, error)
+                    _LOGGER.error("Vision LLM API error %s: %s", resp.status, error)
                     return None
                 data = await resp.json()
 
-        candidates = data.get("candidates", [])
-        if not candidates:
-            _LOGGER.warning("Gemini vision returned no candidates")
+        choices = data.get("choices", [])
+        if not choices:
+            _LOGGER.warning("Vision LLM returned no choices")
             return None
 
-        response_parts = candidates[0].get("content", {}).get("parts", [])
-        text = " ".join(p["text"] for p in response_parts if "text" in p).strip()
+        text = choices[0].get("message", {}).get("content", "").strip()
         return text if text else None
 
     except Exception as err:
-        _LOGGER.error("Gemini vision analysis failed: %s", err, exc_info=True)
+        _LOGGER.error("Vision LLM analysis failed: %s", err, exc_info=True)
         return None
 
 
@@ -184,7 +184,7 @@ async def _get_frigate_events_description(
     base_url: str,
     frigate_name: str,
 ) -> str:
-    """Fallback: get description from Frigate event log (original behavior)."""
+    """Fallback: get description from Frigate event log."""
     after_time = time.time() - 300
     events_url = (
         f"{base_url}/api/events"
@@ -231,14 +231,16 @@ async def check_camera(
     frigate_url: str,
     frigate_camera_names: dict[str, str] | None = None,
     camera_friendly_names: dict[str, str] | None = None,
-    google_api_key: str = "",
+    llm_base_url: str = "",
+    llm_api_key: str = "",
+    llm_model: str = "",
     config_dir: str = "",
 ) -> dict[str, Any]:
     """Check a camera with visual scene analysis.
 
     Captures multiple snapshots from Frigate over ~4 seconds, sends them
-    to Google Gemini for vision analysis, and returns a scene description.
-    Falls back to Frigate event descriptions if Gemini is not available.
+    to the local vision LLM for analysis, and returns a scene description.
+    Falls back to Frigate event descriptions if no LLM is configured.
 
     Args:
         arguments: Tool arguments (location, query)
@@ -246,7 +248,9 @@ async def check_camera(
         frigate_url: Frigate API base URL
         frigate_camera_names: Mapping of location_key -> frigate_camera_name
         camera_friendly_names: Custom camera name mappings
-        google_api_key: Google API key for Gemini vision analysis
+        llm_base_url: Vision LLM base URL (OpenAI-compatible)
+        llm_api_key: Vision LLM API key
+        llm_model: Vision LLM model name
         config_dir: HA config directory path for saving snapshots
 
     Returns:
@@ -266,14 +270,15 @@ async def check_camera(
     )
 
     base_url = frigate_url.rstrip("/")
+    has_vision = bool(llm_base_url and llm_model)
 
     try:
         # Capture frames for analysis
-        if google_api_key:
-            _LOGGER.info("Capturing %d frames from %s for vision analysis", 3, frigate_name)
+        if has_vision:
+            _LOGGER.info("Capturing 3 frames from %s for vision analysis", frigate_name)
             frames = await _capture_frames(session, base_url, frigate_name, count=3, interval=2.0)
         else:
-            _LOGGER.info("No vision API key - capturing single frame from %s", frigate_name)
+            _LOGGER.info("No vision LLM configured - capturing single frame from %s", frigate_name)
             frames = await _capture_frames(session, base_url, frigate_name, count=1, interval=0)
 
         if not frames:
@@ -292,14 +297,15 @@ async def check_camera(
             except Exception as err:
                 _LOGGER.warning("Failed to save snapshot locally: %s, using Frigate URL", err)
 
-        # Vision analysis with Gemini
-        if google_api_key and frames:
-            _LOGGER.info("Sending %d frame(s) to Gemini for vision analysis", len(frames))
-            analysis = await _analyze_with_gemini(
-                session, frames, google_api_key, friendly_name, query
+        # Vision analysis with local LLM
+        if has_vision and frames:
+            _LOGGER.info("Sending %d frame(s) to %s for vision analysis", len(frames), llm_model)
+            analysis = await _analyze_with_vision_llm(
+                session, frames, llm_base_url, llm_api_key, llm_model,
+                friendly_name, query
             )
             if not analysis:
-                _LOGGER.warning("Gemini vision failed, falling back to Frigate events")
+                _LOGGER.warning("Vision LLM failed, falling back to Frigate events")
                 analysis = await _get_frigate_events_description(session, base_url, frigate_name)
         else:
             # Fallback to Frigate event descriptions
@@ -327,7 +333,9 @@ async def quick_camera_check(
     frigate_url: str,
     frigate_camera_names: dict[str, str] | None = None,
     camera_friendly_names: dict[str, str] | None = None,
-    google_api_key: str = "",
+    llm_base_url: str = "",
+    llm_api_key: str = "",
+    llm_model: str = "",
     config_dir: str = "",
 ) -> dict[str, Any]:
     """Fast camera check - single snapshot with brief vision analysis.
@@ -338,7 +346,9 @@ async def quick_camera_check(
         frigate_url: Frigate API base URL
         frigate_camera_names: Mapping of location_key -> frigate_camera_name
         camera_friendly_names: Custom camera name mappings
-        google_api_key: Google API key for Gemini vision analysis
+        llm_base_url: Vision LLM base URL (OpenAI-compatible)
+        llm_api_key: Vision LLM API key
+        llm_model: Vision LLM model name
         config_dir: HA config directory path for saving snapshots
 
     Returns:
@@ -357,6 +367,7 @@ async def quick_camera_check(
     )
 
     base_url = frigate_url.rstrip("/")
+    has_vision = bool(llm_base_url and llm_model)
 
     try:
         # Single snapshot for quick check
@@ -373,10 +384,11 @@ async def quick_camera_check(
             except Exception:
                 pass
 
-        # Quick vision analysis with Gemini (single frame)
-        if google_api_key:
-            analysis = await _analyze_with_gemini(
-                session, [frame], google_api_key, friendly_name
+        # Quick vision analysis with local LLM (single frame)
+        if has_vision:
+            analysis = await _analyze_with_vision_llm(
+                session, [frame], llm_base_url, llm_api_key, llm_model,
+                friendly_name
             )
             if analysis:
                 # Truncate to first sentence for quick check

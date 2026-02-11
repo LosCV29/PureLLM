@@ -463,22 +463,6 @@ class PureLLMConversationEntity(ConversationEntity):
         if api_name in self._api_calls:
             self._api_calls[api_name] += 1
 
-    def _find_google_api_key(self) -> str:
-        """Find Google API key for Gemini vision from any PureLLM config entry."""
-        # If this entity is already using Google, use its own key
-        if self.provider == PROVIDER_GOOGLE and self.api_key:
-            return self.api_key
-
-        # Search other PureLLM config entries for a Google provider
-        for entry in self.hass.config_entries.async_entries(DOMAIN):
-            config = {**entry.data, **entry.options}
-            if config.get(CONF_PROVIDER) == PROVIDER_GOOGLE:
-                key = config.get(CONF_API_KEY, "")
-                if key:
-                    return key
-
-        return ""
-
     def _get_effective_system_prompt(self) -> str:
         """Get system prompt with current date."""
         today = datetime.now().strftime("%Y-%m-%d")
@@ -1500,19 +1484,23 @@ class PureLLMConversationEntity(ConversationEntity):
                     arguments, self._session, self.google_places_api_key,
                     latitude, longitude, self._track_api_call
                 ),
-                # Camera via Frigate with Gemini vision analysis
+                # Camera via Frigate with local vision LLM analysis
                 "check_camera": lambda: camera_tool.check_camera(
                     arguments, self._session, self.frigate_url,
                     self.frigate_camera_names or None,
                     self.camera_friendly_names or None,
-                    google_api_key=self._find_google_api_key(),
+                    llm_base_url=self.base_url,
+                    llm_api_key=self.api_key,
+                    llm_model=self.model,
                     config_dir=self.hass.config.config_dir,
                 ),
                 "quick_camera_check": lambda: camera_tool.quick_camera_check(
                     arguments, self._session, self.frigate_url,
                     self.frigate_camera_names or None,
                     self.camera_friendly_names or None,
-                    google_api_key=self._find_google_api_key(),
+                    llm_base_url=self.base_url,
+                    llm_api_key=self.api_key,
+                    llm_model=self.model,
                     config_dir=self.hass.config.config_dir,
                 ),
                 # Web search
