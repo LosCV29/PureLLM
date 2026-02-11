@@ -103,19 +103,22 @@ def _match_camera(
         if loc.endswith(suffix):
             loc = loc[: -len(suffix)].strip()
 
-    # Build normalised lookup:  "back yard" -> "back_yard"
+    # Build normalised lookup mapping multiple forms to the real camera name.
+    # For "back_yard" this produces: "back_yard", "back yard", "backyard"
     norm_to_real: dict[str, str] = {}
     for name in cam_names:
         norm_to_real[name] = name
         norm_to_real[name.replace("_", " ")] = name
+        norm_to_real[name.replace("_", "")] = name  # collapsed form
 
-    # 1. Exact
-    if loc in norm_to_real:
-        return norm_to_real[loc]
-    # Also try with underscores
+    # Also try collapsed form of user input ("back yard" -> "backyard")
     loc_under = loc.replace(" ", "_")
-    if loc_under in norm_to_real:
-        return norm_to_real[loc_under]
+    loc_collapsed = loc.replace(" ", "").replace("_", "")
+
+    # 1. Exact / normalised match
+    for variant in (loc, loc_under, loc_collapsed):
+        if variant in norm_to_real:
+            return norm_to_real[variant]
 
     # 2. Substring: camera name is in location or location is in camera name
     #    Longest match wins for specificity.
