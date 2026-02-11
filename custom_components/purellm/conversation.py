@@ -73,6 +73,10 @@ from .const import (
     DEFAULT_VOICE_SCRIPTS,
     CONF_CAMERA_FRIENDLY_NAMES,
     DEFAULT_CAMERA_FRIENDLY_NAMES,
+    CONF_FRIGATE_URL,
+    DEFAULT_FRIGATE_URL,
+    CONF_FRIGATE_CAMERA_NAMES,
+    DEFAULT_FRIGATE_CAMERA_NAMES,
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
     DEFAULT_API_KEY,
@@ -303,6 +307,11 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Voice scripts configuration
         self.voice_scripts = _parse_json_list(CONF_VOICE_SCRIPTS, DEFAULT_VOICE_SCRIPTS)
+
+        # Frigate configuration
+        self.frigate_url = config.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL)
+        frigate_names_str = config.get(CONF_FRIGATE_CAMERA_NAMES, DEFAULT_FRIGATE_CAMERA_NAMES)
+        self.frigate_camera_names = parse_entity_config(frigate_names_str) if frigate_names_str else {}
 
         # Camera friendly names configuration
         camera_names_str = config.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES)
@@ -1485,12 +1494,16 @@ class PureLLMConversationEntity(ConversationEntity):
                     arguments, self._session, self.google_places_api_key,
                     latitude, longitude, self._track_api_call
                 ),
-                # Camera (with notification post-processing)
+                # Camera via Frigate (with notification post-processing)
                 "check_camera": lambda: camera_tool.check_camera(
-                    arguments, self.hass, self.camera_friendly_names or None
+                    arguments, self._session, self.frigate_url,
+                    self.frigate_camera_names or None,
+                    self.camera_friendly_names or None,
                 ),
                 "quick_camera_check": lambda: camera_tool.quick_camera_check(
-                    arguments, self.hass, self.camera_friendly_names or None
+                    arguments, self._session, self.frigate_url,
+                    self.frigate_camera_names or None,
+                    self.camera_friendly_names or None,
                 ),
                 # Web search
                 "web_search": lambda: search_tool.web_search(

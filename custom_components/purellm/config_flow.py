@@ -114,6 +114,11 @@ from .const import (
     # Camera Friendly Names
     CONF_CAMERA_FRIENDLY_NAMES,
     DEFAULT_CAMERA_FRIENDLY_NAMES,
+    # Frigate
+    CONF_FRIGATE_URL,
+    DEFAULT_FRIGATE_URL,
+    CONF_FRIGATE_CAMERA_NAMES,
+    DEFAULT_FRIGATE_CAMERA_NAMES,
     # SofaBaton Activities
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
@@ -592,13 +597,9 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 else:
                     processed_input[CONF_CALENDAR_ENTITIES] = cal_list
 
-            # Handle cameras - convert list to newline-separated string
-            if CONF_CAMERA_ENTITIES in user_input:
-                cam_list = user_input[CONF_CAMERA_ENTITIES]
-                if isinstance(cam_list, list):
-                    processed_input[CONF_CAMERA_ENTITIES] = "\n".join(cam_list)
-                else:
-                    processed_input[CONF_CAMERA_ENTITIES] = cam_list
+            # Handle Frigate URL
+            if CONF_FRIGATE_URL in user_input:
+                processed_input[CONF_FRIGATE_URL] = user_input[CONF_FRIGATE_URL]
 
             # Handle thermostat settings
             if CONF_THERMOSTAT_MIN_TEMP in user_input:
@@ -621,13 +622,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             current_calendars = [c.strip() for c in current_calendars.split("\n") if c.strip()]
         elif not current_calendars:
             current_calendars = []
-
-        # Parse current camera entities back to list
-        current_cameras = current.get(CONF_CAMERA_ENTITIES, DEFAULT_CAMERA_ENTITIES)
-        if isinstance(current_cameras, str) and current_cameras:
-            current_cameras = [c.strip() for c in current_cameras.split("\n") if c.strip()]
-        elif not current_cameras:
-            current_cameras = []
 
         # Determine if using Celsius and set appropriate defaults/ranges
         use_celsius = current.get(CONF_THERMOSTAT_USE_CELSIUS, DEFAULT_THERMOSTAT_USE_CELSIUS)
@@ -698,12 +692,11 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                         )
                     ),
                     vol.Optional(
-                        CONF_CAMERA_ENTITIES,
-                        default=current_cameras,
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="camera",
-                            multiple=True,
+                        CONF_FRIGATE_URL,
+                        default=current.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL),
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.URL,
                         )
                     ),
                     vol.Optional(
@@ -1030,77 +1023,105 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_camera_names(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle camera friendly names configuration with dropdown selection.
+        """Handle Frigate camera mapping configuration.
 
-        Camera friendly names map camera entity IDs to human-friendly names.
-        Uses entity selector dropdown to prevent typos.
+        Maps voice location keys to Frigate camera names and friendly display names.
+        E.g., location_key='porch' -> frigate_name='front_porch_cam', friendly='Front Porch'
         """
         current = {**self._entry.data, **self._entry.options}
-        current_names_str = current.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES)
 
-        # Parse current mappings into dict {entity_id: friendly_name}
-        names_dict = {}
-        if current_names_str:
-            for line in current_names_str.split("\n"):
+        # Parse current frigate camera name mappings {location_key: frigate_name}
+        frigate_names_str = current.get(CONF_FRIGATE_CAMERA_NAMES, DEFAULT_FRIGATE_CAMERA_NAMES)
+        frigate_dict = {}
+        if frigate_names_str:
+            for line in frigate_names_str.split("\n"):
                 line = line.strip()
                 if ": " in line:
-                    entity_id, friendly_name = line.split(": ", 1)
-                    names_dict[entity_id.strip()] = friendly_name.strip()
+                    key, val = line.split(": ", 1)
+                    frigate_dict[key.strip()] = val.strip()
+
+        # Parse current friendly name mappings {location_key: friendly_name}
+        friendly_names_str = current.get(CONF_CAMERA_FRIENDLY_NAMES, DEFAULT_CAMERA_FRIENDLY_NAMES)
+        friendly_dict = {}
+        if friendly_names_str:
+            for line in friendly_names_str.split("\n"):
+                line = line.strip()
+                if ": " in line:
+                    key, val = line.split(": ", 1)
+                    friendly_dict[key.strip()] = val.strip()
 
         if user_input is not None:
             selected = user_input.get("select_camera", "")
-            new_camera = user_input.get("camera_entity", "")
-            new_name = user_input.get("friendly_name", "").strip()
+            location_key = user_input.get("location_key", "").strip().lower().replace(" ", "_")
+            frigate_name = user_input.get("frigate_camera_name", "").strip()
+            friendly_name = user_input.get("friendly_name", "").strip()
             action = user_input.get("action", "add")
 
             if action == "delete" and selected:
-                # Delete selected camera mapping
-                if selected in names_dict:
-                    del names_dict[selected]
+                frigate_dict.pop(selected, None)
+                friendly_dict.pop(selected, None)
             elif action == "update" and selected:
-                # Update selected camera
-                if selected in names_dict:
-                    del names_dict[selected]
-                camera_key = new_camera if new_camera else selected
-                if new_name:
-                    names_dict[camera_key] = new_name
-            elif action == "add" and new_camera and new_name:
-                # Add new camera mapping
-                names_dict[new_camera] = new_name
-            elif not selected and not new_camera and not new_name:
-                # Empty submit - return to menu
+                # Remove old entry
+                frigate_dict.pop(selected, None)
+                friendly_dict.pop(selected, None)
+                key = location_key if location_key else selected
+                if frigate_name:
+                    frigate_dict[key] = frigate_name
+                if friendly_name:
+                    friendly_dict[key] = friendly_name
+            elif action == "add" and location_key and frigate_name:
+                frigate_dict[location_key] = frigate_name
+                if friendly_name:
+                    friendly_dict[location_key] = friendly_name
+                else:
+                    friendly_dict[location_key] = location_key.replace("_", " ").title()
+            elif not selected and not location_key and not frigate_name:
                 return self.async_create_entry(title="", data=self._entry.options)
 
-            # Save updated mappings
-            if names_dict:
-                updated_mapping = "\n".join([f"{k}: {v}" for k, v in names_dict.items()])
-            else:
-                updated_mapping = ""
+            # Save both mappings
+            updated_frigate = "\n".join([f"{k}: {v}" for k, v in frigate_dict.items()]) if frigate_dict else ""
+            updated_friendly = "\n".join([f"{k}: {v}" for k, v in friendly_dict.items()]) if friendly_dict else ""
 
-            new_options = {**self._entry.options, CONF_CAMERA_FRIENDLY_NAMES: updated_mapping}
+            new_options = {
+                **self._entry.options,
+                CONF_FRIGATE_CAMERA_NAMES: updated_frigate,
+                CONF_CAMERA_FRIENDLY_NAMES: updated_friendly,
+            }
             self.hass.config_entries.async_update_entry(self._entry, options=new_options)
 
             # Reload for display
-            current_names_str = updated_mapping
-            names_dict = {}
-            if current_names_str:
-                for line in current_names_str.split("\n"):
+            frigate_dict = {}
+            if updated_frigate:
+                for line in updated_frigate.split("\n"):
                     line = line.strip()
                     if ": " in line:
-                        entity_id, friendly_name = line.split(": ", 1)
-                        names_dict[entity_id.strip()] = friendly_name.strip()
+                        key, val = line.split(": ", 1)
+                        frigate_dict[key.strip()] = val.strip()
+            friendly_dict = {}
+            if updated_friendly:
+                for line in updated_friendly.split("\n"):
+                    line = line.strip()
+                    if ": " in line:
+                        key, val = line.split(": ", 1)
+                        friendly_dict[key.strip()] = val.strip()
 
         # Build description showing current mappings
-        if names_dict:
-            mapping_lines = [f"**{eid}** → {name}" for eid, name in names_dict.items()]
-            description = "**Current camera names:**\n" + "\n".join(mapping_lines) + "\n\nSelect one to edit/delete, or add a new one below."
+        if frigate_dict:
+            mapping_lines = [
+                f"**{key}** → Frigate: `{frigate_dict.get(key, '?')}` | Display: {friendly_dict.get(key, key.replace('_', ' ').title())}"
+                for key in frigate_dict
+            ]
+            description = "**Current Frigate camera mappings:**\n" + "\n".join(mapping_lines) + "\n\nSelect one to edit/delete, or add a new one below."
         else:
-            description = "No camera names configured. Add your first camera mapping below.\n\nSelect a camera from the dropdown and give it a friendly name like 'Front Porch' or 'Driveway'."
+            description = "No Frigate cameras configured. Add your first camera mapping below.\n\nEnter a location key (what you say, e.g., 'porch'), the Frigate camera name, and a friendly display name."
 
         # Build select options for existing mappings
         select_options = [
-            selector.SelectOptionDict(value=eid, label=f"{eid} → {name}")
-            for eid, name in names_dict.items()
+            selector.SelectOptionDict(
+                value=key,
+                label=f"{key} → {frigate_dict.get(key, '?')} ({friendly_dict.get(key, '')})"
+            )
+            for key in frigate_dict
         ]
 
         return self.async_show_form(
@@ -1114,10 +1135,14 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
-                    vol.Optional("camera_entity"): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="camera",
-                            multiple=False,
+                    vol.Optional("location_key"): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.TEXT,
+                        )
+                    ),
+                    vol.Optional("frigate_camera_name"): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.TEXT,
                         )
                     ),
                     vol.Optional("friendly_name"): selector.TextSelector(
