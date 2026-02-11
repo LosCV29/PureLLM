@@ -1356,7 +1356,10 @@ class PureLLMConversationEntity(ConversationEntity):
 
             _LOGGER.info("Sending camera notification for: %s", location)
 
-            title = f"📷 {location}"
+            source = camera_result.get("source", "unknown")
+            source_label = {"video_clip": "live video", "snapshot": "snapshot"}.get(source, source)
+
+            title = f"📷 {location} ({source_label})"
             message = description if description else "Camera check completed."
 
             notification_data = self._build_notification_data(title, message, image_url=snapshot_url)
