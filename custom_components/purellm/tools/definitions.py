@@ -170,19 +170,26 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             ["restaurant_name"]
         ))
 
-    # ===== CAMERAS =====
+    # ===== CAMERAS (Frigate) =====
     if config.enable_cameras:
+        camera_desc = "Check camera with AI analysis via Frigate."
+        quick_desc = "Fast camera check - is anyone present? Via Frigate."
+        if config.frigate_camera_names:
+            cams_list = ", ".join(config.frigate_camera_names.keys())
+            camera_desc += f" Available cameras: {cams_list}."
+            quick_desc += f" Available cameras: {cams_list}."
+
         tools.append(_tool(
             "check_camera",
-            "Check camera with AI analysis.",
-            {"location": {"type": "string", "description": "Camera location"}, "query": {"type": "string", "description": "What to look for (optional)"}},
+            camera_desc,
+            {"location": {"type": "string", "description": "Camera location key"}, "query": {"type": "string", "description": "What to look for (optional)"}},
             ["location"]
         ))
 
         tools.append(_tool(
             "quick_camera_check",
-            "Fast camera check - is anyone present?",
-            {"location": {"type": "string", "description": "Camera location"}},
+            quick_desc,
+            {"location": {"type": "string", "description": "Camera location key"}},
             ["location"]
         ))
 
@@ -348,3 +355,4 @@ class ToolConfig:
         self.calendar_entities = entity.calendar_entities
         self.room_player_mapping = entity.room_player_mapping
         self.sofabaton_activities = getattr(entity, 'sofabaton_activities', [])
+        self.frigate_camera_names = getattr(entity, 'frigate_camera_names', {})

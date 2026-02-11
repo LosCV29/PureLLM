@@ -90,7 +90,7 @@ CONF_ENABLE_SEARCH: Final = "enable_search"
 
 DEFAULT_ENABLE_WEATHER: Final = True
 DEFAULT_ENABLE_CALENDAR: Final = True
-DEFAULT_ENABLE_CAMERAS: Final = False  # Requires vllm_video integration
+DEFAULT_ENABLE_CAMERAS: Final = False  # Requires Frigate
 DEFAULT_ENABLE_SPORTS: Final = True
 DEFAULT_ENABLE_PLACES: Final = True
 DEFAULT_ENABLE_RESTAURANTS: Final = True
@@ -108,7 +108,11 @@ CONF_WEATHER_ENTITY: Final = "weather_entity"
 CONF_CALENDAR_ENTITIES: Final = "calendar_entities"
 CONF_ROOM_PLAYER_MAPPING: Final = "room_player_mapping"
 CONF_DEVICE_ALIASES: Final = "device_aliases"
-CONF_CAMERA_ENTITIES: Final = "camera_entities"
+CONF_CAMERA_ENTITIES: Final = "camera_entities"  # Deprecated - kept for config compat
+
+# Frigate settings
+CONF_FRIGATE_URL: Final = "frigate_url"
+CONF_FRIGATE_CAMERA_NAMES: Final = "frigate_camera_names"
 
 # Thermostat settings - user-configurable temperature range and step
 CONF_THERMOSTAT_MIN_TEMP: Final = "thermostat_min_temp"
@@ -122,6 +126,8 @@ DEFAULT_CALENDAR_ENTITIES: Final = ""
 DEFAULT_ROOM_PLAYER_MAPPING: Final = ""  # room:entity_id, one per line
 DEFAULT_DEVICE_ALIASES: Final = ""
 DEFAULT_CAMERA_ENTITIES: Final = ""
+DEFAULT_FRIGATE_URL: Final = ""
+DEFAULT_FRIGATE_CAMERA_NAMES: Final = ""  # location_key: frigate_camera_name, one per line
 
 # Thermostat defaults (Fahrenheit by default)
 DEFAULT_THERMOSTAT_MIN_TEMP: Final = 60
