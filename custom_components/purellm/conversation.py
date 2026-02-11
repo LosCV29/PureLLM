@@ -981,12 +981,12 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             if tools:
                 kwargs["tools"] = tools
-                # Force tool calling on follow-up action requests.
-                # Local LLMs fabricate confirmations without calling tools.
+                # Force tool calling on the first iteration.
+                # Local LLMs fabricate answers without calling tools.
                 # "required" forces at least one tool call before responding.
                 # Skip for dismissals ("done", "no") and greetings ("yo", "hey")
                 # which need no tool.
-                if is_followup and not is_dismissal and not is_greeting and iteration == 0:
+                if not is_dismissal and not is_greeting and iteration == 0:
                     kwargs["tool_choice"] = "required"
                 else:
                     kwargs["tool_choice"] = "auto"
