@@ -112,15 +112,20 @@ async def _capture_video_clip(
         return None
 
 
-async def _extract_snapshot_from_clip(video_bytes: bytes) -> bytes | None:
+async def _extract_snapshot_from_clip(
+    video_bytes: bytes,
+    clip_duration: int = VIDEO_CLIP_DURATION,
+) -> bytes | None:
     """Extract the last frame of a captured MP4 clip as a JPEG.
 
-    Pipes the MP4 through ffmpeg, seeks to the end, and grabs one frame.
-    This guarantees the snapshot is from the actual recording, not a cache.
+    Pipes the MP4 through ffmpeg and grabs a frame near the end.
+    Uses -ss with a known offset instead of -sseof because piped
+    fragmented MP4s are not seekable from the end.
     """
+    seek_pos = max(clip_duration - 1, 0)
     cmd = [
         "ffmpeg", "-y",
-        "-sseof", "-0.5",       # seek to 0.5s before end of input
+        "-ss", str(seek_pos),   # seek to near end (known duration)
         "-i", "pipe:0",         # read MP4 from stdin
         "-frames:v", "1",       # grab one frame
         "-q:v", "2",            # JPEG quality (2 = high quality)
