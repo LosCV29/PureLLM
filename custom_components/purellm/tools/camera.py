@@ -76,6 +76,8 @@ async def fetch_frigate_cameras(
 
         cameras[cam_name] = best_url
 
+    for cam, url in cameras.items():
+        _LOGGER.debug("Frigate camera: %s -> %s", cam, url)
     _LOGGER.debug("Fetched %d cameras from Frigate: %s", len(cameras), list(cameras.keys()))
     return cameras
 
@@ -395,17 +397,17 @@ async def check_camera(
         # Fetching the snapshot *after* the clip ensures it reflects the
         # end of the recording window rather than a stale frame from
         # before the clip started.
-        _LOGGER.info("Capturing %ds video clip from %s", VIDEO_CLIP_DURATION, camera_name)
+        _LOGGER.info("Capturing %ds video clip from %s (url=%s)", VIDEO_CLIP_DURATION, camera_name, rtsp_url)
         video_clip = await _capture_video_clip(rtsp_url, VIDEO_CLIP_DURATION)
 
         if not video_clip:
-            _LOGGER.error("Video clip capture failed for %s", camera_name)
+            _LOGGER.error("Video clip capture failed for %s (url=%s)", camera_name, rtsp_url)
             return {
                 "location": friendly_name,
                 "status": "error",
                 "source": "none",
                 "error": f"Failed to capture video clip from {friendly_name} camera. "
-                         "ffmpeg could not connect to the RTSP stream.",
+                         f"ffmpeg could not connect to the RTSP stream. URL: {rtsp_url}",
             }
 
         snapshot_url = None
