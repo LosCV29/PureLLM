@@ -170,26 +170,17 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             ["restaurant_name"]
         ))
 
-    # ===== CAMERAS (Frigate) =====
+    # ===== CAMERAS (Frigate + Vision LLM) =====
     if config.enable_cameras:
-        camera_desc = "Check camera with AI analysis via Frigate."
-        quick_desc = "Fast camera check - is anyone present? Via Frigate."
+        camera_desc = "Check camera with live video analysis. Captures a short video clip and describes the scene using AI vision."
         if config.frigate_camera_names:
             cams_list = ", ".join(config.frigate_camera_names.keys())
             camera_desc += f" Available cameras: {cams_list}."
-            quick_desc += f" Available cameras: {cams_list}."
 
         tools.append(_tool(
             "check_camera",
             camera_desc,
             {"location": {"type": "string", "description": "Camera location key"}, "query": {"type": "string", "description": "What to look for (optional)"}},
-            ["location"]
-        ))
-
-        tools.append(_tool(
-            "quick_camera_check",
-            quick_desc,
-            {"location": {"type": "string", "description": "Camera location key"}},
             ["location"]
         ))
 

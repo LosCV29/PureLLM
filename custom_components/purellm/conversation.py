@@ -1353,21 +1353,11 @@ class PureLLMConversationEntity(ConversationEntity):
             location = camera_result.get("location", "Camera")
             description = camera_result.get("description", "")
             snapshot_url = camera_result.get("snapshot_url", "")
-            identified_people = camera_result.get("identified_people", [])
 
             _LOGGER.info("Sending camera notification for: %s", location)
 
             title = f"📷 {location}"
-
-            if description:
-                message = description.split('.')[0] + '.' if '.' in description else description
-            else:
-                message = "Camera check completed."
-
-            if identified_people:
-                people_names = [p.get("name", "Unknown") for p in identified_people if p.get("name")]
-                if people_names:
-                    message += f"\n👤 Identified: {', '.join(people_names)}"
+            message = description if description else "Camera check completed."
 
             notification_data = self._build_notification_data(title, message, image_url=snapshot_url)
             await self._send_notification(notification_data, "camera")
@@ -1494,16 +1484,15 @@ class PureLLMConversationEntity(ConversationEntity):
                     arguments, self._session, self.google_places_api_key,
                     latitude, longitude, self._track_api_call
                 ),
-                # Camera via Frigate (with notification post-processing)
+                # Camera via Frigate with local vision LLM analysis
                 "check_camera": lambda: camera_tool.check_camera(
                     arguments, self._session, self.frigate_url,
                     self.frigate_camera_names or None,
                     self.camera_friendly_names or None,
-                ),
-                "quick_camera_check": lambda: camera_tool.quick_camera_check(
-                    arguments, self._session, self.frigate_url,
-                    self.frigate_camera_names or None,
-                    self.camera_friendly_names or None,
+                    llm_base_url=self.base_url,
+                    llm_api_key=self.api_key,
+                    llm_model=self.model,
+                    config_dir=self.hass.config.config_dir,
                 ),
                 # Web search
                 "web_search": lambda: search_tool.web_search(
@@ -1523,7 +1512,7 @@ class PureLLMConversationEntity(ConversationEntity):
                         await self._send_restaurant_notification(result)
                     elif tool_name == "book_restaurant" and result.get("reservation_url"):
                         await self._send_reservation_notification(result)
-                    elif tool_name in ("check_camera", "quick_camera_check") and self.notify_on_camera and result.get("snapshot_url"):
+                    elif tool_name == "check_camera" and self.notify_on_camera and result.get("snapshot_url"):
                         await self._send_camera_notification(result)
                     elif tool_name == "web_search" and self.notify_on_search and result.get("source_url"):
                         await self._send_search_notification(result)
