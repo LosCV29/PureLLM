@@ -1,7 +1,7 @@
-"""Camera tool handlers - Frigate integration with local LLM vision analysis.
+"""Camera tool handlers - Frigate integration with local LLM video analysis.
 
-Captures snapshots from Frigate and uses the local vision-capable LLM
-(via OpenAI-compatible API / vLLM) to analyze the scene.
+Captures video clips from Frigate and sends them to Qwen3-VL (via vLLM)
+for real-time scene analysis using the OpenAI-compatible video_url format.
 """
 from __future__ import annotations
 
@@ -16,6 +16,10 @@ if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
+
+# Video clip settings
+VIDEO_CLIP_DURATION = 10  # seconds of video to capture
+VIDEO_CLIP_DURATION_QUICK = 5  # seconds for quick check
 
 # Default camera friendly names
 DEFAULT_CAMERA_FRIENDLY_NAMES = {
@@ -34,16 +38,7 @@ def _resolve_camera(
     frigate_camera_names: dict[str, str] | None,
     camera_friendly_names: dict[str, str] | None,
 ) -> tuple[str | None, str]:
-    """Resolve a location key to Frigate camera name and friendly name.
-
-    Args:
-        location: Location key from LLM (e.g., "porch")
-        frigate_camera_names: Mapping of location_key -> frigate_camera_name
-        camera_friendly_names: Mapping of location_key -> Friendly Name
-
-    Returns:
-        Tuple of (frigate_camera_name, friendly_display_name)
-    """
+    """Resolve a location key to Frigate camera name and friendly name."""
     friendly_names = camera_friendly_names or DEFAULT_CAMERA_FRIENDLY_NAMES
     friendly_name = friendly_names.get(location, location.replace("_", " ").title())
 
@@ -51,7 +46,6 @@ def _resolve_camera(
     frigate_name = frigate_names.get(location)
 
     if not frigate_name:
-        # Fall back: try the location key directly as the Frigate camera name
         frigate_name = location
 
     return frigate_name, friendly_name
@@ -76,54 +70,168 @@ async def _fetch_snapshot(
         return None
 
 
-async def _capture_frames(
-    session: "aiohttp.ClientSession",
+async def _capture_video_clip(
     base_url: str,
     frigate_name: str,
-    count: int = 3,
-    interval: float = 2.0,
-) -> list[bytes]:
-    """Capture multiple snapshot frames over time for scene analysis."""
-    frames = []
-    for i in range(count):
-        frame = await _fetch_snapshot(session, base_url, frigate_name)
-        if frame:
-            frames.append(frame)
-        if i < count - 1:
-            await asyncio.sleep(interval)
-    return frames
+    duration: int = VIDEO_CLIP_DURATION,
+) -> bytes | None:
+    """Capture a video clip from Frigate's MJPEG stream using ffmpeg.
+
+    Uses ffmpeg to read the live MJPEG stream and transcode to a compact
+    MP4 suitable for sending to a vision LLM. The MP4 uses fragmented
+    format so it can be piped to stdout without seeking.
+    """
+    mjpeg_url = f"{base_url}/api/{frigate_name}"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-t", str(duration),
+        "-i", mjpeg_url,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "28",
+        "-vf", "scale='min(1280,iw)':'-2'",
+        "-movflags", "frag_keyframe+empty_moov",
+        "-f", "mp4",
+        "pipe:1",
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=duration + 20
+        )
+
+        if proc.returncode != 0:
+            err_msg = stderr.decode(errors="replace")[-500:] if stderr else "unknown"
+            _LOGGER.error("ffmpeg clip capture failed (rc=%s): %s", proc.returncode, err_msg)
+            return None
+
+        if not stdout or len(stdout) < 1000:
+            _LOGGER.warning("ffmpeg produced too-small output (%s bytes)", len(stdout) if stdout else 0)
+            return None
+
+        _LOGGER.info(
+            "Captured %ds video clip from %s (%s bytes)",
+            duration, frigate_name, len(stdout),
+        )
+        return stdout
+
+    except asyncio.TimeoutError:
+        _LOGGER.error("ffmpeg clip capture timed out after %ds for %s", duration + 20, frigate_name)
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return None
+    except FileNotFoundError:
+        _LOGGER.error("ffmpeg not found - cannot capture video clips")
+        return None
+    except Exception as err:
+        _LOGGER.error("Video clip capture failed for %s: %s", frigate_name, err, exc_info=True)
+        return None
 
 
-async def _analyze_with_vision_llm(
+async def _analyze_video_with_llm(
     session: "aiohttp.ClientSession",
-    frames: list[bytes],
+    video_bytes: bytes,
     llm_base_url: str,
     llm_api_key: str,
     llm_model: str,
     location: str,
     query: str = "",
 ) -> str | None:
-    """Send camera frames to vision LLM via OpenAI-compatible API (vLLM, etc)."""
+    """Send an MP4 video clip to Qwen3-VL via vLLM's video_url content type."""
     prompt = (
-        f"You are analyzing live security camera frames from the {location} camera. "
-        f"There are {len(frames)} frame(s) captured over a few seconds. "
+        f"You are analyzing a live video clip from the {location} security camera. "
+        f"This is {VIDEO_CLIP_DURATION} seconds of real-time footage. "
+    )
+    if query:
+        prompt += f"The user specifically wants to know: {query}. "
+    prompt += (
+        "Describe what you see: people, vehicles, animals, movement, activity, "
+        "weather/lighting conditions, and anything notable or unusual. "
+        "Be concise but descriptive (2-3 sentences)."
+    )
+
+    b64_video = base64.b64encode(video_bytes).decode("utf-8")
+
+    content: list[dict[str, Any]] = [
+        {"type": "text", "text": prompt},
+        {
+            "type": "video_url",
+            "video_url": {"url": f"data:video/mp4;base64,{b64_video}"},
+        },
+    ]
+
+    payload = {
+        "model": llm_model,
+        "messages": [{"role": "user", "content": content}],
+        "max_tokens": 300,
+        "temperature": 0.3,
+    }
+
+    url = f"{llm_base_url.rstrip('/')}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {llm_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        async with asyncio.timeout(90):
+            async with session.post(url, json=payload, headers=headers) as resp:
+                if resp.status != 200:
+                    error = await resp.text()
+                    _LOGGER.error("Vision LLM video API error %s: %s", resp.status, error)
+                    return None
+                data = await resp.json()
+
+        choices = data.get("choices", [])
+        if not choices:
+            _LOGGER.warning("Vision LLM returned no choices for video")
+            return None
+
+        text = choices[0].get("message", {}).get("content", "").strip()
+        return text if text else None
+
+    except Exception as err:
+        _LOGGER.error("Vision LLM video analysis failed: %s", err, exc_info=True)
+        return None
+
+
+async def _analyze_snapshot_with_llm(
+    session: "aiohttp.ClientSession",
+    frame: bytes,
+    llm_base_url: str,
+    llm_api_key: str,
+    llm_model: str,
+    location: str,
+    query: str = "",
+) -> str | None:
+    """Fallback: send a single snapshot image to the vision LLM."""
+    prompt = (
+        f"You are analyzing a snapshot from the {location} security camera. "
     )
     if query:
         prompt += f"The user specifically wants to know: {query}. "
     prompt += (
         "Describe what you see: people, vehicles, animals, activity, weather/lighting "
-        "conditions, and anything notable. Be concise but descriptive (2-3 sentences)."
+        "conditions, and anything notable. Be concise (1-2 sentences)."
     )
 
-    # Build content array with text + images (OpenAI vision format)
-    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    b64 = base64.b64encode(frame).decode("utf-8")
 
-    for frame in frames:
-        b64 = base64.b64encode(frame).decode("utf-8")
-        content.append({
+    content: list[dict[str, Any]] = [
+        {"type": "text", "text": prompt},
+        {
             "type": "image_url",
             "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-        })
+        },
+    ]
 
     payload = {
         "model": llm_model,
@@ -143,33 +251,27 @@ async def _analyze_with_vision_llm(
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
                     error = await resp.text()
-                    _LOGGER.error("Vision LLM API error %s: %s", resp.status, error)
+                    _LOGGER.error("Vision LLM snapshot API error %s: %s", resp.status, error)
                     return None
                 data = await resp.json()
 
         choices = data.get("choices", [])
         if not choices:
-            _LOGGER.warning("Vision LLM returned no choices")
             return None
 
         text = choices[0].get("message", {}).get("content", "").strip()
         return text if text else None
 
     except Exception as err:
-        _LOGGER.error("Vision LLM analysis failed: %s", err, exc_info=True)
+        _LOGGER.error("Vision LLM snapshot analysis failed: %s", err, exc_info=True)
         return None
 
 
 def _save_snapshot(config_dir: str, frigate_name: str, image_bytes: bytes) -> str:
-    """Save snapshot to HA's www directory and return the local URL.
-
-    Saves to /config/www/purellm/camera_{name}.jpg so it's accessible
-    via /local/purellm/camera_{name}.jpg through HA's web server.
-    """
+    """Save snapshot to HA's www directory and return the local URL."""
     www_dir = os.path.join(config_dir, "www", "purellm")
     os.makedirs(www_dir, exist_ok=True)
 
-    # Use timestamp to bust cache
     filename = f"camera_{frigate_name}.jpg"
     filepath = os.path.join(www_dir, filename)
 
@@ -236,25 +338,11 @@ async def check_camera(
     llm_model: str = "",
     config_dir: str = "",
 ) -> dict[str, Any]:
-    """Check a camera with visual scene analysis.
+    """Check a camera with video scene analysis.
 
-    Captures multiple snapshots from Frigate over ~4 seconds, sends them
-    to the local vision LLM for analysis, and returns a scene description.
-    Falls back to Frigate event descriptions if no LLM is configured.
-
-    Args:
-        arguments: Tool arguments (location, query)
-        session: aiohttp client session
-        frigate_url: Frigate API base URL
-        frigate_camera_names: Mapping of location_key -> frigate_camera_name
-        camera_friendly_names: Custom camera name mappings
-        llm_base_url: Vision LLM base URL (OpenAI-compatible)
-        llm_api_key: Vision LLM API key
-        llm_model: Vision LLM model name
-        config_dir: HA config directory path for saving snapshots
-
-    Returns:
-        Camera analysis dict with description and snapshot URL
+    Captures a ~10s video clip from Frigate via ffmpeg, sends it to
+    Qwen3-VL for analysis. Falls back to snapshot analysis if ffmpeg
+    is unavailable, then to Frigate events if no LLM is configured.
     """
     location = arguments.get("location", "").lower().strip()
     query = arguments.get("query", "")
@@ -273,42 +361,59 @@ async def check_camera(
     has_vision = bool(llm_base_url and llm_model)
 
     try:
-        # Capture frames for analysis
-        if has_vision:
-            _LOGGER.info("Capturing 3 frames from %s for vision analysis", frigate_name)
-            frames = await _capture_frames(session, base_url, frigate_name, count=3, interval=2.0)
-        else:
-            _LOGGER.info("No vision LLM configured - capturing single frame from %s", frigate_name)
-            frames = await _capture_frames(session, base_url, frigate_name, count=1, interval=0)
+        # Always grab a snapshot for notifications
+        snapshot = await _fetch_snapshot(session, base_url, frigate_name)
 
-        if not frames:
+        snapshot_url = f"{base_url}/api/{frigate_name}/latest.jpg"
+        if snapshot and config_dir:
+            try:
+                snapshot_url = _save_snapshot(config_dir, frigate_name, snapshot)
+            except Exception as err:
+                _LOGGER.warning("Failed to save snapshot: %s", err)
+
+        if not has_vision:
+            if not snapshot:
+                return {
+                    "location": friendly_name,
+                    "status": "unavailable",
+                    "error": f"Could not get snapshot from {friendly_name} camera",
+                }
+            analysis = await _get_frigate_events_description(session, base_url, frigate_name)
             return {
                 "location": friendly_name,
-                "status": "unavailable",
-                "error": f"Could not get snapshot from {friendly_name} camera",
+                "status": "checked",
+                "description": analysis,
+                "snapshot_url": snapshot_url,
             }
 
-        # Save latest snapshot for notification
-        snapshot_url = f"{base_url}/api/{frigate_name}/latest.jpg"
-        if config_dir:
-            try:
-                snapshot_url = _save_snapshot(config_dir, frigate_name, frames[-1])
-                _LOGGER.debug("Saved snapshot to %s", snapshot_url)
-            except Exception as err:
-                _LOGGER.warning("Failed to save snapshot locally: %s, using Frigate URL", err)
+        # --- Vision analysis path ---
+        analysis = None
 
-        # Vision analysis with local LLM
-        if has_vision and frames:
-            _LOGGER.info("Sending %d frame(s) to %s for vision analysis", len(frames), llm_model)
-            analysis = await _analyze_with_vision_llm(
-                session, frames, llm_base_url, llm_api_key, llm_model,
-                friendly_name, query
+        # Try video clip first (primary)
+        _LOGGER.info("Capturing %ds video clip from %s", VIDEO_CLIP_DURATION, frigate_name)
+        video_clip = await _capture_video_clip(base_url, frigate_name, VIDEO_CLIP_DURATION)
+
+        if video_clip:
+            _LOGGER.info(
+                "Sending video clip (%s bytes) to %s for analysis",
+                len(video_clip), llm_model,
             )
-            if not analysis:
-                _LOGGER.warning("Vision LLM failed, falling back to Frigate events")
-                analysis = await _get_frigate_events_description(session, base_url, frigate_name)
-        else:
-            # Fallback to Frigate event descriptions
+            analysis = await _analyze_video_with_llm(
+                session, video_clip, llm_base_url, llm_api_key, llm_model,
+                friendly_name, query,
+            )
+
+        # Fallback to snapshot if video failed
+        if not analysis and snapshot:
+            _LOGGER.warning("Video analysis unavailable, falling back to snapshot")
+            analysis = await _analyze_snapshot_with_llm(
+                session, snapshot, llm_base_url, llm_api_key, llm_model,
+                friendly_name, query,
+            )
+
+        # Final fallback to Frigate events
+        if not analysis:
+            _LOGGER.warning("Vision LLM failed, falling back to Frigate events")
             analysis = await _get_frigate_events_description(session, base_url, frigate_name)
 
         return {
@@ -338,22 +443,7 @@ async def quick_camera_check(
     llm_model: str = "",
     config_dir: str = "",
 ) -> dict[str, Any]:
-    """Fast camera check - single snapshot with brief vision analysis.
-
-    Args:
-        arguments: Tool arguments (location)
-        session: aiohttp client session
-        frigate_url: Frigate API base URL
-        frigate_camera_names: Mapping of location_key -> frigate_camera_name
-        camera_friendly_names: Custom camera name mappings
-        llm_base_url: Vision LLM base URL (OpenAI-compatible)
-        llm_api_key: Vision LLM API key
-        llm_model: Vision LLM model name
-        config_dir: HA config directory path for saving snapshots
-
-    Returns:
-        Brief camera check dict
-    """
+    """Fast camera check - short video clip with brief analysis."""
     location = arguments.get("location", "").lower().strip()
 
     if not location:
@@ -370,32 +460,46 @@ async def quick_camera_check(
     has_vision = bool(llm_base_url and llm_model)
 
     try:
-        # Single snapshot for quick check
-        frame = await _fetch_snapshot(session, base_url, frigate_name)
+        # Grab snapshot for notification
+        snapshot = await _fetch_snapshot(session, base_url, frigate_name)
 
-        if not frame:
+        if not snapshot:
             return {"location": friendly_name, "error": "Camera unavailable"}
 
-        # Save snapshot for notification
         snapshot_url = f"{base_url}/api/{frigate_name}/latest.jpg"
         if config_dir:
             try:
-                snapshot_url = _save_snapshot(config_dir, frigate_name, frame)
+                snapshot_url = _save_snapshot(config_dir, frigate_name, snapshot)
             except Exception:
                 pass
 
-        # Quick vision analysis with local LLM (single frame)
-        if has_vision:
-            analysis = await _analyze_with_vision_llm(
-                session, [frame], llm_base_url, llm_api_key, llm_model,
-                friendly_name
+        if not has_vision:
+            brief = await _get_quick_frigate_description(session, base_url, frigate_name)
+            return {"location": friendly_name, "brief": brief, "snapshot_url": snapshot_url}
+
+        # Try short video clip
+        brief = None
+        video_clip = await _capture_video_clip(base_url, frigate_name, VIDEO_CLIP_DURATION_QUICK)
+
+        if video_clip:
+            analysis = await _analyze_video_with_llm(
+                session, video_clip, llm_base_url, llm_api_key, llm_model,
+                friendly_name,
             )
             if analysis:
-                # Truncate to first sentence for quick check
                 brief = analysis.split('.')[0] + '.' if '.' in analysis else analysis
-            else:
-                brief = await _get_quick_frigate_description(session, base_url, frigate_name)
-        else:
+
+        # Fallback to snapshot
+        if not brief:
+            analysis = await _analyze_snapshot_with_llm(
+                session, snapshot, llm_base_url, llm_api_key, llm_model,
+                friendly_name,
+            )
+            if analysis:
+                brief = analysis.split('.')[0] + '.' if '.' in analysis else analysis
+
+        # Final fallback
+        if not brief:
             brief = await _get_quick_frigate_description(session, base_url, frigate_name)
 
         return {
