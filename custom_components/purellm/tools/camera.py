@@ -11,6 +11,7 @@ import logging
 import os
 import time
 from typing import Any, TYPE_CHECKING
+from urllib.parse import urlparse
 
 if TYPE_CHECKING:
     import aiohttp
@@ -22,13 +23,27 @@ VIDEO_CLIP_DURATION = 5  # seconds of video to capture
 
 # Default camera friendly names
 DEFAULT_CAMERA_FRIENDLY_NAMES = {
-    "porch": "Front Porch",
+    "doorbell": "Doorbell",
     "driveway": "Driveway",
+    "garden": "Garden",
+    "kitchen": "Kitchen",
+    "nursery": "Nursery",
+    "sala": "Sala",
+    "porch": "Front Porch",
     "garage": "Garage",
     "backyard": "Backyard",
-    "kitchen": "Kitchen",
     "living_room": "Living Room",
     "front_door": "Front Door",
+}
+
+# Common natural-language aliases → actual Frigate camera names
+_LOCATION_ALIASES: dict[str, str] = {
+    "backyard": "garden",
+    "back yard": "garden",
+    "front door": "doorbell",
+    "front_door": "doorbell",
+    "living room": "sala",
+    "living_room": "sala",
 }
 
 
@@ -37,15 +52,23 @@ def _resolve_camera(
     frigate_camera_names: dict[str, str] | None,
     camera_friendly_names: dict[str, str] | None,
 ) -> tuple[str | None, str]:
-    """Resolve a location key to Frigate camera name and friendly name."""
+    """Resolve a location key to Frigate camera name and friendly name.
+
+    Checks explicit frigate_camera_names config first, then falls back to
+    built-in _LOCATION_ALIASES, then uses the location key as-is.
+    """
     friendly_names = camera_friendly_names or DEFAULT_CAMERA_FRIENDLY_NAMES
-    friendly_name = friendly_names.get(location, location.replace("_", " ").title())
 
     frigate_names = frigate_camera_names or {}
     frigate_name = frigate_names.get(location)
 
     if not frigate_name:
-        frigate_name = location
+        frigate_name = _LOCATION_ALIASES.get(location, location)
+
+    friendly_name = friendly_names.get(
+        frigate_name,
+        friendly_names.get(location, frigate_name.replace("_", " ").title()),
+    )
 
     return frigate_name, friendly_name
 
@@ -69,27 +92,40 @@ async def _fetch_snapshot(
         return None
 
 
+def _build_rtsp_url(base_url: str, frigate_name: str) -> str:
+    """Derive the RTSP restream URL from the Frigate HTTP base URL.
+
+    Frigate's go2rtc serves RTSP on port 8554 at the same host.
+    We use the sub-stream for faster/lighter capture.
+    """
+    parsed = urlparse(base_url)
+    host = parsed.hostname or "localhost"
+    return f"rtsp://{host}:8554/{frigate_name}_sub"
+
+
 async def _capture_video_clip(
     base_url: str,
     frigate_name: str,
     duration: int = VIDEO_CLIP_DURATION,
 ) -> bytes | None:
-    """Capture a video clip from Frigate's MJPEG stream using ffmpeg.
+    """Capture a video clip from Frigate's RTSP restream using ffmpeg.
 
-    Uses ffmpeg to read the live MJPEG stream and transcode to a compact
-    MP4 suitable for sending to a vision LLM. The MP4 uses fragmented
+    Connects to Frigate's go2rtc RTSP restream and transcodes to a compact
+    MP4 suitable for sending to a vision LLM.  The MP4 uses fragmented
     format so it can be piped to stdout without seeking.
     """
-    mjpeg_url = f"{base_url}/api/{frigate_name}"
+    rtsp_url = _build_rtsp_url(base_url, frigate_name)
 
     cmd = [
         "ffmpeg", "-y",
+        "-rtsp_transport", "tcp",
         "-t", str(duration),
-        "-i", mjpeg_url,
+        "-i", rtsp_url,
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "28",
         "-vf", "scale='min(1280,iw)':'-2'",
+        "-an",
         "-movflags", "frag_keyframe+empty_moov",
         "-f", "mp4",
         "pipe:1",
@@ -203,8 +239,8 @@ async def _analyze_video_with_llm(
 
 
 
-def _save_snapshot(config_dir: str, frigate_name: str, image_bytes: bytes) -> str:
-    """Save snapshot to HA's www directory and return the local URL."""
+def _save_snapshot_sync(config_dir: str, frigate_name: str, image_bytes: bytes) -> str:
+    """Save snapshot to HA's www directory and return the local URL (sync)."""
     www_dir = os.path.join(config_dir, "www", "purellm")
     os.makedirs(www_dir, exist_ok=True)
 
@@ -215,6 +251,13 @@ def _save_snapshot(config_dir: str, frigate_name: str, image_bytes: bytes) -> st
         f.write(image_bytes)
 
     return f"/local/purellm/{filename}?t={int(time.time())}"
+
+
+async def _save_snapshot(config_dir: str, frigate_name: str, image_bytes: bytes) -> str:
+    """Save snapshot to HA's www directory without blocking the event loop."""
+    return await asyncio.get_running_loop().run_in_executor(
+        None, _save_snapshot_sync, config_dir, frigate_name, image_bytes
+    )
 
 
 
@@ -260,7 +303,7 @@ async def check_camera(
         snapshot_url = f"{base_url}/api/{frigate_name}/latest.jpg"
         if snapshot and config_dir:
             try:
-                snapshot_url = _save_snapshot(config_dir, frigate_name, snapshot)
+                snapshot_url = await _save_snapshot(config_dir, frigate_name, snapshot)
             except Exception as err:
                 _LOGGER.warning("Failed to save snapshot: %s", err)
 
@@ -275,7 +318,7 @@ async def check_camera(
                 "status": "error",
                 "source": "none",
                 "error": f"Failed to capture video clip from {friendly_name} camera. "
-                         "ffmpeg could not connect to the Frigate MJPEG stream.",
+                         "ffmpeg could not connect to the Frigate RTSP restream.",
                 "snapshot_url": snapshot_url if snapshot else None,
             }
 
