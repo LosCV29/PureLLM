@@ -83,7 +83,6 @@ async def fetch_frigate_cameras(
 def _match_camera(
     location: str,
     frigate_cameras: dict[str, str],
-    friendly_names: dict[str, str] | None = None,
 ) -> str | None:
     """Match a spoken location to an actual Frigate camera name.
 
@@ -92,7 +91,6 @@ def _match_camera(
       2. Normalised match (underscores ↔ spaces, strip common suffixes
          like "camera", "cam").
       3. Substring: a camera name is contained in the location or vice-versa.
-      4. Reverse lookup through friendly-name values.
     """
     if not frigate_cameras:
         return None
@@ -130,19 +128,6 @@ def _match_camera(
     if candidates:
         best = min(candidates, key=lambda x: len(x[0]))
         return best[1]
-
-    # 3. Reverse lookup through friendly names
-    if friendly_names:
-        for cam_key, fname in friendly_names.items():
-            fname_lower = fname.lower().replace("_", " ")
-            if loc == fname_lower or loc in fname_lower or fname_lower in loc:
-                # Map the friendly-name key back to a Frigate camera
-                if cam_key in frigate_cameras:
-                    return cam_key
-                # The friendly-name key might itself need normalising
-                cam_key_norm = cam_key.replace(" ", "_")
-                if cam_key_norm in frigate_cameras:
-                    return cam_key_norm
 
     return None
 
@@ -341,7 +326,6 @@ async def check_camera(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
     frigate_url: str,
-    camera_friendly_names: dict[str, str] | None = None,
     llm_base_url: str = "",
     llm_api_key: str = "",
     llm_model: str = "",
@@ -380,7 +364,7 @@ async def check_camera(
         }
 
     # Match spoken location to a Frigate camera name
-    camera_name = _match_camera(location, frigate_cameras, camera_friendly_names)
+    camera_name = _match_camera(location, frigate_cameras)
 
     if not camera_name:
         available = ", ".join(frigate_cameras.keys())
@@ -389,12 +373,8 @@ async def check_camera(
             "error": f"No camera matching '{location}' found in Frigate. Available cameras: {available}.",
         }
 
-    # Determine friendly display name
-    friendly_names = camera_friendly_names or {}
-    friendly_name = friendly_names.get(
-        camera_name,
-        camera_name.replace("_", " ").title(),
-    )
+    # Display name derived from Frigate camera name
+    friendly_name = camera_name.replace("_", " ").title()
 
     # Get RTSP URL: manual override first, then Frigate's config
     manual_urls = camera_rtsp_urls or {}
