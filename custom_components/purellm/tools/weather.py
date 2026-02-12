@@ -259,6 +259,17 @@ async def get_weather_forecast(
 
                 _LOGGER.info("Current weather: %s", result["current"])
 
+                # Build pre-formatted response_text for current weather
+                # so the LLM doesn't inconsistently truncate the response
+                if forecast_type == "current":
+                    c = result["current"]
+                    result["response_text"] = (
+                        f"It's currently {c['temperature']}°F and feels like {c['feels_like']}°F "
+                        f"with {c['conditions']} in {c['location']}. "
+                        f"There is a {c.get('rain_chance_next_hour', 0)}% chance of rain in the next hour. "
+                        f"Today's high is {c.get('todays_high', 'N/A')}°F with an overnight low of {c.get('todays_low', 'N/A')}°F."
+                    )
+
         if not result:
             return {"error": "No weather data retrieved"}
 
