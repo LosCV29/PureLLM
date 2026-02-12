@@ -997,6 +997,7 @@ class PureLLMConversationEntity(ConversationEntity):
             if function_calls:
                 contents.append({"role": "model", "parts": parts})
                 function_responses = []
+                action_response: str | None = None
 
                 for fc in function_calls:
                     called_tool_names.add(fc["name"])
@@ -1006,9 +1007,17 @@ class PureLLMConversationEntity(ConversationEntity):
                     else:
                         resp_content = json.dumps(result, ensure_ascii=False)
 
+                    if fc["name"] in self._ACTION_TOOLS:
+                        action_response = resp_content
+
                     function_responses.append({
                         "functionResponse": {"name": fc["name"], "response": {"result": resp_content}}
                     })
+
+                # If an action tool ran, return its response directly
+                if action_response is not None:
+                    _LOGGER.info("Returning action tool response directly (skip LLM rephrase)")
+                    return action_response
 
                 contents.append({"role": "user", "parts": function_responses})
                 continue
@@ -1200,10 +1209,12 @@ class PureLLMConversationEntity(ConversationEntity):
 
                     tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
 
-                    # Yield tool calls and results as deltas
+                    # Process tool results
+                    action_response: str | None = None
                     for tool_call, result in zip(unique_tool_calls, tool_results):
+                        tool_name = tool_call["function"]["name"]
                         if isinstance(result, Exception):
-                            _LOGGER.error("Tool %s failed: %s", tool_call["function"]["name"], result)
+                            _LOGGER.error("Tool %s failed: %s", tool_name, result)
                             result = {"error": str(result)}
 
                         # Get content for the message
@@ -1212,7 +1223,13 @@ class PureLLMConversationEntity(ConversationEntity):
                         else:
                             content = json.dumps(result, ensure_ascii=False)
 
-                        _LOGGER.debug("Tool result for %s: %s", tool_call["function"]["name"], content[:200])
+                        _LOGGER.debug("Tool result for %s: %s", tool_name, content[:200])
+
+                        # Capture action-tool responses so we can return them
+                        # directly instead of giving the LLM another turn to
+                        # hallucinate its own version.
+                        if tool_name in self._ACTION_TOOLS:
+                            action_response = content
 
                         # Add tool result to messages for next iteration
                         messages.append({
@@ -1220,6 +1237,13 @@ class PureLLMConversationEntity(ConversationEntity):
                             "tool_call_id": tool_call["id"],
                             "content": content,
                         })
+
+                    # If an action tool ran, return its response directly —
+                    # don't give the model another turn to fabricate.
+                    if action_response is not None:
+                        _LOGGER.info("Returning action tool response directly (skip LLM rephrase)")
+                        yield {"content": action_response}
+                        return
 
                     # Continue to next iteration to get LLM's response after tools
                     continue
