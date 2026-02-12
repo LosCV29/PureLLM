@@ -157,7 +157,6 @@ async def _capture_video_clip(
     cmd = [
         "ffmpeg", "-y",
         "-rtsp_transport", "tcp",
-        "-stimeout", "10000000",
         "-t", str(duration),
         "-i", rtsp_url,
         "-vf", "scale=640:-2",
@@ -399,8 +398,8 @@ async def check_camera(
     # when Frigate is configured with a separate detect input.
     frigate_host = urlparse(frigate_url).hostname
     rtsp_candidates = [
-        f"rtsp://{frigate_host}:8554/{camera_name}_sub",
         f"rtsp://{frigate_host}:8554/{camera_name}",
+        f"rtsp://{frigate_host}:8554/{camera_name}_sub",
     ]
 
     # Try each RTSP source with retries (handles go2rtc cold-start latency)
