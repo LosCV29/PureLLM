@@ -539,13 +539,7 @@ class PureLLMConversationEntity(ConversationEntity):
         keep_only_last: bool = False,
         tools_used: list[str] | None = None,
     ) -> None:
-        """Save a conversation turn to history.
-
-        When tools_used is provided, the assistant message is prefixed with
-        a tool-call note so the model sees in history that tools WERE called.
-        Without this, history shows "tool-less" exchanges which teaches the
-        model to skip tools on follow-ups (history poisoning).
-        """
+        """Save a conversation turn to history."""
         if conversation_id not in self._conversation_history:
             self._conversation_history[conversation_id] = {
                 "messages": [],
@@ -560,14 +554,6 @@ class PureLLMConversationEntity(ConversationEntity):
         if extra_system_prompt:
             data["extra_system_prompt"] = extra_system_prompt
 
-        # Enrich assistant message with tool context to prevent history poisoning.
-        # The model sees "[Called: control_device] Light on." in history, reinforcing
-        # that tools must be called before responding about device state.
-        enriched_assistant = assistant_message
-        if tools_used:
-            tool_note = ", ".join(dict.fromkeys(tools_used))  # dedupe, preserve order
-            enriched_assistant = f"[Called: {tool_note}] {assistant_message}"
-
         # For continuing conversations (shopping list, thermostat, etc.),
         # keep only the last turn. Save the full user message (topic context)
         # but strip the assistant's data — keep only the follow-up question.
@@ -577,8 +563,8 @@ class PureLLMConversationEntity(ConversationEntity):
             # Extract just the follow-up question from the assistant response
             # e.g., "AC is at 72°F. Want me to adjust it?" → "Want me to adjust it?"
             # e.g., "Got it. Anything else?" → "Anything else?"
-            saved_assistant = enriched_assistant
-            stripped = enriched_assistant.rstrip()
+            saved_assistant = assistant_message
+            stripped = assistant_message.rstrip()
             if stripped.endswith("?"):
                 for sep in [". ", "! ", "\n"]:
                     if sep in stripped:
@@ -593,7 +579,7 @@ class PureLLMConversationEntity(ConversationEntity):
         else:
             messages = data["messages"]
             messages.append({"role": "user", "content": user_message})
-            messages.append({"role": "assistant", "content": enriched_assistant})
+            messages.append({"role": "assistant", "content": assistant_message})
 
             # Trim to max history (keep most recent)
             max_messages = MAX_CONVERSATION_HISTORY * 2
@@ -1017,6 +1003,8 @@ class PureLLMConversationEntity(ConversationEntity):
             "open the ", "close the ", "stop the ",
             "pause the tv", "resume the tv", "unpause",
             "mute the", "unmute the", "volume up", "volume down",
+            "favorite position", "preset position", "set position",
+            "set the position", "favorite the", "preset the",
         ]
         if any(kw in text for kw in _device_actions):
             detected = "control_device"
