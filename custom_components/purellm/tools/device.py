@@ -299,13 +299,14 @@ async def control_device(
     hass: "HomeAssistant",
     device_aliases: dict[str, str],
     voice_scripts: list[dict[str, str]] | None = None,
+    shade_entities: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Control smart home devices.
 
     This is the main device control handler that supports:
     - Lights (with brightness, color)
     - Switches
-    - Covers/blinds (with position, presets)
+    - Covers/blinds (with position, presets, favorite positions)
     - Locks
     - Fans
     - Media players
@@ -319,12 +320,15 @@ async def control_device(
         hass: Home Assistant instance
         device_aliases: Custom device name -> entity_id mapping
         voice_scripts: List of voice script configs with trigger, open_script, close_script, sensor
+        shade_entities: List of shade configs with name, entity_id, favorite_entity
 
     Returns:
         Control result dict
     """
     if voice_scripts is None:
         voice_scripts = []
+    if shade_entities is None:
+        shade_entities = []
     from homeassistant.helpers import entity_registry as er
     from homeassistant.helpers import area_registry as ar
     from homeassistant.helpers import device_registry as dr
@@ -388,6 +392,42 @@ async def control_device(
         "execute": "turn_on",
     }
     action = action_aliases.get(action, action)
+
+    # --- Shade favorite position: press configured button entity directly ---
+    if action == "preset" and shade_entities and not position:
+        # LLM sent "favorite" (→ "preset") for a cover — find matching shade config
+        search_name = (device_name or "").lower().strip()
+        search_entity = direct_entity_id.lower().strip() if direct_entity_id else ""
+        matched_fav = None
+        for shade in shade_entities:
+            shade_name = shade.get("name", "").lower().strip()
+            shade_eid = shade.get("entity_id", "").lower().strip()
+            if (search_name and shade_name and shade_name in search_name) or \
+               (search_name and shade_name and search_name in shade_name) or \
+               (search_entity and shade_eid and search_entity == shade_eid):
+                matched_fav = shade
+                break
+        # Single shade fallback
+        if not matched_fav and len(shade_entities) == 1:
+            matched_fav = shade_entities[0]
+
+        if matched_fav:
+            fav_entity = matched_fav.get("favorite_entity", "")
+            friendly = matched_fav.get("name", "shade").title()
+            if fav_entity:
+                fav_domain = fav_entity.split(".")[0] if "." in fav_entity else ""
+                svc = {"button": "press", "scene": "turn_on", "script": "turn_on"}.get(fav_domain, "turn_on")
+                try:
+                    await hass.services.async_call(
+                        fav_domain, svc,
+                        {"entity_id": fav_entity},
+                        blocking=False,
+                    )
+                    _LOGGER.info("Shade favorite (tool): activated %s for %s", fav_entity, friendly)
+                    return {"success": True, "response_text": f"{friendly} set to favorite position."}
+                except Exception as err:
+                    _LOGGER.error("Error setting shade favorite for %s: %s", fav_entity, err)
+                    return {"error": f"Failed to set {friendly} favorite position: {err}"}
 
     # Service map
     service_map = {
