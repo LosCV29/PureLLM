@@ -151,6 +151,7 @@ async def _capture_video_clip(
     cmd = [
         "ffmpeg", "-y",
         "-rtsp_transport", "tcp",
+        "-stimeout", "5000000",
         "-t", str(duration),
         "-i", rtsp_url,
         "-c:v", "libx264",
@@ -169,7 +170,7 @@ async def _capture_video_clip(
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=duration + 20
+            proc.communicate(), timeout=duration + 12
         )
 
         if proc.returncode != 0:
@@ -188,7 +189,7 @@ async def _capture_video_clip(
         return stdout
 
     except asyncio.TimeoutError:
-        _LOGGER.error("ffmpeg clip capture timed out after %ds", duration + 20)
+        _LOGGER.error("ffmpeg clip capture timed out after %ds", duration + 12)
         try:
             proc.kill()
         except Exception:
