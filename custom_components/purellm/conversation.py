@@ -95,7 +95,10 @@ from .const import (
     DEFAULT_ENABLE_WEATHER,
     DEFAULT_ENABLE_WIKIPEDIA,
     DEFAULT_ENABLE_SEARCH,
+    DEFAULT_MAX_TOKENS,
     DEFAULT_TAVILY_API_KEY,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_TOP_P,
     DEFAULT_PROVIDER,
     DEFAULT_ROOM_PLAYER_MAPPING,
     DEFAULT_SYSTEM_PROMPT,
@@ -218,9 +221,9 @@ class PureLLMConversationEntity(ConversationEntity):
         self.provider = config.get(CONF_PROVIDER, DEFAULT_PROVIDER)
         self.api_key = config.get(CONF_API_KEY, DEFAULT_API_KEY)
         self.model = config.get(CONF_MODEL, "")
-        self.temperature = config.get(CONF_TEMPERATURE, 0.7)
-        self.max_tokens = config.get(CONF_MAX_TOKENS, 2000)
-        self.top_p = config.get(CONF_TOP_P, 0.95)
+        self.temperature = config.get(CONF_TEMPERATURE, DEFAULT_TEMPERATURE)
+        self.max_tokens = config.get(CONF_MAX_TOKENS, DEFAULT_MAX_TOKENS)
+        self.top_p = config.get(CONF_TOP_P, DEFAULT_TOP_P)
 
         # Base URL
         base_url = config.get(CONF_BASE_URL)
@@ -715,6 +718,36 @@ class PureLLMConversationEntity(ConversationEntity):
     # =========================================================================
 
     @staticmethod
+    def _is_hallucinated_action(response: str) -> bool:
+        """Check if a response claims a device action was performed.
+
+        Used to detect hallucinations where the LLM says "Done" or
+        "Shade opened" without having called any tool.  The caller
+        must verify that no tool was invoked; this method only checks
+        the *language* of the response.
+        """
+        resp = response.lower().strip().rstrip(".")
+        # Short confirmations the prompt asks for ("Done.", "Light on.", etc.)
+        if len(resp) < 60:
+            action_phrases = (
+                "done", "got it", "all set", "is now",
+                "has been", "turned on", "turned off",
+                "light on", "light off", "lights on", "lights off",
+                "shade opened", "shade closed", "shades opened", "shades closed",
+                "blind opened", "blind closed", "blinds opened", "blinds closed",
+                "cover opened", "cover closed",
+                "lock locked", "lock unlocked", "locked", "unlocked",
+                "fan on", "fan off",
+                "set to", "adjusted", "now at",
+                "favorite position", "preset position",
+                "opened", "closed", "stopped",
+                "is on", "is off",
+            )
+            if any(phrase in resp for phrase in action_phrases):
+                return True
+        return False
+
+    @staticmethod
     def _response_has_follow_up(response: str | None) -> bool:
         """Check if the LLM response ends with a follow-up question.
 
@@ -886,6 +919,8 @@ class PureLLMConversationEntity(ConversationEntity):
         is_dismissal = _user_clean in _dismissals
         is_greeting = _user_clean in _greetings
 
+        any_tools_called = False
+
         for iteration in range(5):
             payload = {
                 "contents": contents,
@@ -928,6 +963,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     function_calls.append(part["functionCall"])
 
             if function_calls:
+                any_tools_called = True
                 contents.append({"role": "model", "parts": parts})
                 function_responses = []
 
@@ -946,6 +982,13 @@ class PureLLMConversationEntity(ConversationEntity):
                 continue
 
             if text_response:
+                # Guard: block hallucinated action confirmations
+                if not any_tools_called and self._is_hallucinated_action(text_response):
+                    _LOGGER.warning(
+                        "Blocked hallucinated action response (no tools called): %s",
+                        text_response[:120],
+                    )
+                    return "I wasn't able to do that. Could you try again?"
                 return text_response
 
         return "Could not get response."
@@ -1148,7 +1191,17 @@ class PureLLMConversationEntity(ConversationEntity):
 
                 # No tool calls - yield content and we're done
                 if accumulated_content:
-                    yield {"content": accumulated_content}
+                    # Guard: if the model never called any tool but produced
+                    # a response that looks like a device-action confirmation,
+                    # it hallucinated the action.  Replace with a safe fallback.
+                    if not called_tools and self._is_hallucinated_action(accumulated_content):
+                        _LOGGER.warning(
+                            "Blocked hallucinated action response (no tools called): %s",
+                            accumulated_content[:120],
+                        )
+                        yield {"content": "I wasn't able to do that. Could you try again?"}
+                    else:
+                        yield {"content": accumulated_content}
                     return
 
                 _LOGGER.debug("LLM iteration %d: no content and no tool calls, breaking", iteration)
