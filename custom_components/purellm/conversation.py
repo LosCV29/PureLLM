@@ -922,21 +922,17 @@ class PureLLMConversationEntity(ConversationEntity):
                 "generationConfig": {"maxOutputTokens": max_tokens, "temperature": self.temperature},
             }
             if function_declarations:
-                payload["tools"] = [{"functionDeclarations": function_declarations}]
-                if iteration == 0 and not is_dismissal and not is_greeting:
-                    if primary_tool:
-                        # Route to specific tool
-                        payload["tool_config"] = {"function_calling_config": {
-                            "mode": "ANY",
-                            "allowed_function_names": [primary_tool],
-                        }}
-                    elif is_followup:
-                        # Follow-up without clear intent — force any tool
+                if iteration == 0 and not is_dismissal and not is_greeting and primary_tool:
+                    # Filter to just the detected tool (same approach as OpenAI path)
+                    filtered = [fd for fd in function_declarations if fd["name"] == primary_tool]
+                    payload["tools"] = [{"functionDeclarations": filtered}]
+                    payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
+                else:
+                    payload["tools"] = [{"functionDeclarations": function_declarations}]
+                    if iteration == 0 and is_followup and not is_dismissal and not is_greeting:
                         payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
                     else:
                         payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
-                else:
-                    payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
 
             url = f"{self.base_url}/models/{self.model}:generateContent"
             headers = {"x-goog-api-key": self.api_key}
@@ -1149,18 +1145,24 @@ class PureLLMConversationEntity(ConversationEntity):
                 "stream": True,
             }
             if tools:
-                kwargs["tools"] = tools
-                if iteration == 0 and not is_dismissal and not is_greeting:
-                    if primary_tool:
-                        # Route to specific tool — eliminates wrong-tool selection
-                        kwargs["tool_choice"] = {
-                            "type": "function",
-                            "function": {"name": primary_tool}
-                        }
-                    else:
-                        # No clear intent — force any tool call
-                        kwargs["tool_choice"] = "required"
+                if iteration == 0 and not is_dismissal and not is_greeting and primary_tool:
+                    # FILTER tools to just the detected one — reduces schema from
+                    # 24 tools to 1, dramatically cutting token overhead and removing
+                    # the selection problem entirely for 8B models.
+                    kwargs["tools"] = [
+                        t for t in tools
+                        if t.get("function", {}).get("name") == primary_tool
+                    ]
+                    kwargs["tool_choice"] = "required"
+                    _LOGGER.debug("Intent filter: presenting only %s (1 of %d tools)",
+                                  primary_tool, len(tools))
+                elif iteration == 0 and not is_dismissal and not is_greeting:
+                    # No clear intent — present all tools, force any call
+                    kwargs["tools"] = tools
+                    kwargs["tool_choice"] = "required"
                 else:
+                    # Subsequent iterations or dismissals — full tools, auto choice
+                    kwargs["tools"] = tools
                     kwargs["tool_choice"] = "auto"
 
             accumulated_content = ""
