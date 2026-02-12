@@ -537,8 +537,15 @@ class PureLLMConversationEntity(ConversationEntity):
         assistant_message: str,
         extra_system_prompt: str | None = None,
         keep_only_last: bool = False,
+        tools_used: list[str] | None = None,
     ) -> None:
-        """Save a conversation turn to history."""
+        """Save a conversation turn to history.
+
+        When tools_used is provided, the assistant message is prefixed with
+        a tool-call note so the model sees in history that tools WERE called.
+        Without this, history shows "tool-less" exchanges which teaches the
+        model to skip tools on follow-ups (history poisoning).
+        """
         if conversation_id not in self._conversation_history:
             self._conversation_history[conversation_id] = {
                 "messages": [],
@@ -553,6 +560,14 @@ class PureLLMConversationEntity(ConversationEntity):
         if extra_system_prompt:
             data["extra_system_prompt"] = extra_system_prompt
 
+        # Enrich assistant message with tool context to prevent history poisoning.
+        # The model sees "[Called: control_device] Light on." in history, reinforcing
+        # that tools must be called before responding about device state.
+        enriched_assistant = assistant_message
+        if tools_used:
+            tool_note = ", ".join(dict.fromkeys(tools_used))  # dedupe, preserve order
+            enriched_assistant = f"[Called: {tool_note}] {assistant_message}"
+
         # For continuing conversations (shopping list, thermostat, etc.),
         # keep only the last turn. Save the full user message (topic context)
         # but strip the assistant's data — keep only the follow-up question.
@@ -562,8 +577,8 @@ class PureLLMConversationEntity(ConversationEntity):
             # Extract just the follow-up question from the assistant response
             # e.g., "AC is at 72°F. Want me to adjust it?" → "Want me to adjust it?"
             # e.g., "Got it. Anything else?" → "Anything else?"
-            saved_assistant = assistant_message
-            stripped = assistant_message.rstrip()
+            saved_assistant = enriched_assistant
+            stripped = enriched_assistant.rstrip()
             if stripped.endswith("?"):
                 for sep in [". ", "! ", "\n"]:
                     if sep in stripped:
@@ -578,7 +593,7 @@ class PureLLMConversationEntity(ConversationEntity):
         else:
             messages = data["messages"]
             messages.append({"role": "user", "content": user_message})
-            messages.append({"role": "assistant", "content": assistant_message})
+            messages.append({"role": "assistant", "content": enriched_assistant})
 
             # Trim to max history (keep most recent)
             max_messages = MAX_CONVERSATION_HISTORY * 2
@@ -784,6 +799,8 @@ class PureLLMConversationEntity(ConversationEntity):
         max_tokens = self._calculate_max_tokens(user_text)
 
         try:
+            tools_used: list[str] = []
+
             if self.provider == PROVIDER_LM_STUDIO:
                 # Use streaming for local models - faster first-token response
                 _LOGGER.debug("Using streaming for local provider: %s", self.provider)
@@ -791,14 +808,16 @@ class PureLLMConversationEntity(ConversationEntity):
                     user_text, tools, system_prompt, max_tokens, history
                 )
 
-                # Collect streaming response
+                # Collect streaming response + tool tracking
                 final_response = ""
                 async for delta in stream:
                     if "content" in delta:
                         final_response += delta["content"]
+                    if "tools_used" in delta:
+                        tools_used.extend(delta["tools_used"])
 
             elif self.provider == PROVIDER_GOOGLE:
-                final_response = await self._call_google(
+                final_response, tools_used = await self._call_google(
                     user_text, tools, system_prompt, max_tokens, history
                 )
             else:
@@ -831,6 +850,7 @@ class PureLLMConversationEntity(ConversationEntity):
             self._save_conversation_turn(
                 conversation_id, user_text, final_response or "", extra_system_prompt,
                 keep_only_last=keep_listening,
+                tools_used=tools_used,
             )
 
         response = intent.IntentResponse(language=user_input.language)
@@ -849,8 +869,11 @@ class PureLLMConversationEntity(ConversationEntity):
         system_prompt: str,
         max_tokens: int,
         history: list[dict] | None = None,
-    ) -> str:
-        """Simple non-streaming Google Gemini call with conversation history support."""
+    ) -> tuple[str, list[str]]:
+        """Simple non-streaming Google Gemini call with conversation history support.
+
+        Returns (response_text, tools_used_names).
+        """
         function_declarations = []
         for tool in tools:
             func = tool.get("function", {})
@@ -886,6 +909,13 @@ class PureLLMConversationEntity(ConversationEntity):
         is_dismissal = _user_clean in _dismissals
         is_greeting = _user_clean in _greetings
 
+        # Intent-based routing (same logic as OpenAI path)
+        primary_tool = None
+        if tools and not is_dismissal and not is_greeting:
+            primary_tool = self._detect_primary_tool(user_text, tools)
+
+        tools_used_names: list[str] = []
+
         for iteration in range(5):
             payload = {
                 "contents": contents,
@@ -893,9 +923,18 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             if function_declarations:
                 payload["tools"] = [{"functionDeclarations": function_declarations}]
-                # Force tool calling on follow-up action requests
-                if is_followup and not is_dismissal and not is_greeting and iteration == 0:
-                    payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
+                if iteration == 0 and not is_dismissal and not is_greeting:
+                    if primary_tool:
+                        # Route to specific tool
+                        payload["tool_config"] = {"function_calling_config": {
+                            "mode": "ANY",
+                            "allowed_function_names": [primary_tool],
+                        }}
+                    elif is_followup:
+                        # Follow-up without clear intent — force any tool
+                        payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
+                    else:
+                        payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
                 else:
                     payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
 
@@ -909,13 +948,13 @@ class PureLLMConversationEntity(ConversationEntity):
                 if resp.status != 200:
                     error = await resp.text()
                     _LOGGER.error("Google API error %d: %s", resp.status, error)
-                    return "Error calling Google API."
+                    return ("Error calling Google API.", tools_used_names)
 
                 data = await resp.json()
 
             candidates = data.get("candidates", [])
             if not candidates:
-                return "No response from Google."
+                return ("No response from Google.", tools_used_names)
 
             parts = candidates[0].get("content", {}).get("parts", [])
             text_response = ""
@@ -932,6 +971,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 function_responses = []
 
                 for fc in function_calls:
+                    tools_used_names.append(fc["name"])
                     result = await self._execute_tool(fc["name"], fc.get("args", {}))
                     if isinstance(result, dict) and "response_text" in result:
                         resp_content = result["response_text"]
@@ -946,13 +986,112 @@ class PureLLMConversationEntity(ConversationEntity):
                 continue
 
             if text_response:
-                return text_response
+                return (text_response, tools_used_names)
 
-        return "Could not get response."
+        return ("Could not get response.", tools_used_names)
 
     def _calculate_max_tokens(self, user_text: str) -> int:
         """Return configured max_tokens - no caps for local GPU."""
         return self.max_tokens
+
+    # =========================================================================
+    # Intent-Based Tool Routing
+    # =========================================================================
+
+    @staticmethod
+    def _detect_primary_tool(user_text: str, available_tools: list[dict]) -> str | None:
+        """Detect the most likely tool from user text using keyword matching.
+
+        Returns a specific tool name when intent is clear, None when ambiguous.
+        Used with tool_choice to point the model at the correct tool instead of
+        generic "required" which lets 8B models pick the easiest/wrong tool.
+
+        Only returns a tool name if that tool is actually in the available list.
+        """
+        text = user_text.lower().strip()
+        available_names = {t.get("function", {}).get("name") for t in available_tools}
+
+        detected = None
+
+        # --- Device control (most common, most problematic) ---
+        _device_actions = [
+            "turn on", "turn off", "switch on", "switch off",
+            "dim ", "brighten", "set brightness", "set the brightness",
+            "lock the", "unlock the",
+            "open the ", "close the ", "stop the ",
+            "pause the tv", "resume the tv", "unpause",
+            "mute the", "unmute the", "volume up", "volume down",
+        ]
+        if any(kw in text for kw in _device_actions):
+            detected = "control_device"
+
+        # --- Thermostat ---
+        elif any(kw in text for kw in [
+            "thermostat", "raise the temp", "lower the temp", "set the temp",
+            "how warm is it", "how cold is it inside", "set the ac",
+            "turn on the heat", "turn off the ac", "turn on the ac",
+            "turn off the heat",
+        ]):
+            detected = "control_thermostat"
+
+        # --- Weather ---
+        elif any(kw in text for kw in [
+            "weather", "forecast", "temperature outside", "is it cold outside",
+            "is it hot outside", "gonna rain", "going to rain", "sunrise", "sunset",
+        ]):
+            detected = "get_weather_forecast"
+
+        # --- Music ---
+        elif any(kw in text for kw in [
+            "play music", "play some", "play the song", "play the album",
+            "shuffle ", "what's playing", "whats playing", "skip the song",
+            "next song", "previous song", "restart the song",
+        ]):
+            detected = "control_music"
+
+        # --- Timer ---
+        elif any(kw in text for kw in [
+            "set a timer", "start a timer", "timer for", "cancel the timer",
+            "how much time", "pause the timer", "resume the timer",
+        ]):
+            detected = "control_timer"
+
+        # --- Lists ---
+        elif any(kw in text for kw in [
+            "add to the list", "add to my list", "shopping list",
+            "to-do list", "todo list", "what's on my list", "show my list",
+        ]):
+            detected = "manage_list"
+
+        # --- Device status check ---
+        elif any(kw in text for kw in [
+            "is the ", "are the ", "check the ", "status of",
+        ]) and any(kw in text for kw in [
+            "on", "off", "open", "closed", "locked", "unlocked", "running",
+        ]):
+            detected = "check_device_status"
+
+        # --- Sports ---
+        elif any(kw in text for kw in [
+            "score", "game tonight", "game today", "game tomorrow",
+            "last game", "next game", "standings", "play today",
+            "play tonight", "play tomorrow",
+        ]):
+            detected = "get_sports_info"
+
+        # --- Camera ---
+        elif any(kw in text for kw in [
+            "check the camera", "check camera", "look at the camera",
+            "what's on the camera", "who's at the", "who is at the",
+        ]):
+            detected = "check_camera"
+
+        # Only return if the detected tool is actually available
+        if detected and detected in available_names:
+            _LOGGER.debug("Intent routing: '%s' → %s", user_text[:50], detected)
+            return detected
+
+        return None
 
     # =========================================================================
     # Streaming LLM Provider Methods
@@ -980,7 +1119,6 @@ class PureLLMConversationEntity(ConversationEntity):
         _greetings = {"hi", "hey", "hello", "yo", "sup", "whats up", "what's up",
                       "howdy", "hola", "good morning", "good afternoon",
                       "good evening", "good night", "what up", "wassup", "whaddup"}
-        is_followup = bool(history)
         _user_clean = user_text.lower().strip().rstrip(".!,?")
         is_dismissal = _user_clean in _dismissals
         is_greeting = _user_clean in _greetings
@@ -991,7 +1129,15 @@ class PureLLMConversationEntity(ConversationEntity):
         # Add current user message
         messages.append({"role": "user", "content": user_text})
 
+        # Intent-based tool routing: detect the specific tool the user likely
+        # needs so we can use tool_choice with a specific function name instead
+        # of generic "required" (which lets 8B models pick the wrong/easiest tool).
+        primary_tool = None
+        if tools and not is_dismissal and not is_greeting:
+            primary_tool = self._detect_primary_tool(user_text, tools)
+
         called_tools: set[str] = set()
+        tools_used_names: list[str] = []  # Track tool names for history enrichment
 
         for iteration in range(5):  # Max 5 tool iterations
             kwargs = {
@@ -1004,13 +1150,16 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             if tools:
                 kwargs["tools"] = tools
-                # Force tool calling on the first iteration.
-                # Local LLMs fabricate answers without calling tools.
-                # "required" forces at least one tool call before responding.
-                # Skip for dismissals ("done", "no") and greetings ("yo", "hey")
-                # which need no tool.
-                if not is_dismissal and not is_greeting and iteration == 0:
-                    kwargs["tool_choice"] = "required"
+                if iteration == 0 and not is_dismissal and not is_greeting:
+                    if primary_tool:
+                        # Route to specific tool — eliminates wrong-tool selection
+                        kwargs["tool_choice"] = {
+                            "type": "function",
+                            "function": {"name": primary_tool}
+                        }
+                    else:
+                        # No clear intent — force any tool call
+                        kwargs["tool_choice"] = "required"
                 else:
                     kwargs["tool_choice"] = "auto"
 
@@ -1112,6 +1261,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     tool_tasks = []
                     for tool_call in unique_tool_calls:
                         tool_name = tool_call["function"]["name"]
+                        tools_used_names.append(tool_name)
                         try:
                             arguments = json.loads(tool_call["function"]["arguments"])
                         except json.JSONDecodeError:
@@ -1148,6 +1298,9 @@ class PureLLMConversationEntity(ConversationEntity):
 
                 # No tool calls - yield content and we're done
                 if accumulated_content:
+                    # Yield tool names first so caller can enrich history
+                    if tools_used_names:
+                        yield {"tools_used": tools_used_names}
                     yield {"content": accumulated_content}
                     return
 
