@@ -264,14 +264,14 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== DEVICE CONTROL (always enabled - LLM fallback) =====
     tools.append(_tool(
         "control_device",
-        "Control devices (lights, switches, locks, fans, blinds, covers, media_player). Use device name for fuzzy matching. Blinds/covers: open/close/stop/set_position. Media: pause/resume/play/mute/unmute. ALWAYS use this for specific device commands (e.g. 'resume the TV', 'pause the TV').",
+        "Control devices (lights, switches, locks, fans, blinds, covers, media_player). Use device name for fuzzy matching. Blinds/covers: open/close/stop/set_position/favorite. Use 'favorite' action when user says 'favorite position' or 'preset position' for blinds/covers. Media: pause/resume/play/mute/unmute. ALWAYS use this for specific device commands (e.g. 'resume the TV', 'pause the TV').",
         {
             "device": {"type": "string", "description": "Device name (fuzzy matched)"},
             "entity_id": {"type": "string", "description": "Exact entity ID (optional)"},
             "entity_ids": {"type": "array", "items": {"type": "string"}, "description": "Multiple entity IDs"},
             "area": {"type": "string", "description": "Control all in area"},
             "domain": {"type": "string", "enum": ["light", "switch", "lock", "cover", "fan", "media_player", "climate", "vacuum", "scene", "script", "all"], "description": "Device type filter"},
-            "action": {"type": "string", "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "set_hvac_mode", "start", "dock", "locate", "return_home", "activate"], "description": "Action"},
+            "action": {"type": "string", "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "set_position", "favorite", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "set_hvac_mode", "start", "dock", "locate", "return_home", "activate"], "description": "Action"},
             "brightness": {"type": "integer", "description": "0-100"},
             "color": {"type": "string", "description": "Color name"},
             "color_temp": {"type": "integer", "description": "Kelvin (2700-6500)"},
