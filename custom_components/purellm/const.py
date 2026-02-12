@@ -212,6 +212,15 @@ DEFAULT_NOTIFY_ON_CAMERA: Final = True
 DEFAULT_NOTIFY_ON_SEARCH: Final = True
 
 # =============================================================================
+# SHADE ENTITIES - Cover entities with favorite positions
+# =============================================================================
+CONF_SHADE_ENTITIES: Final = "shade_entities"
+
+# Default shade entities (empty JSON list)
+# Format: JSON list of objects with name (voice name), entity_id (cover entity), favorite_position (0-100)
+DEFAULT_SHADE_ENTITIES: Final = "[]"
+
+# =============================================================================
 # VOICE SCRIPTS - User-configurable trigger phrases mapped to scripts
 # =============================================================================
 CONF_VOICE_SCRIPTS: Final = "voice_scripts"

@@ -70,6 +70,8 @@ from .const import (
     CONF_NOTIFY_ON_RESTAURANTS,
     CONF_NOTIFY_ON_CAMERA,
     CONF_NOTIFY_ON_SEARCH,
+    CONF_SHADE_ENTITIES,
+    DEFAULT_SHADE_ENTITIES,
     CONF_VOICE_SCRIPTS,
     DEFAULT_VOICE_SCRIPTS,
     CONF_FRIGATE_URL,
@@ -306,6 +308,9 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Voice scripts configuration
         self.voice_scripts = _parse_json_list(CONF_VOICE_SCRIPTS, DEFAULT_VOICE_SCRIPTS)
+
+        # Shade entities configuration (cover entities with favorite positions)
+        self.shade_entities = _parse_json_list(CONF_SHADE_ENTITIES, DEFAULT_SHADE_ENTITIES)
 
         # Frigate configuration - camera names and RTSP URLs are fetched
         # directly from Frigate's API at runtime (source of truth).
@@ -712,6 +717,101 @@ class PureLLMConversationEntity(ConversationEntity):
         )
 
     # =========================================================================
+    # Shade Favorite Position (Deterministic Intercept)
+    # =========================================================================
+
+    async def _try_shade_favorite(
+        self,
+        user_text: str,
+        user_input: conversation.ConversationInput,
+        conversation_id: str,
+    ) -> conversation.ConversationResult | None:
+        """Intercept 'favorite position' commands for configured shade entities.
+
+        Bypasses LLM tool calling entirely — pure string matching + direct entity press.
+        Returns a ConversationResult if matched, or None to fall through to LLM.
+        """
+        if not self.shade_entities:
+            return None
+
+        text = user_text.lower().strip()
+
+        # Must contain a favorite/preset position trigger phrase
+        trigger_phrases = ["favorite position", "preset position", "favorite the", "preset the"]
+        if not any(phrase in text for phrase in trigger_phrases):
+            return None
+
+        # Find which shade entity matches
+        matched_shade = None
+        for shade in self.shade_entities:
+            name = shade.get("name", "").lower().strip()
+            if name and name in text:
+                matched_shade = shade
+                break
+
+        # If no specific name matched but only one shade configured, use it
+        if not matched_shade and len(self.shade_entities) == 1:
+            matched_shade = self.shade_entities[0]
+
+        if not matched_shade:
+            return None
+
+        favorite_entity = matched_shade.get("favorite_entity", "")
+        friendly_name = matched_shade.get("name", "shade").title()
+
+        if not favorite_entity:
+            return None
+
+        # Determine domain and service from the favorite entity
+        domain = favorite_entity.split(".")[0] if "." in favorite_entity else ""
+        if not domain:
+            return None
+
+        # Execute the appropriate service call
+        try:
+            if domain == "button":
+                await self.hass.services.async_call(
+                    "button", "press",
+                    {"entity_id": favorite_entity},
+                    blocking=False,
+                )
+            elif domain == "scene":
+                await self.hass.services.async_call(
+                    "scene", "turn_on",
+                    {"entity_id": favorite_entity},
+                    blocking=False,
+                )
+            elif domain == "script":
+                await self.hass.services.async_call(
+                    "script", "turn_on",
+                    {"entity_id": favorite_entity},
+                    blocking=False,
+                )
+            else:
+                # Generic fallback — try turn_on
+                await self.hass.services.async_call(
+                    domain, "turn_on",
+                    {"entity_id": favorite_entity},
+                    blocking=False,
+                )
+
+            _LOGGER.info(
+                "Shade favorite: activated %s for %s",
+                favorite_entity, friendly_name,
+            )
+            response_text = f"{friendly_name} set to favorite position."
+        except Exception as err:
+            _LOGGER.error("Error setting shade favorite for %s: %s", favorite_entity, err)
+            response_text = f"Sorry, I couldn't set the {friendly_name} position."
+
+        response = intent.IntentResponse(language=user_input.language)
+        response.async_set_speech(response_text)
+        return conversation.ConversationResult(
+            response=response,
+            conversation_id=conversation_id,
+        )
+
+    # =========================================================================
     # Follow-up Conversation (Continuing Conversation)
     # =========================================================================
 
@@ -774,6 +874,11 @@ class PureLLMConversationEntity(ConversationEntity):
         )
         if ask_act_result is not None:
             return ask_act_result
+
+        # --- Shade favorite position: deterministic intercept (no LLM needed) ---
+        shade_result = await self._try_shade_favorite(user_text, user_input, conversation_id)
+        if shade_result is not None:
+            return shade_result
 
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
@@ -1003,8 +1108,7 @@ class PureLLMConversationEntity(ConversationEntity):
             "open the ", "close the ", "stop the ",
             "pause the tv", "resume the tv", "unpause",
             "mute the", "unmute the", "volume up", "volume down",
-            "favorite position", "preset position", "set position",
-            "set the position", "favorite the", "preset the",
+            "set position", "set the position",
         ]
         if any(kw in text for kw in _device_actions):
             detected = "control_device"
