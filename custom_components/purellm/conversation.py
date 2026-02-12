@@ -95,10 +95,7 @@ from .const import (
     DEFAULT_ENABLE_WEATHER,
     DEFAULT_ENABLE_WIKIPEDIA,
     DEFAULT_ENABLE_SEARCH,
-    DEFAULT_MAX_TOKENS,
     DEFAULT_TAVILY_API_KEY,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_TOP_P,
     DEFAULT_PROVIDER,
     DEFAULT_ROOM_PLAYER_MAPPING,
     DEFAULT_SYSTEM_PROMPT,
@@ -221,9 +218,9 @@ class PureLLMConversationEntity(ConversationEntity):
         self.provider = config.get(CONF_PROVIDER, DEFAULT_PROVIDER)
         self.api_key = config.get(CONF_API_KEY, DEFAULT_API_KEY)
         self.model = config.get(CONF_MODEL, "")
-        self.temperature = config.get(CONF_TEMPERATURE, DEFAULT_TEMPERATURE)
-        self.max_tokens = config.get(CONF_MAX_TOKENS, DEFAULT_MAX_TOKENS)
-        self.top_p = config.get(CONF_TOP_P, DEFAULT_TOP_P)
+        self.temperature = config.get(CONF_TEMPERATURE, 0.7)
+        self.max_tokens = config.get(CONF_MAX_TOKENS, 2000)
+        self.top_p = config.get(CONF_TOP_P, 0.95)
 
         # Base URL
         base_url = config.get(CONF_BASE_URL)
@@ -717,54 +714,6 @@ class PureLLMConversationEntity(ConversationEntity):
     # Follow-up Conversation (Continuing Conversation)
     # =========================================================================
 
-    # Tools that mutate device/entity state (vs read-only query tools)
-    _ACTION_TOOLS = frozenset({
-        "control_device", "control_thermostat", "control_music",
-        "control_timer", "manage_list", "create_reminder", "control_sofabaton",
-    })
-
-    @staticmethod
-    def _is_hallucinated_action(response: str) -> bool:
-        """Check if a response claims a device action was performed.
-
-        Used to detect hallucinations where the LLM says "Done" or
-        "Shade opened" without having called a device-control tool.
-        The caller must verify that no *action* tool was invoked; this
-        method only checks the *language* of the response.
-        """
-        resp = response.lower().strip().rstrip(".")
-        # Short confirmations the prompt asks for ("Done.", "Light on.", etc.)
-        if len(resp) < 80:
-            action_phrases = (
-                "done", "got it", "all set", "is now",
-                "has been", "turned on", "turned off",
-                "light on", "light off", "lights on", "lights off",
-                "shade opened", "shade closed", "shades opened", "shades closed",
-                "blind opened", "blind closed", "blinds opened", "blinds closed",
-                "cover opened", "cover closed",
-                "lock locked", "lock unlocked", "locked", "unlocked",
-                "fan on", "fan off",
-                "set to", "adjusted", "now at",
-                "favorite position", "preset position",
-                "opened", "closed", "stopped",
-                "is on", "is off",
-            )
-            if any(phrase in resp for phrase in action_phrases):
-                return True
-        return False
-
-    @classmethod
-    def _called_action_tool(cls, called_tools: set[str]) -> bool:
-        """Check if any called tool is a state-mutating action tool.
-
-        called_tools stores 'tool_name:arguments' strings.  We only
-        care about the tool name prefix.
-        """
-        return any(
-            tool_key.split(":")[0] in cls._ACTION_TOOLS
-            for tool_key in called_tools
-        )
-
     @staticmethod
     def _response_has_follow_up(response: str | None) -> bool:
         """Check if the LLM response ends with a follow-up question.
@@ -937,8 +886,6 @@ class PureLLMConversationEntity(ConversationEntity):
         is_dismissal = _user_clean in _dismissals
         is_greeting = _user_clean in _greetings
 
-        called_tool_names: set[str] = set()
-
         for iteration in range(5):
             payload = {
                 "contents": contents,
@@ -985,7 +932,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 function_responses = []
 
                 for fc in function_calls:
-                    called_tool_names.add(fc["name"])
                     result = await self._execute_tool(fc["name"], fc.get("args", {}))
                     if isinstance(result, dict) and "response_text" in result:
                         resp_content = result["response_text"]
@@ -1000,16 +946,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 continue
 
             if text_response:
-                # Guard: block hallucinated action confirmations when no
-                # action tool was called (covers both "no tools at all" and
-                # "only read-only tools like get_current_datetime").
-                any_action_tool = bool(called_tool_names & self._ACTION_TOOLS)
-                if not any_action_tool and self._is_hallucinated_action(text_response):
-                    _LOGGER.warning(
-                        "Blocked hallucinated action (no action tool, called=%s): %s",
-                        called_tool_names or "none", text_response[:120],
-                    )
-                    return "I wasn't able to do that. Could you try again?"
                 return text_response
 
         return "Could not get response."
@@ -1212,18 +1148,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
                 # No tool calls - yield content and we're done
                 if accumulated_content:
-                    # Guard: if no device-action tool was called but the
-                    # response looks like a device-action confirmation, the
-                    # model hallucinated.  This catches both "no tools at all"
-                    # and "called a read-only tool then fabricated an action".
-                    if not self._called_action_tool(called_tools) and self._is_hallucinated_action(accumulated_content):
-                        _LOGGER.warning(
-                            "Blocked hallucinated action (no action tool called, tools=%s): %s",
-                            called_tools or "none", accumulated_content[:120],
-                        )
-                        yield {"content": "I wasn't able to do that. Could you try again?"}
-                    else:
-                        yield {"content": accumulated_content}
+                    yield {"content": accumulated_content}
                     return
 
                 _LOGGER.debug("LLM iteration %d: no content and no tool calls, breaking", iteration)
