@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -723,8 +724,16 @@ class PureLLMConversationEntity(ConversationEntity):
         "control_timer", "manage_list", "create_reminder", "control_sofabaton",
     })
 
-    @staticmethod
-    def _is_hallucinated_action(response: str) -> bool:
+    # Regex to strip <think>…</think> blocks local models may emit
+    _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+    @classmethod
+    def _strip_think_tags(cls, text: str) -> str:
+        """Remove <think>…</think> reasoning blocks from LLM output."""
+        return cls._THINK_RE.sub("", text).strip()
+
+    @classmethod
+    def _is_hallucinated_action(cls, response: str) -> bool:
         """Check if a response claims a device action was performed.
 
         Used to detect hallucinations where the LLM says "Done" or
@@ -732,7 +741,8 @@ class PureLLMConversationEntity(ConversationEntity):
         The caller must verify that no *action* tool was invoked; this
         method only checks the *language* of the response.
         """
-        resp = response.lower().strip().rstrip(".")
+        # Strip <think> tags so reasoning tokens don't inflate the length
+        resp = cls._strip_think_tags(response).lower().strip().rstrip(".")
         # Short confirmations the prompt asks for ("Done.", "Light on.", etc.)
         if len(resp) < 80:
             action_phrases = (
@@ -854,6 +864,10 @@ class PureLLMConversationEntity(ConversationEntity):
                 )
             else:
                 final_response = "Unknown provider."
+
+            # Strip <think>…</think> blocks local models may emit
+            if final_response:
+                final_response = self._strip_think_tags(final_response)
 
             _LOGGER.info("PureLLM response (%d chars): %s", len(final_response) if final_response else 0, (final_response or "")[:100])
 
