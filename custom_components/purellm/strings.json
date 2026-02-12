@@ -108,7 +108,7 @@
           "select_shade": "Select Existing Shade",
           "shade_name": "Name (what you say, e.g., 'blinds', 'bedroom shade')",
           "shade_entity": "Cover Entity",
-          "favorite_position": "Favorite Position (0-100%)",
+          "favorite_entity": "Favorite Position Entity (button, scene, or script to activate)",
           "action": "Action"
         }
       },

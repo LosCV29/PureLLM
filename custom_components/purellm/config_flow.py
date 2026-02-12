@@ -875,11 +875,12 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_shade_entities(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle shade/cover entity configuration with favorite positions.
+        """Handle shade/cover entity configuration with favorite position entities.
 
-        Maps cover entities to voice-friendly names and configurable favorite positions.
+        Maps cover entities to voice-friendly names and a favorite position entity
+        (e.g., a button entity like button.shade_my_position).
         When user says "favorite position for X", PureLLM bypasses LLM tool calling
-        and directly calls cover.set_cover_position with the configured value.
+        and directly presses the configured favorite entity.
         """
         current = {**self._entry.data, **self._entry.options}
         current_shades_json = current.get(CONF_SHADE_ENTITIES, DEFAULT_SHADE_ENTITIES)
@@ -894,7 +895,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             selected = user_input.get("select_shade", "")
             name = user_input.get("shade_name", "").strip().lower()
             entity_id = user_input.get("shade_entity", "")
-            favorite_pos = user_input.get("favorite_position")
+            favorite_entity = user_input.get("favorite_entity", "")
             action = user_input.get("action", "add")
 
             # Find index of selected shade
@@ -911,13 +912,13 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 shades_list[selected_idx] = {
                     "name": name if name else selected,
                     "entity_id": entity_id or shades_list[selected_idx].get("entity_id", ""),
-                    "favorite_position": int(favorite_pos) if favorite_pos is not None else shades_list[selected_idx].get("favorite_position", 50),
+                    "favorite_entity": favorite_entity or shades_list[selected_idx].get("favorite_entity", ""),
                 }
             elif action == "add" and name and entity_id:
                 shades_list.append({
                     "name": name,
                     "entity_id": entity_id,
-                    "favorite_position": int(favorite_pos) if favorite_pos is not None else 50,
+                    "favorite_entity": favorite_entity,
                 })
             elif not selected and not name and not entity_id:
                 # Empty submit - return to menu
@@ -940,19 +941,22 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             for s in shades_list:
                 name = s.get("name", "")
                 eid = s.get("entity_id", "")
-                pos = s.get("favorite_position", 50)
-                mapping_lines.append(f"**{name}** → {eid} (favorite: {pos}%)")
+                fav = s.get("favorite_entity", "")
+                parts = [f"cover: {eid}"]
+                if fav:
+                    parts.append(f"favorite: {fav}")
+                mapping_lines.append(f"**{name}** → {', '.join(parts)}")
             description = "**Current shade entities:**\n" + "\n".join(mapping_lines) + "\n\nSelect one to edit/delete, or add a new one below."
         else:
-            description = "No shade entities configured. Add covers/blinds here to enable voice-controlled favorite positions.\n\n**How it works:** Say 'favorite position for [name]' and PureLLM will set the cover to your configured position — no LLM tool calling needed."
+            description = "No shade entities configured. Add covers/blinds here to enable voice-controlled favorite positions.\n\n**How it works:** Say 'favorite position for [name]' and PureLLM will press your configured favorite position entity — no LLM tool calling needed."
 
         # Build select options for existing shades
         select_options = []
         for s in shades_list:
             name = s.get("name", "")
-            eid = s.get("entity_id", "")
-            pos = s.get("favorite_position", 50)
-            select_options.append(selector.SelectOptionDict(value=name, label=f"{name} → {pos}%"))
+            fav = s.get("favorite_entity", "")
+            label = f"{name} → {fav}" if fav else name
+            select_options.append(selector.SelectOptionDict(value=name, label=label))
 
         return self.async_show_form(
             step_id="shade_entities",
@@ -976,13 +980,9 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                             multiple=False,
                         )
                     ),
-                    vol.Optional("favorite_position", default=50): selector.NumberSelector(
-                        selector.NumberSelectorConfig(
-                            min=0,
-                            max=100,
-                            step=1,
-                            unit_of_measurement="%",
-                            mode=selector.NumberSelectorMode.SLIDER,
+                    vol.Optional("favorite_entity"): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            multiple=False,
                         )
                     ),
                     vol.Optional("action", default="add"): selector.SelectSelector(

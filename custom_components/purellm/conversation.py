@@ -728,7 +728,7 @@ class PureLLMConversationEntity(ConversationEntity):
     ) -> conversation.ConversationResult | None:
         """Intercept 'favorite position' commands for configured shade entities.
 
-        Bypasses LLM tool calling entirely — pure string matching + direct service call.
+        Bypasses LLM tool calling entirely — pure string matching + direct entity press.
         Returns a ConversationResult if matched, or None to fall through to LLM.
         """
         if not self.shade_entities:
@@ -756,33 +756,52 @@ class PureLLMConversationEntity(ConversationEntity):
         if not matched_shade:
             return None
 
-        entity_id = matched_shade.get("entity_id", "")
-        favorite_pos = matched_shade.get("favorite_position", 50)
+        favorite_entity = matched_shade.get("favorite_entity", "")
         friendly_name = matched_shade.get("name", "shade").title()
 
-        if not entity_id:
+        if not favorite_entity:
             return None
 
-        # Check entity exists
-        state = self.hass.states.get(entity_id)
-        if not state:
-            _LOGGER.warning("Shade entity %s not found in HA", entity_id)
+        # Determine domain and service from the favorite entity
+        domain = favorite_entity.split(".")[0] if "." in favorite_entity else ""
+        if not domain:
             return None
 
-        # Execute the service call directly
+        # Execute the appropriate service call
         try:
-            await self.hass.services.async_call(
-                "cover", "set_cover_position",
-                {"entity_id": entity_id, "position": favorite_pos},
-                blocking=False,
-            )
+            if domain == "button":
+                await self.hass.services.async_call(
+                    "button", "press",
+                    {"entity_id": favorite_entity},
+                    blocking=False,
+                )
+            elif domain == "scene":
+                await self.hass.services.async_call(
+                    "scene", "turn_on",
+                    {"entity_id": favorite_entity},
+                    blocking=False,
+                )
+            elif domain == "script":
+                await self.hass.services.async_call(
+                    "script", "turn_on",
+                    {"entity_id": favorite_entity},
+                    blocking=False,
+                )
+            else:
+                # Generic fallback — try turn_on
+                await self.hass.services.async_call(
+                    domain, "turn_on",
+                    {"entity_id": favorite_entity},
+                    blocking=False,
+                )
+
             _LOGGER.info(
-                "Shade favorite: set %s (%s) to position %d%%",
-                friendly_name, entity_id, favorite_pos,
+                "Shade favorite: activated %s for %s",
+                favorite_entity, friendly_name,
             )
             response_text = f"{friendly_name} set to favorite position."
         except Exception as err:
-            _LOGGER.error("Error setting shade favorite for %s: %s", entity_id, err)
+            _LOGGER.error("Error setting shade favorite for %s: %s", favorite_entity, err)
             response_text = f"Sorry, I couldn't set the {friendly_name} position."
 
         response = intent.IntentResponse(language=user_input.language)
