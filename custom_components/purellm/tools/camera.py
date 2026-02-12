@@ -25,6 +25,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # Video clip settings
 VIDEO_CLIP_DURATION = 5  # seconds of video to capture
+# Retry settings for RTSP capture (handles go2rtc cold-start)
+MAX_RETRIES_PER_SOURCE = 3
+RETRY_DELAY_SECONDS = 3  # delay between retries to let go2rtc warm up
 
 
 async def fetch_frigate_cameras(
@@ -34,9 +37,9 @@ async def fetch_frigate_cameras(
     """Fetch camera names and RTSP input URLs from Frigate's /api/config.
 
     Returns a dict mapping ``camera_name -> rtsp_url``.  The RTSP URL is
-    taken from the first ``ffmpeg`` input that has the ``record`` role,
-    falling back to the first input with any ``detect`` role, then the
-    first input found.
+    taken from the first ``ffmpeg`` input that has the ``detect`` role
+    (sub stream — lighter, connects faster), falling back to ``record``
+    (main stream), then the first input found.
     """
     if not frigate_url:
         return {}
@@ -60,17 +63,18 @@ async def fetch_frigate_cameras(
             cameras[cam_name] = ""
             continue
 
-        # Prefer input with "record" role, then "detect", then first available
+        # Prefer detect (sub stream) — lighter, connects faster, sufficient
+        # for vision LLM analysis.  Fall back to record (main), then any.
         best_url = ""
         for inp in inputs:
             path = inp.get("path", "")
             if not path:
                 continue
             roles = inp.get("roles", [])
-            if "record" in roles:
+            if "detect" in roles:
                 best_url = path
                 break
-            if "detect" in roles and not best_url:
+            if "record" in roles and not best_url:
                 best_url = path
             if not best_url:
                 best_url = path
@@ -151,7 +155,7 @@ async def _capture_video_clip(
     cmd = [
         "ffmpeg", "-y",
         "-rtsp_transport", "tcp",
-        "-stimeout", "5000000",
+        "-stimeout", "10000000",
         "-t", str(duration),
         "-i", rtsp_url,
         "-c:v", "libx264",
@@ -306,8 +310,6 @@ async def _analyze_video_with_llm(
         return None
 
 
-
-
 def _save_snapshot_sync(config_dir: str, frigate_name: str, image_bytes: bytes) -> str:
     """Save snapshot to HA's www directory and return the local URL (sync)."""
     www_dir = os.path.join(config_dir, "www", "purellm")
@@ -386,15 +388,19 @@ async def check_camera(
     # Use Frigate's go2rtc restream instead of the NVR's direct RTSP URL.
     # This avoids opening a competing RTSP connection to the NVR which
     # causes intermittent failures when the NVR's connection limit is hit.
+    # Prefer the sub stream — lower res, connects faster, plenty for LLM.
     frigate_host = urlparse(frigate_url).hostname
-    rtsp_url = f"rtsp://{frigate_host}:8554/{camera_name}"
+    rtsp_url_sub = f"rtsp://{frigate_host}:8554/{camera_name}_sub"
+    rtsp_url_main = f"rtsp://{frigate_host}:8554/{camera_name}"
 
     # Build ordered list of RTSP URLs to try for video capture.
-    # 1. go2rtc restream (preferred — avoids competing NVR connections)
-    # 2. Direct NVR RTSP URL from Frigate config (if go2rtc is unavailable)
-    # 3. Manual override from camera_rtsp_urls config (if provided)
+    # 1. go2rtc sub stream (preferred — fast, lightweight)
+    # 2. go2rtc main stream (fallback if sub not available)
+    # 3. Direct RTSP URL from Frigate config (detect/sub preferred)
+    # 4. Manual override from camera_rtsp_urls config (if provided)
     rtsp_candidates: list[tuple[str, str]] = []
-    rtsp_candidates.append(("go2rtc", rtsp_url))
+    rtsp_candidates.append(("go2rtc-sub", rtsp_url_sub))
+    rtsp_candidates.append(("go2rtc-main", rtsp_url_main))
 
     direct_rtsp = frigate_cameras.get(camera_name, "")
     if direct_rtsp:
@@ -407,19 +413,43 @@ async def check_camera(
         video_clip = None
         used_source = ""
 
+        # Retry each RTSP source multiple times with delays.
+        # go2rtc opens the upstream connection lazily — the first attempt
+        # triggers the connect but ffmpeg may time out before the stream
+        # is ready.  Retrying after a short delay lets go2rtc buffer.
         for source_label, candidate_url in rtsp_candidates:
-            _LOGGER.info(
-                "Capturing %ds video clip from %s via %s (url=%s)",
-                VIDEO_CLIP_DURATION, camera_name, source_label, candidate_url,
-            )
-            video_clip = await _capture_video_clip(candidate_url, VIDEO_CLIP_DURATION)
+            for attempt in range(1, MAX_RETRIES_PER_SOURCE + 1):
+                _LOGGER.info(
+                    "Capturing %ds video clip from %s via %s attempt %d/%d (url=%s)",
+                    VIDEO_CLIP_DURATION, camera_name, source_label,
+                    attempt, MAX_RETRIES_PER_SOURCE, candidate_url,
+                )
+                video_clip = await _capture_video_clip(candidate_url, VIDEO_CLIP_DURATION)
+                if video_clip:
+                    used_source = source_label
+                    break
+                if attempt < MAX_RETRIES_PER_SOURCE:
+                    _LOGGER.info(
+                        "Attempt %d/%d via %s failed for %s, retrying in %ds",
+                        attempt, MAX_RETRIES_PER_SOURCE, source_label,
+                        camera_name, RETRY_DELAY_SECONDS,
+                    )
+                    await asyncio.sleep(RETRY_DELAY_SECONDS)
             if video_clip:
-                used_source = source_label
                 break
             _LOGGER.warning(
-                "Video capture via %s failed for %s, trying next source",
-                source_label, camera_name,
+                "All %d attempts via %s failed for %s, trying next source",
+                MAX_RETRIES_PER_SOURCE, source_label, camera_name,
             )
+
+        # Fetch snapshot for display in notifications
+        snapshot_url = None
+        snapshot = await _fetch_frigate_snapshot(session, frigate_url, camera_name)
+        if snapshot and config_dir:
+            try:
+                snapshot_url = await _save_snapshot(config_dir, camera_name, snapshot)
+            except Exception as err:
+                _LOGGER.warning("Failed to save snapshot: %s", err)
 
         if not video_clip:
             tried = ", ".join(f"{lbl}={u}" for lbl, u in rtsp_candidates)
@@ -431,16 +461,8 @@ async def check_camera(
                 "error": f"Failed to capture video from {friendly_name} camera. "
                          f"Could not connect to any RTSP stream. "
                          f"Tried: {', '.join(lbl for lbl, _ in rtsp_candidates)}.",
+                "snapshot_url": snapshot_url,
             }
-
-        # Fetch snapshot for display in notifications
-        snapshot_url = None
-        snapshot = await _fetch_frigate_snapshot(session, frigate_url, camera_name)
-        if snapshot and config_dir:
-            try:
-                snapshot_url = await _save_snapshot(config_dir, camera_name, snapshot)
-            except Exception as err:
-                _LOGGER.warning("Failed to save snapshot: %s", err)
 
         # Analyze with vision LLM
         _LOGGER.info(
