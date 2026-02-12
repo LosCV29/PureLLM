@@ -108,6 +108,9 @@ from .const import (
     DEFAULT_NOTIFY_ON_PLACES,
     DEFAULT_NOTIFY_ON_RESTAURANTS,
     DEFAULT_NOTIFY_ON_SEARCH,
+    # Shade Entities
+    CONF_SHADE_ENTITIES,
+    DEFAULT_SHADE_ENTITIES,
     # Voice Scripts
     CONF_VOICE_SCRIPTS,
     DEFAULT_VOICE_SCRIPTS,
@@ -385,6 +388,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "features": "Enable/Disable Features",
                 "entities": "PureLLM Default Entities",
                 "device_aliases": "Device Aliases",
+                "shade_entities": "Shade / Cover Entities",
                 "voice_scripts": "Voice Scripts",
                 "sofabaton": "SofaBaton Activities",
                 "music_rooms": "Music Room Mapping",
@@ -852,6 +856,133 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional("entity_id"): selector.EntitySelector(
                         selector.EntitySelectorConfig(
                             multiple=False,
+                        )
+                    ),
+                    vol.Optional("action", default="add"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(value="add", label="Add New"),
+                                selector.SelectOptionDict(value="update", label="Update Selected"),
+                                selector.SelectOptionDict(value="delete", label="Delete Selected"),
+                            ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_shade_entities(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle shade/cover entity configuration with favorite positions.
+
+        Maps cover entities to voice-friendly names and configurable favorite positions.
+        When user says "favorite position for X", PureLLM bypasses LLM tool calling
+        and directly calls cover.set_cover_position with the configured value.
+        """
+        current = {**self._entry.data, **self._entry.options}
+        current_shades_json = current.get(CONF_SHADE_ENTITIES, DEFAULT_SHADE_ENTITIES)
+
+        # Parse current shades from JSON
+        try:
+            shades_list = json.loads(current_shades_json) if current_shades_json else []
+        except (json.JSONDecodeError, TypeError):
+            shades_list = []
+
+        if user_input is not None:
+            selected = user_input.get("select_shade", "")
+            name = user_input.get("shade_name", "").strip().lower()
+            entity_id = user_input.get("shade_entity", "")
+            favorite_pos = user_input.get("favorite_position")
+            action = user_input.get("action", "add")
+
+            # Find index of selected shade
+            selected_idx = None
+            if selected:
+                for i, s in enumerate(shades_list):
+                    if s.get("name", "").lower() == selected.lower():
+                        selected_idx = i
+                        break
+
+            if action == "delete" and selected_idx is not None:
+                shades_list.pop(selected_idx)
+            elif action == "update" and selected_idx is not None:
+                shades_list[selected_idx] = {
+                    "name": name if name else selected,
+                    "entity_id": entity_id or shades_list[selected_idx].get("entity_id", ""),
+                    "favorite_position": int(favorite_pos) if favorite_pos is not None else shades_list[selected_idx].get("favorite_position", 50),
+                }
+            elif action == "add" and name and entity_id:
+                shades_list.append({
+                    "name": name,
+                    "entity_id": entity_id,
+                    "favorite_position": int(favorite_pos) if favorite_pos is not None else 50,
+                })
+            elif not selected and not name and not entity_id:
+                # Empty submit - return to menu
+                return self.async_create_entry(title="", data=self._entry.options)
+
+            # Save updated shades as JSON
+            updated_json = json.dumps(shades_list)
+            new_options = {**self._entry.options, CONF_SHADE_ENTITIES: updated_json}
+            self.hass.config_entries.async_update_entry(self._entry, options=new_options)
+
+            # Rebuild list for display
+            try:
+                shades_list = json.loads(updated_json)
+            except (json.JSONDecodeError, TypeError):
+                shades_list = []
+
+        # Build description showing current shades
+        if shades_list:
+            mapping_lines = []
+            for s in shades_list:
+                name = s.get("name", "")
+                eid = s.get("entity_id", "")
+                pos = s.get("favorite_position", 50)
+                mapping_lines.append(f"**{name}** → {eid} (favorite: {pos}%)")
+            description = "**Current shade entities:**\n" + "\n".join(mapping_lines) + "\n\nSelect one to edit/delete, or add a new one below."
+        else:
+            description = "No shade entities configured. Add covers/blinds here to enable voice-controlled favorite positions.\n\n**How it works:** Say 'favorite position for [name]' and PureLLM will set the cover to your configured position — no LLM tool calling needed."
+
+        # Build select options for existing shades
+        select_options = []
+        for s in shades_list:
+            name = s.get("name", "")
+            eid = s.get("entity_id", "")
+            pos = s.get("favorite_position", 50)
+            select_options.append(selector.SelectOptionDict(value=name, label=f"{name} → {pos}%"))
+
+        return self.async_show_form(
+            step_id="shade_entities",
+            description_placeholders={"shades_info": description},
+            data_schema=vol.Schema(
+                {
+                    vol.Optional("select_shade"): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=select_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional("shade_name"): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.TEXT,
+                        )
+                    ),
+                    vol.Optional("shade_entity"): selector.EntitySelector(
+                        selector.EntitySelectorConfig(
+                            domain="cover",
+                            multiple=False,
+                        )
+                    ),
+                    vol.Optional("favorite_position", default=50): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0,
+                            max=100,
+                            step=1,
+                            unit_of_measurement="%",
+                            mode=selector.NumberSelectorMode.SLIDER,
                         )
                     ),
                     vol.Optional("action", default="add"): selector.SelectSelector(
