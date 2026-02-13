@@ -495,12 +495,14 @@ class MusicController:
 
         _LOGGER.warning("MUSIC DEBUG: Final - action='%s', query='%s', room='%s'", action, query, room)
 
-        # GUARDRAIL: If LLM hallucinated "transfer" but provided a query/artist/album,
-        # it actually meant "play" — auto-correct to prevent just moving existing music.
-        if action == "transfer" and (query or artist or album):
+        # GUARDRAIL: If LLM hallucinated "transfer" but provided any music content
+        # params OR an explicit media_type, it actually meant "play".
+        # The LLM sometimes sends transfer with no music params when the user says
+        # "play X in the [room]" — catch that via explicit media_type check.
+        if action == "transfer" and (query or artist or album or song_on_album or arguments.get("media_type")):
             _LOGGER.warning(
-                "MUSIC GUARDRAIL: LLM said 'transfer' but included query='%s' artist='%s' album='%s' — correcting to 'play'",
-                query, artist, album,
+                "MUSIC GUARDRAIL: LLM said 'transfer' but included query='%s' artist='%s' album='%s' media_type='%s' — correcting to 'play'",
+                query, artist, album, media_type,
             )
             action = "play"
 
