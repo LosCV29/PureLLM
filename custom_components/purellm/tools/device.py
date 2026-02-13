@@ -688,7 +688,7 @@ async def control_device(
 
         service_data = {"entity_id": entity_id}
 
-        # Light controls
+        # Light controls — only one color descriptor allowed per call
         if domain == "light" and action in ("turn_on", "dim"):
             if brightness is not None:
                 service_data["brightness_pct"] = max(0, min(100, brightness))
@@ -698,7 +698,7 @@ async def control_device(
                 service_data["color_temp_kelvin"] = 2700
             elif color == "cool":
                 service_data["color_temp_kelvin"] = 6500
-            if color_temp is not None:
+            elif color_temp is not None:
                 service_data["color_temp_kelvin"] = max(2000, min(6500, color_temp))
 
         # Media player controls
