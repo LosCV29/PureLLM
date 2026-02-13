@@ -445,6 +445,15 @@ class MusicController:
 
         _LOGGER.warning("MUSIC DEBUG: Final - action='%s', query='%s', room='%s'", action, query, room)
 
+        # GUARDRAIL: If LLM hallucinated "transfer" but provided a query/artist/album,
+        # it actually meant "play" — auto-correct to prevent just moving existing music.
+        if action == "transfer" and (query or artist or album):
+            _LOGGER.warning(
+                "MUSIC GUARDRAIL: LLM said 'transfer' but included query='%s' artist='%s' album='%s' — correcting to 'play'",
+                query, artist, album,
+            )
+            action = "play"
+
         all_players = list(self._players.values())
 
         if not all_players:
