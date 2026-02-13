@@ -211,8 +211,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             "control_music",
             f"Control room-based music only (NOT for specific devices like TVs). To pause/resume/play a specific device, use control_device. Rooms: {rooms_list}. Room required for play/shuffle.",
             {
-                "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"], "description": "Action. Use 'shuffle' for genre, artist, or holiday music. Use 'play' for specific songs, albums, or tracks."},
-                "query": {"type": "string", "description": "Song/album name, or 'latest'/'first' for albums. For shuffle: genre name, artist name, or holiday name."},
+                "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"], "description": "Action"},
+                "query": {"type": "string", "description": "Song/album name, or 'latest'/'first' for albums"},
                 "artist": {"type": "string", "description": "Artist name"},
                 "album": {"type": "string", "description": "Album name"},
                 "song_on_album": {"type": "string", "description": "Song name to find album containing it"},
