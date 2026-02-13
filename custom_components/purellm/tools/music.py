@@ -857,10 +857,6 @@ class MusicController:
                     if not effective_type_filter and album_modifier:
                         effective_type_filter = "studio"
                     discography = await _get_artist_discography_musicbrainz(artist, effective_type_filter)
-                    # If studio filter returned nothing, retry without filter as fallback
-                    if not discography and effective_type_filter == "studio" and not album_type_filter:
-                        _LOGGER.warning("MUSIC DEBUG: No studio albums found, retrying without type filter")
-                        discography = await _get_artist_discography_musicbrainz(artist, None)
 
                     # If we have a discography but also an album filter, try name matching as fallback
                     if discography and album:
