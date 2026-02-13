@@ -837,8 +837,8 @@ class MusicController:
                 return {"error": f"Could not find album containing '{song_on_album}'" + (f" by {artist}" if artist else "")}
 
             # Handle ordinal album requests (second, third album) or type-filtered requests (studio, live)
-            # Also handles tag-based filtering (christmas, holiday albums) and year-based requests
-            if artist and (album_ordinal or album_type_filter or album or album_year):
+            # Also handles tag-based filtering (christmas, holiday albums), year-based and modifier-based requests
+            if artist and (album_ordinal or album_type_filter or album or album_year or album_modifier):
                 _LOGGER.warning("MUSIC DEBUG: Album search - ordinal=%s, type='%s', artist='%s', album_tag='%s', year=%s",
                                album_ordinal, album_type_filter, artist, album, album_year)
 
@@ -850,8 +850,17 @@ class MusicController:
                     discography = await _search_albums_by_tag_musicbrainz(artist, album)
 
                 # If no results from tag search (or no album tag), get full discography
+                # When using latest/first modifier without an explicit type filter, default to
+                # studio albums so live performances and compilations are excluded
                 if not discography:
-                    discography = await _get_artist_discography_musicbrainz(artist, album_type_filter)
+                    effective_type_filter = album_type_filter
+                    if not effective_type_filter and album_modifier:
+                        effective_type_filter = "studio"
+                    discography = await _get_artist_discography_musicbrainz(artist, effective_type_filter)
+                    # If studio filter returned nothing, retry without filter as fallback
+                    if not discography and effective_type_filter == "studio" and not album_type_filter:
+                        _LOGGER.warning("MUSIC DEBUG: No studio albums found, retrying without type filter")
+                        discography = await _get_artist_discography_musicbrainz(artist, None)
 
                     # If we have a discography but also an album filter, try name matching as fallback
                     if discography and album:
