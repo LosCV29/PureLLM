@@ -1311,14 +1311,13 @@ class MusicController:
         return {"status": "transferred", "response_text": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
-        """Find the best playlist for a query and play it shuffled.
+        """Shuffle music for a query.
 
-        Three categories — all resolve to a playlist:
-        1. Holiday: detected via keyword → playlist search with holiday terms
-        2. Artist: confirmed via quick MA artist lookup → playlist search by artist name
+        Three categories:
+        1. Artist: confirmed via quick MA artist lookup → fetch top 50 tracks
+           directly, queue them all, and shuffle. No playlists involved.
+        2. Holiday: detected via keyword → playlist search with holiday terms
         3. Genre/mood: no artist match → playlist search with raw query
-
-        Accepts any playable playlist (not limited to official Spotify playlists).
         """
         if not query:
             return {"error": "No search query specified for shuffle"}
@@ -1344,37 +1343,91 @@ class MusicController:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
-            # ── Determine category and build playlist search queries ──
-            category = "holiday" if detected_holiday else "genre"
-            search_queries = []
-
+            # ── Artist-based track shuffle (no playlists!) ──
             if not detected_holiday:
-                # Quick artist check — if it's a real artist, search playlists by artist name
                 artist_result = await self._hass.services.async_call(
                     "music_assistant", "search",
                     {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["artist"], "limit": 5},
                     blocking=True, return_response=True
                 )
                 artists = _parse_ma_results(artist_result, "artist")
+                matched_artist = None
                 if artists:
                     for a in artists:
                         name = (a.get("name") or a.get("title") or "").lower()
                         if query_lower == name or query_lower in name or name in query_lower:
-                            category = "artist"
-                            _LOGGER.info("Shuffle category: ARTIST ('%s')", a.get("name") or a.get("title"))
+                            matched_artist = a
                             break
 
-                if category == "genre":
-                    _LOGGER.info("Shuffle category: GENRE (no artist match)")
+                if matched_artist:
+                    artist_name = _normalize_unicode(matched_artist.get("name") or matched_artist.get("title") or query)
+                    _LOGGER.info("Shuffle category: ARTIST ('%s') — fetching top 50 tracks", artist_name)
 
-                search_queries = [query]
-            else:
-                # Holiday: full query first, then primary holiday term as fallback
-                search_queries = [query]
-                if holiday_search_terms[0] != query_lower:
-                    search_queries.append(holiday_search_terms[0])
+                    # Fetch top 50 tracks by this artist (sorted by popularity)
+                    track_result = await self._hass.services.async_call(
+                        "music_assistant", "search",
+                        {"config_entry_id": ma_config_entry_id, "name": artist_name, "media_type": ["track"], "limit": 50},
+                        blocking=True, return_response=True
+                    )
+                    tracks = _parse_ma_results(track_result, "track")
 
-            # ── Search for playlists ──
+                    # Filter to tracks actually by this artist
+                    artist_tracks = []
+                    for t in tracks:
+                        track_artist = _extract_artist(t, lowercase=True)
+                        if track_artist and (query_lower in track_artist or track_artist in query_lower):
+                            artist_tracks.append(t)
+
+                    if not artist_tracks:
+                        # Fallback: use all returned tracks (search was artist-specific)
+                        artist_tracks = tracks
+
+                    if not artist_tracks:
+                        return {"error": f"Could not find tracks for '{query}'. Try 'play {query}' instead."}
+
+                    # Collect track URIs
+                    track_uris = []
+                    for t in artist_tracks:
+                        uri = t.get("uri") or t.get("media_id")
+                        if uri:
+                            track_uris.append(uri)
+
+                    if not track_uris:
+                        return {"error": f"Could not find playable tracks for '{query}'."}
+
+                    _LOGGER.info("Queuing %d tracks by '%s' for shuffle", len(track_uris), artist_name)
+
+                    # Play all tracks at once and shuffle
+                    for player in target_players:
+                        await self._hass.services.async_call(
+                            "music_assistant", "play_media",
+                            {"media_id": track_uris, "media_type": "track", "enqueue": "replace", "radio_mode": False},
+                            target={"entity_id": player},
+                            blocking=True
+                        )
+                        await self._hass.services.async_call(
+                            "media_player", "shuffle_set",
+                            {"entity_id": player, "shuffle": True},
+                            blocking=True
+                        )
+
+                    room_suffix = f" in the {room}" if room else ""
+                    return {
+                        "status": "shuffling",
+                        "artist": artist_name,
+                        "track_count": len(track_uris),
+                        "category": "artist",
+                        "room": room,
+                        "response_text": f"Shuffling {len(track_uris)} tracks by {artist_name}{room_suffix}"
+                    }
+
+                _LOGGER.info("Shuffle category: GENRE (no artist match)")
+
+            # ── Holiday / Genre fallback: playlist-based shuffle ──
+            search_queries = [query]
+            if detected_holiday and holiday_search_terms[0] != query_lower:
+                search_queries.append(holiday_search_terms[0])
+
             all_playlists = []
             limit = 15 if detected_holiday else 10
             for search_query in search_queries:
@@ -1385,47 +1438,36 @@ class MusicController:
                 )
                 all_playlists.extend(_parse_ma_results(search_result, "playlist"))
 
-            _LOGGER.info("Playlist search for '%s' (%s) found %d results", query, category, len(all_playlists))
+            _LOGGER.info("Playlist search for '%s' found %d results", query, len(all_playlists))
 
             if not all_playlists:
-                if detected_holiday:
-                    return {"error": f"Could not find a {detected_holiday} playlist. Try a different search."}
+                category_label = detected_holiday or "genre"
                 return {"error": f"Could not find a playlist for '{query}'. Try 'play {query}' instead."}
 
-            # ── Deduplicate and filter ──
+            # Deduplicate and filter out radio playlists
             seen_uris = set()
-            playlists = []
+            filtered = []
             for p in all_playlists:
                 uri = p.get("uri") or p.get("media_id") or ""
-                if uri and uri not in seen_uris:
+                name = (p.get("name") or p.get("title") or "").lower()
+                if uri and uri not in seen_uris and "radio" not in name:
                     seen_uris.add(uri)
-                    playlists.append(p)
-
-            # ── Filter out radio playlists ──
-            filtered = [
-                p for p in playlists
-                if "radio" not in (p.get("name") or p.get("title") or "").lower()
-            ]
+                    filtered.append(p)
 
             if not filtered:
-                if detected_holiday:
-                    return {"error": f"Could not find a {detected_holiday} playlist. Try a different search."}
                 return {"error": f"Could not find a playlist for '{query}'. Try 'play {query}' instead."}
 
-            # ── Score and pick the best playlist ──
+            # Score and pick the best playlist
             query_words = [w for w in query_lower.split() if len(w) >= 3 and w not in ('the', 'and', 'for', 'music', 'playlist', 'in', 'mix')]
 
             def score_playlist(p):
                 name = (p.get("name") or p.get("title") or "").lower()
                 score = 0
-                # Full query in playlist name
                 if query_lower in name:
                     score += 20
-                # Individual word matches
                 for word in query_words:
                     if word in name:
                         score += 10
-                # Holiday term matches
                 if detected_holiday:
                     for term in holiday_search_terms:
                         if term in name:
@@ -1439,14 +1481,12 @@ class MusicController:
                 _LOGGER.info("  score %d: '%s'", s, p.get("name") or p.get("title"))
 
             if not scored or scored[0][0] <= 0:
-                if detected_holiday:
-                    return {"error": f"Could not find a {detected_holiday} playlist. Try a different search."}
                 return {"error": f"Could not find a playlist for '{query}'. Try 'play {query}' instead."}
 
-            # ── Play the winning playlist shuffled ──
             chosen = scored[0][1]
             playlist_name = chosen.get("name") or chosen.get("title")
             playlist_uri = chosen.get("uri") or chosen.get("media_id")
+            category = "holiday" if detected_holiday else "genre"
             _LOGGER.info("Playing playlist '%s' shuffled (%s)", playlist_name, category)
 
             await self._play_on_players(target_players, playlist_uri, "playlist", shuffle=True)
@@ -1462,4 +1502,4 @@ class MusicController:
 
         except Exception as search_err:
             _LOGGER.error("Shuffle search/play error: %s", search_err, exc_info=True)
-            return {"error": f"Failed to find or play playlist: {str(search_err)}"}
+            return {"error": f"Failed to shuffle music: {str(search_err)}"}
