@@ -1311,18 +1311,15 @@ class MusicController:
         return {"status": "transferred", "response_text": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
-        """Shuffle music for a query.
+        """Shuffle music by finding and playing a playlist.
 
-        All paths use track search via /v1/search?type=track so that MA
-        routes through the dev token's personal rate-limit bucket. Avoids
-        every deprecated/blocked Spotify endpoint:
-          - /v1/playlists/{id}/tracks  (blocked for dev tokens)
-          - /v1/artists/{id}/top-tracks (blocked for dev tokens)
+        Searches for playlists matching the query and plays in shuffle mode.
+        Prefers official Apple Music curated playlists. Falls back to most popular.
 
-        Three categories (all resolved to individual track URIs):
-        1. Artist: confirmed via MA artist lookup → search tracks by artist name
-        2. Holiday: detected via keyword → search tracks with holiday terms
-        3. Genre/mood: no artist match → search tracks with raw query
+        Three categories (all resolved to a playlist):
+        1. Artist: confirmed via MA artist lookup → search playlists by artist name
+        2. Holiday: detected via keyword → search playlists with holiday terms
+        3. Genre/mood: no artist match → search playlists with raw query
         """
         if not query:
             return {"error": "No search query specified for shuffle"}
@@ -1373,60 +1370,113 @@ class MusicController:
 
                 if artist_name:
                     category = "artist"
-                    search_queries = [artist_name]
-                    _LOGGER.info("Shuffle category: ARTIST ('%s') — searching tracks by name", artist_name)
+                    # Apple Music curated pattern: "[Artist] Essentials"
+                    search_queries = [f"{artist_name} essentials", artist_name]
+                    _LOGGER.info("Shuffle category: ARTIST ('%s') — searching playlists", artist_name)
                 else:
                     category = "genre"
-                    search_queries = [query]
+                    # Apple Music curated patterns: "A-List [Genre]", "[Genre] Hits"
+                    search_queries = [query, f"{query} hits", f"A-List {query}"]
                     _LOGGER.info("Shuffle category: GENRE (no artist match)")
             else:
                 category = "holiday"
+                # Search with original query + all holiday search terms for broad coverage
                 search_queries = [query]
-                if holiday_search_terms[0] != query_lower:
-                    search_queries.append(holiday_search_terms[0])
+                for term in holiday_search_terms:
+                    if term.lower() != query_lower:
+                        search_queries.append(term)
 
-            # ── Search for tracks (all categories) ──
-            # Uses /v1/search?type=track — works with dev token.
-            all_tracks: list[dict] = []
+            # ── Search for playlists (all categories) ──
+            all_playlists: list[dict] = []
             seen_uris: set[str] = set()
-            limit = 40
             for search_query in search_queries:
                 try:
                     search_result = await self._hass.services.async_call(
                         "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": ["track"], "limit": limit},
+                        {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": ["playlist"], "limit": 20},
                         blocking=True, return_response=True
                     )
                 except Exception as search_exc:
-                    # MA throws MediaNotFoundError when search yields no results
-                    _LOGGER.debug("Track search for '%s' returned no results: %s", search_query, search_exc)
+                    _LOGGER.debug("Playlist search for '%s' returned no results: %s", search_query, search_exc)
                     continue
-                for t in _parse_ma_results(search_result, "track"):
-                    uri = t.get("uri") or t.get("media_id") or ""
+                for p in _parse_ma_results(search_result, "playlist"):
+                    uri = p.get("uri") or p.get("media_id") or ""
                     if uri and uri not in seen_uris:
                         seen_uris.add(uri)
-                        all_tracks.append(t)
+                        all_playlists.append(p)
 
-            _LOGGER.info("Track search for '%s' found %d results", query, len(all_tracks))
+            _LOGGER.info("Playlist search for '%s' found %d results", query, len(all_playlists))
 
-            if not all_tracks:
-                return {"error": f"Could not find tracks for '{query}'. Try 'play {query}' instead."}
+            if not all_playlists:
+                return {"error": f"Could not find playlists for '{query}'. Try 'play {query}' instead."}
 
-            _LOGGER.info("Queuing %d tracks shuffled (%s)", len(all_tracks), category)
+            # ── Score playlists — prefer official Apple Music curated ──
+            query_words = [w for w in query_lower.split() if len(w) > 2]
 
-            # ── Queue tracks and enable shuffle ──
+            def score_playlist(p):
+                name = (p.get("name") or p.get("title") or "").lower()
+                owner = (p.get("owner") or p.get("curator") or "").lower()
+                score = 0
+
+                # Official Apple Music curated playlist gets huge boost
+                if "apple music" in owner or "apple music" in name:
+                    score += 200
+                # Other editorial/curated indicators
+                if any(kw in owner for kw in ("apple", "editorial", "curated")):
+                    score += 100
+
+                # Name relevance
+                if query_lower == name:
+                    score += 50
+                elif query_lower in name:
+                    score += 30
+                for word in query_words:
+                    if word in name:
+                        score += 10
+
+                # Holiday-specific matching
+                if detected_holiday:
+                    for term in holiday_search_terms:
+                        if term in name:
+                            score += 15
+
+                # Artist-specific matching
+                if artist_name:
+                    artist_lower = artist_name.lower()
+                    if artist_lower in name:
+                        score += 30
+                    # Apple Music's "[Artist] Essentials" is the gold standard
+                    if "essentials" in name and artist_lower in name:
+                        score += 150
+
+                # Apple Music curated playlist patterns
+                if any(kw in name for kw in ("essentials", "a-list", "deep cuts")):
+                    score += 20
+                elif any(kw in name for kw in ("hits", "top", "best of")):
+                    score += 5
+
+                # Penalize radio-style playlists
+                if "radio" in name:
+                    score -= 50
+
+                return score
+
+            scored = [(score_playlist(p), p) for p in all_playlists]
+            scored.sort(key=lambda x: x[0], reverse=True)
+
+            # Log top candidates
+            for i, (s, p) in enumerate(scored[:5]):
+                name = p.get("name") or p.get("title") or ""
+                owner = p.get("owner") or p.get("curator") or ""
+                _LOGGER.warning("MUSIC DEBUG: Playlist [%d] score=%d '%s' (owner: '%s')", i + 1, s, name, owner)
+
+            best = scored[0][1]
+            best_name = _normalize_unicode(best.get("name") or best.get("title"))
+            best_uri = best.get("uri") or best.get("media_id")
+
+            # ── Play the playlist in shuffle mode ──
             for player in target_players:
-                for i, track in enumerate(all_tracks):
-                    track_uri = track.get("uri") or track.get("media_id")
-                    if not track_uri:
-                        continue
-                    enqueue = "replace" if i == 0 else "add"
-                    await self._hass.services.async_call(
-                        "music_assistant", "play_media",
-                        {"media_id": track_uri, "media_type": "track", "enqueue": enqueue, "radio_mode": False},
-                        target={"entity_id": player},
-                        blocking=True
-                    )
+                await self._play_media(player, best_uri, "playlist")
                 await self._hass.services.async_call(
                     "media_player", "shuffle_set",
                     {"entity_id": player, "shuffle": True},
@@ -1437,7 +1487,7 @@ class MusicController:
             display_name = artist_name or query
             return {
                 "status": "shuffling",
-                "track_count": len(all_tracks),
+                "playlist": best_name,
                 "category": category,
                 "room": room,
                 "response_text": f"Shuffling {display_name}{room_suffix}"

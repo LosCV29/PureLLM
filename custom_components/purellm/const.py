@@ -178,6 +178,7 @@ When user asks about Champions League/UCL: MUST include 'Champions League' in te
 MUSIC ROOMS: Extract room separately from query.
 For "album with [song] on it" use song_on_album param, NOT query.
 SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
+MUSIC SHUFFLE: For genre, artist, or holiday music, ALWAYS use action='shuffle'. Use 'play' only for specific songs, albums, or tracks.
 """
 
 # =============================================================================
