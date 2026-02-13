@@ -1355,11 +1355,14 @@ class MusicController:
 
             if not detected_holiday:
                 # Check if query matches a known artist
-                artist_result = await self._hass.services.async_call(
-                    "music_assistant", "search",
-                    {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["artist"], "limit": 5},
-                    blocking=True, return_response=True
-                )
+                try:
+                    artist_result = await self._hass.services.async_call(
+                        "music_assistant", "search",
+                        {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["artist"], "limit": 5},
+                        blocking=True, return_response=True
+                    )
+                except Exception:
+                    artist_result = None
                 artists = _parse_ma_results(artist_result, "artist")
                 if artists:
                     for a in artists:
@@ -1388,11 +1391,16 @@ class MusicController:
             seen_uris: set[str] = set()
             limit = 40
             for search_query in search_queries:
-                search_result = await self._hass.services.async_call(
-                    "music_assistant", "search",
-                    {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": ["track"], "limit": limit},
-                    blocking=True, return_response=True
-                )
+                try:
+                    search_result = await self._hass.services.async_call(
+                        "music_assistant", "search",
+                        {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": ["track"], "limit": limit},
+                        blocking=True, return_response=True
+                    )
+                except Exception as search_exc:
+                    # MA throws MediaNotFoundError when search yields no results
+                    _LOGGER.debug("Track search for '%s' returned no results: %s", search_query, search_exc)
+                    continue
                 for t in _parse_ma_results(search_result, "track"):
                     uri = t.get("uri") or t.get("media_id") or ""
                     if uri and uri not in seen_uris:
