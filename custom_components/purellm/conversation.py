@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -815,6 +816,64 @@ class PureLLMConversationEntity(ConversationEntity):
     # Follow-up Conversation (Continuing Conversation)
     # =========================================================================
 
+    # Tools that mutate device/entity state (vs read-only query tools)
+    _ACTION_TOOLS = frozenset({
+        "control_device", "control_thermostat", "control_music",
+        "control_timer", "manage_list", "create_reminder", "control_sofabaton",
+    })
+
+    # Regex to strip <think>…</think> blocks local models may emit
+    _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+    @classmethod
+    def _strip_think_tags(cls, text: str) -> str:
+        """Remove <think>…</think> reasoning blocks from LLM output."""
+        return cls._THINK_RE.sub("", text).strip()
+
+    @classmethod
+    def _is_hallucinated_action(cls, response: str) -> bool:
+        """Check if a response claims a device action was performed.
+
+        Used to detect hallucinations where the LLM says "Done" or
+        "Shade opened" without having called a device-control tool.
+        The caller must verify that no *action* tool was invoked; this
+        method only checks the *language* of the response.
+        """
+        # Strip <think> tags so reasoning tokens don't inflate the length
+        resp = cls._strip_think_tags(response).lower().strip().rstrip(".")
+        # Short confirmations the prompt asks for ("Done.", "Light on.", etc.)
+        if len(resp) < 80:
+            action_phrases = (
+                "done", "got it", "all set", "is now",
+                "has been", "turned on", "turned off",
+                "light on", "light off", "lights on", "lights off",
+                "shade opened", "shade closed", "shades opened", "shades closed",
+                "blind opened", "blind closed", "blinds opened", "blinds closed",
+                "cover opened", "cover closed",
+                "lock locked", "lock unlocked", "locked", "unlocked",
+                "fan on", "fan off",
+                "set to", "adjusted", "now at",
+                "favorite position", "preset position",
+                "opened", "closed", "stopped",
+                "is on", "is off",
+                "playing", "shuffling", "paused", "resumed",
+            )
+            if any(phrase in resp for phrase in action_phrases):
+                return True
+        return False
+
+    @classmethod
+    def _called_action_tool(cls, called_tools: set[str]) -> bool:
+        """Check if any called tool is a state-mutating action tool.
+
+        called_tools stores 'tool_name:arguments' strings.  We only
+        care about the tool name prefix.
+        """
+        return any(
+            tool_key.split(":")[0] in cls._ACTION_TOOLS
+            for tool_key in called_tools
+        )
+
     @staticmethod
     def _response_has_follow_up(response: str | None) -> bool:
         """Check if the LLM response ends with a follow-up question.
@@ -913,6 +972,10 @@ class PureLLMConversationEntity(ConversationEntity):
                 )
             else:
                 final_response = "Unknown provider."
+
+            # Strip <think>…</think> blocks local models may emit
+            if final_response:
+                final_response = self._strip_think_tags(final_response)
 
             _LOGGER.info("PureLLM response (%d chars): %s", len(final_response) if final_response else 0, (final_response or "")[:100])
 
@@ -1056,32 +1119,41 @@ class PureLLMConversationEntity(ConversationEntity):
             if function_calls:
                 contents.append({"role": "model", "parts": parts})
                 function_responses = []
-                direct_responses = []
+                action_response: str | None = None
 
                 for fc in function_calls:
                     tools_used_names.append(fc["name"])
                     result = await self._execute_tool(fc["name"], fc.get("args", {}))
                     if isinstance(result, dict) and "response_text" in result:
                         resp_content = result["response_text"]
-                        direct_responses.append(resp_content)
                     else:
                         resp_content = json.dumps(result, ensure_ascii=False)
+
+                    if fc["name"] in self._ACTION_TOOLS:
+                        action_response = resp_content
 
                     function_responses.append({
                         "functionResponse": {"name": fc["name"], "response": {"result": resp_content}}
                     })
 
-                # Short-circuit: if every tool returned response_text, return
-                # directly instead of burning another LLM round-trip.
-                if len(direct_responses) == len(function_calls):
-                    combined = " ".join(direct_responses)
-                    _LOGGER.info("Short-circuit: returning response_text directly (saved ~1 LLM call)")
-                    return (combined, tools_used_names)
+                # If an action tool ran, return its response directly
+                if action_response is not None:
+                    _LOGGER.info("Returning action tool response directly (skip LLM rephrase)")
+                    return (action_response, tools_used_names)
 
                 contents.append({"role": "user", "parts": function_responses})
                 continue
 
             if text_response:
+                # Guard: block hallucinated action confirmations when no
+                # action tool was called.
+                any_action_tool = bool(set(tools_used_names) & self._ACTION_TOOLS)
+                if not any_action_tool and self._is_hallucinated_action(text_response):
+                    _LOGGER.warning(
+                        "Blocked hallucinated action (no action tool, called=%s): %s",
+                        tools_used_names or "none", text_response[:120],
+                    )
+                    return ("I wasn't able to do that. Could you try again?", tools_used_names)
                 return (text_response, tools_used_names)
 
         return ("Could not get response.", tools_used_names)
@@ -1375,35 +1447,40 @@ class PureLLMConversationEntity(ConversationEntity):
 
                     tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
 
-                    # Process tool results and check for direct responses
-                    direct_responses = []
+                    # Process tool results
+                    action_response: str | None = None
                     for tool_call, result in zip(unique_tool_calls, tool_results):
+                        tool_name = tool_call["function"]["name"]
                         if isinstance(result, Exception):
-                            _LOGGER.error("Tool %s failed: %s", tool_call["function"]["name"], result)
+                            _LOGGER.error("Tool %s failed: %s", tool_name, result)
                             result = {"error": str(result)}
 
+                        # Get content for the message
                         if isinstance(result, dict) and "response_text" in result:
                             content = result["response_text"]
-                            direct_responses.append(content)
                         else:
                             content = json.dumps(result, ensure_ascii=False)
 
-                        _LOGGER.debug("Tool result for %s: %s", tool_call["function"]["name"], content[:200])
+                        _LOGGER.debug("Tool result for %s: %s", tool_name, content[:200])
 
+                        # Capture action-tool responses so we can return them
+                        # directly instead of giving the LLM another turn to
+                        # hallucinate its own version.
+                        if tool_name in self._ACTION_TOOLS:
+                            action_response = content
+
+                        # Add tool result to messages for next iteration
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call["id"],
                             "content": content,
                         })
 
-                    # Short-circuit: if every tool returned response_text, return
-                    # directly instead of burning another LLM round-trip.
-                    if len(direct_responses) == len(unique_tool_calls):
-                        combined = " ".join(direct_responses)
-                        _LOGGER.info("Short-circuit: returning response_text directly (saved ~1 LLM call)")
-                        if tools_used_names:
-                            yield {"tools_used": tools_used_names}
-                        yield {"content": combined}
+                    # If an action tool ran, return its response directly —
+                    # don't give the model another turn to fabricate.
+                    if action_response is not None:
+                        _LOGGER.info("Returning action tool response directly (skip LLM rephrase)")
+                        yield {"content": action_response}
                         return
 
                     # Continue to next iteration to get LLM's response after tools
@@ -1411,10 +1488,20 @@ class PureLLMConversationEntity(ConversationEntity):
 
                 # No tool calls - yield content and we're done
                 if accumulated_content:
-                    # Yield tool names first so caller can enrich history
-                    if tools_used_names:
-                        yield {"tools_used": tools_used_names}
-                    yield {"content": accumulated_content}
+                    # Guard: if no device-action tool was called but the
+                    # response looks like a device-action confirmation, the
+                    # model hallucinated.
+                    if not self._called_action_tool(called_tools) and self._is_hallucinated_action(accumulated_content):
+                        _LOGGER.warning(
+                            "Blocked hallucinated action (no action tool called, tools=%s): %s",
+                            called_tools or "none", accumulated_content[:120],
+                        )
+                        yield {"content": "I wasn't able to do that. Could you try again?"}
+                    else:
+                        # Yield tool names first so caller can enrich history
+                        if tools_used_names:
+                            yield {"tools_used": tools_used_names}
+                        yield {"content": accumulated_content}
                     return
 
                 _LOGGER.debug("LLM iteration %d: no content and no tool calls, breaking", iteration)
