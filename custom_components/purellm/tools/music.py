@@ -1436,7 +1436,7 @@ class MusicController:
             scored.sort(key=lambda x: x[0], reverse=True)
 
             for s, p in scored[:5]:
-                _LOGGER.info("  score %d: '%s' (owner: %s)", s, p.get("name") or p.get("title"), _extract_owner(p))
+                _LOGGER.info("  score %d: '%s'", s, p.get("name") or p.get("title"))
 
             if not scored or scored[0][0] <= 0:
                 if detected_holiday:
