@@ -1313,14 +1313,16 @@ class MusicController:
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
         """Shuffle music for a query.
 
-        Three categories:
-        1. Artist: confirmed via quick MA artist lookup → play artist directly
-           with shuffle enabled. MA handles track resolution internally.
-        2. Holiday: detected via keyword → track search with holiday terms
-        3. Genre/mood: no artist match → track search with raw query
+        All paths use track search via /v1/search?type=track so that MA
+        routes through the dev token's personal rate-limit bucket. Avoids
+        every deprecated/blocked Spotify endpoint:
+          - /v1/playlists/{id}/tracks  (blocked for dev tokens)
+          - /v1/artists/{id}/top-tracks (blocked for dev tokens)
 
-        Categories 2 & 3 use track search (never playlist endpoints) so that
-        MA routes through the dev token's personal rate-limit bucket.
+        Three categories (all resolved to individual track URIs):
+        1. Artist: confirmed via MA artist lookup → search tracks by artist name
+        2. Holiday: detected via keyword → search tracks with holiday terms
+        3. Genre/mood: no artist match → search tracks with raw query
         """
         if not query:
             return {"error": "No search query specified for shuffle"}
@@ -1346,55 +1348,45 @@ class MusicController:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
-            # ── Artist-based shuffle (play artist directly, no playlists or track lists) ──
+            # ── Determine search queries and category ──
+            search_queries = []
+            category = "genre"
+            artist_name = None
+
             if not detected_holiday:
+                # Check if query matches a known artist
                 artist_result = await self._hass.services.async_call(
                     "music_assistant", "search",
                     {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["artist"], "limit": 5},
                     blocking=True, return_response=True
                 )
                 artists = _parse_ma_results(artist_result, "artist")
-                matched_artist = None
                 if artists:
                     for a in artists:
                         name = (a.get("name") or a.get("title") or "").lower()
                         if query_lower == name or query_lower in name or name in query_lower:
-                            matched_artist = a
+                            artist_name = _normalize_unicode(a.get("name") or a.get("title") or query)
                             break
 
-                if matched_artist:
-                    artist_name = _normalize_unicode(matched_artist.get("name") or matched_artist.get("title") or query)
-                    artist_uri = matched_artist.get("uri") or matched_artist.get("media_id")
+                if artist_name:
+                    category = "artist"
+                    search_queries = [artist_name]
+                    _LOGGER.info("Shuffle category: ARTIST ('%s') — searching tracks by name", artist_name)
+                else:
+                    category = "genre"
+                    search_queries = [query]
+                    _LOGGER.info("Shuffle category: GENRE (no artist match)")
+            else:
+                category = "holiday"
+                search_queries = [query]
+                if holiday_search_terms[0] != query_lower:
+                    search_queries.append(holiday_search_terms[0])
 
-                    if not artist_uri:
-                        return {"error": f"Could not find playable URI for '{artist_name}'."}
-
-                    _LOGGER.info("Shuffle category: ARTIST ('%s') — playing artist directly with shuffle (uri=%s)", artist_name, artist_uri)
-
-                    # Play the artist directly — MA resolves tracks internally
-                    await self._play_on_players(target_players, artist_uri, "artist", shuffle=True)
-
-                    room_suffix = f" in the {room}" if room else ""
-                    return {
-                        "status": "shuffling",
-                        "artist": artist_name,
-                        "category": "artist",
-                        "room": room,
-                        "response_text": f"Shuffling {artist_name}{room_suffix}"
-                    }
-
-                _LOGGER.info("Shuffle category: GENRE (no artist match)")
-
-            # ── Holiday / Genre fallback: track-search shuffle ──
-            # Uses /v1/search?type=track (dev token, personal rate bucket)
-            # instead of playlist endpoints (shared global token).
-            search_queries = [query]
-            if detected_holiday and holiday_search_terms[0] != query_lower:
-                search_queries.append(holiday_search_terms[0])
-
+            # ── Search for tracks (all categories) ──
+            # Uses /v1/search?type=track — works with dev token.
             all_tracks: list[dict] = []
             seen_uris: set[str] = set()
-            limit = 25 if detected_holiday else 20
+            limit = 40
             for search_query in search_queries:
                 search_result = await self._hass.services.async_call(
                     "music_assistant", "search",
@@ -1412,9 +1404,9 @@ class MusicController:
             if not all_tracks:
                 return {"error": f"Could not find tracks for '{query}'. Try 'play {query}' instead."}
 
-            category = "holiday" if detected_holiday else "genre"
             _LOGGER.info("Queuing %d tracks shuffled (%s)", len(all_tracks), category)
 
+            # ── Queue tracks and enable shuffle ──
             for player in target_players:
                 for i, track in enumerate(all_tracks):
                     track_uri = track.get("uri") or track.get("media_id")
@@ -1434,12 +1426,13 @@ class MusicController:
                 )
 
             room_suffix = f" in the {room}" if room else ""
+            display_name = artist_name or query
             return {
                 "status": "shuffling",
                 "track_count": len(all_tracks),
                 "category": category,
                 "room": room,
-                "response_text": f"Shuffling {query} music{room_suffix}"
+                "response_text": f"Shuffling {display_name}{room_suffix}"
             }
 
         except Exception as search_err:
