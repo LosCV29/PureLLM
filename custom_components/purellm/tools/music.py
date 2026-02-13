@@ -1311,20 +1311,22 @@ class MusicController:
         return {"status": "transferred", "response_text": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
-        """Search for Spotify playlist by artist, genre, or holiday and play shuffled.
+        """Play music shuffled by artist or playlist.
 
-        IMPORTANT: This ONLY searches for Spotify playlists - no fallback to artist.
-        Returns the exact playlist title for verbatim announcement.
+        Strategy:
+        - Non-holiday queries: try artist playback first (most reliable),
+          then fall back to playlist search if no artist match.
+        - Holiday/genre queries: search for playlists directly, accept any
+          good match (not limited to official Spotify playlists).
 
-        Holiday support: Detects holiday keywords (christmas, halloween, etc.) and
-        searches for themed playlists with more flexible matching.
+        Returns the exact artist/playlist name for verbatim announcement.
         """
         if not query:
             return {"error": "No search query specified for shuffle"}
         if not target_players:
             return {"error": f"No room specified. Available: {', '.join(self._players.keys())}"}
 
-        _LOGGER.info("Searching Spotify for playlist matching: %s", query)
+        _LOGGER.info("Shuffle request: '%s'", query)
 
         # Detect holiday keywords in query
         query_lower = query.lower()
@@ -1343,13 +1345,52 @@ class MusicController:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
+            # ── Non-holiday: try artist-first approach ──
+            if not detected_holiday:
+                artist_result = await self._hass.services.async_call(
+                    "music_assistant", "search",
+                    {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["artist"], "limit": 5},
+                    blocking=True, return_response=True
+                )
+                artists = _parse_ma_results(artist_result, "artist")
+
+                if artists:
+                    best_artist = None
+                    best_score = 0
+                    for a in artists:
+                        name = (a.get("name") or a.get("title") or "").lower()
+                        score = 0
+                        if query_lower == name:
+                            score = 100
+                        elif query_lower in name or name in query_lower:
+                            score = 50
+                        if score > best_score:
+                            best_score = score
+                            best_artist = a
+
+                    if best_artist and best_score >= 50:
+                        artist_name = best_artist.get("name") or best_artist.get("title")
+                        artist_uri = best_artist.get("uri") or best_artist.get("media_id")
+                        _LOGGER.info("Shuffle: playing artist '%s' shuffled (score: %d)", artist_name, best_score)
+
+                        await self._play_on_players(target_players, artist_uri, "artist", shuffle=True)
+
+                        room_suffix = f" in the {room}" if room else ""
+                        return {
+                            "status": "shuffling",
+                            "artist": artist_name,
+                            "room": room,
+                            "response_text": f"Shuffling {artist_name}{room_suffix}"
+                        }
+
+                _LOGGER.info("No artist match for '%s', falling back to playlist search", query)
+
+            # ── Playlist search: for holidays always, for non-holiday as fallback ──
             all_playlists = []
 
             if detected_holiday:
-                # For holidays, search using the FULL query first, then fallback to generic terms
-                # This ensures "80s christmas" finds "80s Christmas" playlists, not just generic "Christmas Hits"
-                search_queries = [query]  # Full query first (e.g., "80s christmas music")
-                # Add the primary holiday term if not already the full query
+                # For holidays, search full query first, then generic holiday term
+                search_queries = [query]
                 if holiday_search_terms[0] != query_lower:
                     search_queries.append(holiday_search_terms[0])
 
@@ -1362,7 +1403,6 @@ class MusicController:
                     all_playlists.extend(_parse_ma_results(search_result, "playlist"))
                 _LOGGER.info("Holiday search for '%s' found %d total playlists", query, len(all_playlists))
             else:
-                # Standard search for non-holiday queries
                 search_result = await self._hass.services.async_call(
                     "music_assistant", "search",
                     {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["playlist"], "limit": 10},
@@ -1370,13 +1410,8 @@ class MusicController:
                 )
                 all_playlists = _parse_ma_results(search_result, "playlist")
 
-            playlist_name = None
-            playlist_uri = None
-            playlist_owner = ""
-            is_official = False
-
             if all_playlists:
-                # Deduplicate playlists by URI
+                # Deduplicate by URI
                 seen_uris = set()
                 playlists = []
                 for p in all_playlists:
@@ -1385,133 +1420,68 @@ class MusicController:
                         seen_uris.add(uri)
                         playlists.append(p)
 
-                # Filter out playlists with "Radio" in the name - we don't want auto-generated radio playlists
-                non_radio_playlists = [
+                # Filter out auto-generated radio playlists
+                non_radio = [
                     p for p in playlists
                     if "radio" not in (p.get("name") or p.get("title") or "").lower()
                 ]
 
-                query_words = query_lower.split()
+                # Score ALL playlists — no official-only gate
+                query_words = [w for w in query_lower.split() if len(w) >= 3 and w not in ('the', 'and', 'for', 'music', 'playlist', 'in')]
 
-                def name_matches_query(playlist_name_str: str) -> bool:
-                    """Check if playlist name contains query or any significant word from query."""
-                    name_lower = playlist_name_str.lower()
-                    # Exact query match
-                    if query_lower in name_lower:
-                        return True
-                    # Match on individual words (handles typos like elliot vs elliott)
+                def score_playlist(p):
+                    name = (p.get("name") or p.get("title") or "").lower()
+                    score = 0
+                    # Full query match in name
+                    if query_lower in name:
+                        score += 20
+                    # Individual word matches
                     for word in query_words:
-                        if len(word) >= 4 and word in name_lower:
-                            return True
-                    # For holidays, also check holiday search terms
+                        if word in name:
+                            score += 10
+                    # Bonus for curated-style playlists
+                    if (p.get("owner") or "").lower() == "spotify":
+                        score += 5
+                    if name.startswith("this is") or name.startswith("best of"):
+                        score += 3
+                    # Holiday term matches
                     if detected_holiday:
                         for term in holiday_search_terms:
-                            if term in name_lower:
-                                return True
-                    return False
-
-                # Priority 1: Official Spotify curated playlists ("This Is...", "Best of...", owned by Spotify)
-                official_playlists = [
-                    p for p in non_radio_playlists
-                    if (p.get("owner") or "").lower() == "spotify"
-                    or (p.get("name") or p.get("title") or "").lower().startswith("this is")
-                    or (p.get("name") or p.get("title") or "").lower().startswith("best of")
-                ]
-
-                # Priority 2: Playlists with artist/query name in title
-                matching_name_playlists = [
-                    p for p in non_radio_playlists
-                    if name_matches_query(p.get("name") or p.get("title") or "")
-                ]
-
-                is_official = False
-                chosen_playlist = None
-
-                if detected_holiday:
-                    # For holiday playlists, score by how well they match the FULL query
-                    # "80s christmas music" should prefer "80s Christmas" over generic "Christmas Hits"
-                    query_words = [w for w in query_lower.split() if len(w) >= 3 and w not in ('the', 'and', 'for', 'music', 'playlist', 'in')]
-
-                    def score_holiday_playlist(p):
-                        name = (p.get("name") or p.get("title") or "").lower()
-                        score = 0
-                        # Score for each query word found in playlist name
-                        for word in query_words:
-                            if word in name:
+                            if term in name:
                                 score += 10
-                        # Bonus for official Spotify playlists
-                        if (p.get("owner") or "").lower() == "spotify":
-                            score += 5
-                        return score
+                    return score
 
-                    # Score all playlists
-                    scored_playlists = [(score_holiday_playlist(p), p) for p in non_radio_playlists]
-                    scored_playlists.sort(key=lambda x: x[0], reverse=True)
+                scored = [(score_playlist(p), p) for p in non_radio]
+                scored.sort(key=lambda x: x[0], reverse=True)
 
-                    # Log top matches for debugging
-                    for score, p in scored_playlists[:5]:
-                        _LOGGER.info("Holiday playlist score %d: '%s'", score, p.get("name") or p.get("title"))
+                for s, p in scored[:5]:
+                    _LOGGER.info("Playlist score %d: '%s' (owner: %s)", s, p.get("name") or p.get("title"), p.get("owner", ""))
 
-                    if scored_playlists and scored_playlists[0][0] > 0:
-                        chosen_playlist = scored_playlists[0][1]
-                        is_official = (chosen_playlist.get("owner") or "").lower() == "spotify"
-                        _LOGGER.info("Selected holiday playlist by score: '%s' (score: %d)",
-                                   chosen_playlist.get("name"), scored_playlists[0][0])
-                    elif non_radio_playlists:
-                        # Last resort: first available playlist from search
-                        chosen_playlist = non_radio_playlists[0]
-                        _LOGGER.info("Using first available holiday playlist")
-                else:
-                    # Standard playlist selection (strict official-only)
-                    if official_playlists:
-                        # Among official, prefer ones with query in name
-                        official_with_name = [p for p in official_playlists if name_matches_query(p.get("name") or p.get("title") or "")]
-                        chosen_playlist = official_with_name[0] if official_with_name else official_playlists[0]
-                        is_official = True
-                        _LOGGER.info("Found official Spotify playlist")
+                if scored and scored[0][0] > 0:
+                    chosen = scored[0][1]
+                    playlist_name = chosen.get("name") or chosen.get("title")
+                    playlist_uri = chosen.get("uri") or chosen.get("media_id")
+                    playlist_owner = chosen.get("owner", "")
+                    is_official = playlist_owner.lower() == "spotify"
+                    _LOGGER.info("Selected playlist: '%s' (owner: %s, score: %d)", playlist_name, playlist_owner, scored[0][0])
 
-                # If no playlist found
-                if not chosen_playlist:
-                    if detected_holiday:
-                        _LOGGER.warning("No %s playlist found", detected_holiday)
-                        return {"error": f"Could not find a {detected_holiday} playlist. Try a different holiday search."}
-                    else:
-                        _LOGGER.warning("No official Spotify playlist found for '%s'", query)
-                        return {"error": f"Could not find an official Spotify playlist for '{query}'. Try 'play {query}' instead to play the artist directly."}
+                    await self._play_on_players(target_players, playlist_uri, "playlist", shuffle=True)
 
-                # Get the EXACT playlist title for verbatim announcement
-                playlist_name = chosen_playlist.get("name") or chosen_playlist.get("title")
-                playlist_uri = chosen_playlist.get("uri") or chosen_playlist.get("media_id")
-                playlist_owner = chosen_playlist.get("owner", "")
-                _LOGGER.info("Found Spotify playlist: '%s' (owner: %s)", playlist_name, playlist_owner)
+                    room_suffix = f" in the {room}" if room else ""
+                    return {
+                        "status": "shuffling",
+                        "playlist_title": playlist_name,
+                        "playlist_owner": playlist_owner,
+                        "is_official_playlist": is_official,
+                        "room": room,
+                        "response_text": f"Playing {playlist_name}{room_suffix}"
+                    }
 
-            # NO artist fallback - shuffle is ONLY for playlists
-            if not playlist_uri:
-                return {"error": f"Could not find a Spotify playlist matching '{query}'. Try a different artist or genre."}
-
-            player = target_players[0]
-            _LOGGER.info("Playing playlist '%s' shuffled on %s", playlist_name, player)
-
-            await self._play_media(player, playlist_uri, "playlist")
-
-            await self._hass.services.async_call(
-                "media_player", "shuffle_set",
-                {"entity_id": player, "shuffle": True},
-                blocking=True
-            )
-
-            # Return the EXACT playlist title for verbatim announcement
-            # Include room name and confirm it's an official Spotify playlist
-            room_suffix = f" in the {room}" if room else ""
-            return {
-                "status": "shuffling",
-                "playlist_title": playlist_name,
-                "playlist_owner": playlist_owner,
-                "is_official_playlist": is_official,
-                "room": room,
-                "response_text": f"Playing {playlist_name}{room_suffix}"
-            }
+            # Nothing found
+            if detected_holiday:
+                return {"error": f"Could not find a {detected_holiday} playlist. Try a different holiday search."}
+            return {"error": f"Could not find music matching '{query}'. Try 'play {query}' instead to play specific songs."}
 
         except Exception as search_err:
             _LOGGER.error("Shuffle search/play error: %s", search_err, exc_info=True)
-            return {"error": f"Failed to find or play playlist: {str(search_err)}"}
+            return {"error": f"Failed to find or play music: {str(search_err)}"}
