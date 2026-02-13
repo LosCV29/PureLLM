@@ -187,16 +187,41 @@ async def _search_albums_by_tag_musicbrainz(artist_name: str, tag: str) -> list[
 
 async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str = None) -> list[dict]:
     """Get artist's discography from MusicBrainz with album types and years."""
-    # First, find the artist ID
+    # First, find the artist ID — fetch multiple candidates and pick best name match
     artist_data = await _musicbrainz_get("artist", {
-        "query": f'artist:"{artist_name}"', "limit": 1,
+        "query": f'artist:"{artist_name}"', "limit": 10,
     })
     if not artist_data:
         return []
     artists = artist_data.get("artists", [])
-    if not artists or not artists[0].get("id"):
+    if not artists:
         return []
-    artist_id = artists[0]["id"]
+
+    # Pick the artist whose name best matches the query
+    name_lower = artist_name.lower()
+    best_artist = None
+    for a in artists:
+        a_name = (a.get("name") or "").lower()
+        a_sort = (a.get("sort-name") or "").lower()
+        # Exact match (case-insensitive)
+        if a_name == name_lower or a_sort == name_lower:
+            best_artist = a
+            break
+        # Substring match
+        if not best_artist and (name_lower in a_name or a_name in name_lower):
+            best_artist = a
+
+    if not best_artist:
+        # Fall back to first result with a score check
+        if artists[0].get("score", 0) >= 80:
+            best_artist = artists[0]
+        else:
+            _LOGGER.warning("MusicBrainz: No good artist match for '%s' (top result: '%s' score=%s)",
+                           artist_name, artists[0].get("name"), artists[0].get("score"))
+            return []
+
+    artist_id = best_artist["id"]
+    _LOGGER.info("MusicBrainz: Matched artist '%s' → '%s' (id=%s)", artist_name, best_artist.get("name"), artist_id)
 
     # MusicBrainz rate limit
     await asyncio.sleep(1)
