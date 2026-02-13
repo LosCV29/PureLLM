@@ -1401,17 +1401,44 @@ class MusicController:
                     seen_uris.add(uri)
                     playlists.append(p)
 
-            # Filter out radio playlists and official/editorial playlists
-            # ("This Is", "Best Of" by Spotify, etc.) to prefer user-curated lists
-            _OFFICIAL_PREFIXES = ("this is", "best of")
-            _OFFICIAL_OWNERS = ("spotify",)
+            # ── Filter: user-curated playlists ONLY ──
+            # NEVER play official Spotify playlists. User-curated ONLY.
+            #
+            # Primary signal: ALL Spotify editorial/algorithmic playlist IDs
+            # start with the prefix "37i9dQZF1". This catches:
+            #   - "This Is [Artist]", "[Artist] Radio", "[Artist] Mix"
+            #   - "Daily Mix", "Discover Weekly", "Release Radar"
+            #   - All editorial/mood/genre playlists owned by Spotify
+            #
+            # Secondary signals: owner field and name prefixes as backup.
+            _SPOTIFY_EDITORIAL_URI_PREFIX = "37i9dQZF1"
+            _OFFICIAL_NAME_PATTERNS = ("this is", "daily mix", "discover weekly", "release radar")
+            _OFFICIAL_OWNERS = frozenset((
+                "spotify", "spotifycharts", "topsify",
+                "filtr", "digster",
+            ))
+
+            def _extract_owner(p) -> str:
+                """Extract owner ID from playlist, handling both str and dict formats."""
+                raw = p.get("owner") or ""
+                if isinstance(raw, dict):
+                    return (raw.get("id") or raw.get("display_name") or "").lower()
+                return str(raw).lower()
 
             def _is_official(p):
-                name = (p.get("name") or p.get("title") or "").lower()
-                owner = (p.get("owner") or "").lower()
-                if any(name.startswith(prefix) for prefix in _OFFICIAL_PREFIXES):
+                # Check URI/media_id for the editorial prefix (most reliable)
+                uri = p.get("uri") or p.get("media_id") or ""
+                if _SPOTIFY_EDITORIAL_URI_PREFIX in uri:
                     return True
+                # Check owner field
+                owner = _extract_owner(p)
                 if owner in _OFFICIAL_OWNERS:
+                    return True
+                if owner.startswith("spotify") or owner.startswith("filtr") or owner.startswith("digster"):
+                    return True
+                # Check name patterns
+                name = (p.get("name") or p.get("title") or "").lower()
+                if any(name.startswith(pat) for pat in _OFFICIAL_NAME_PATTERNS):
                     return True
                 return False
 
@@ -1420,14 +1447,22 @@ class MusicController:
                 if "radio" not in (p.get("name") or p.get("title") or "").lower()
                 and not _is_official(p)
             ]
+
+            for p in playlists:
+                uri = p.get("uri") or p.get("media_id") or ""
+                _LOGGER.debug(
+                    "Playlist filter: '%s' owner='%s' uri='%s' official=%s",
+                    p.get("name") or p.get("title"),
+                    _extract_owner(p),
+                    uri,
+                    _is_official(p),
+                )
+
             if not filtered:
-                # Fall back: allow official but still exclude radio
-                filtered = [
-                    p for p in playlists
-                    if "radio" not in (p.get("name") or p.get("title") or "").lower()
-                ]
-            if not filtered:
-                filtered = playlists  # Last resort: use everything
+                # No user-curated playlists found — return error, NEVER fall back to official
+                if detected_holiday:
+                    return {"error": f"Could not find a user-curated {detected_holiday} playlist. Try a different search."}
+                return {"error": f"Could not find a user-curated playlist for '{query}'. Try 'play {query}' instead."}
 
             # ── Score and pick the best playlist ──
             query_words = [w for w in query_lower.split() if len(w) >= 3 and w not in ('the', 'and', 'for', 'music', 'playlist', 'in', 'mix')]
@@ -1453,7 +1488,7 @@ class MusicController:
             scored.sort(key=lambda x: x[0], reverse=True)
 
             for s, p in scored[:5]:
-                _LOGGER.info("  score %d: '%s' (owner: %s)", s, p.get("name") or p.get("title"), p.get("owner", ""))
+                _LOGGER.info("  score %d: '%s' (owner: %s)", s, p.get("name") or p.get("title"), _extract_owner(p))
 
             if not scored or scored[0][0] <= 0:
                 if detected_holiday:
