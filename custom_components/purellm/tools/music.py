@@ -5,6 +5,7 @@ import asyncio
 import codecs
 import logging
 import re
+import unicodedata
 import aiohttp
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
@@ -119,6 +120,18 @@ def _normalize_unicode(text: str | None) -> str:
     return text
 
 
+def _strip_accents(text: str) -> str:
+    """Strip accents/diacritics and lowercase for fuzzy matching.
+
+    Converts 'DeBí TiRaR MáS fOtOs' → 'debi tirar mas fotos' so that
+    MusicBrainz names match Music Assistant names regardless of accents.
+    """
+    if not text:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
+
+
 async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> int:
     """Look up album release year from MusicBrainz API."""
     clean_album = re.sub(r'\s*[\(\[].*?[\)\]]', '', album_name).strip()
@@ -197,18 +210,18 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
     if not artists:
         return []
 
-    # Pick the artist whose name best matches the query
-    name_lower = artist_name.lower()
+    # Pick the artist whose name best matches the query (accent-insensitive)
+    name_stripped = _strip_accents(artist_name)
     best_artist = None
     for a in artists:
-        a_name = (a.get("name") or "").lower()
-        a_sort = (a.get("sort-name") or "").lower()
-        # Exact match (case-insensitive)
-        if a_name == name_lower or a_sort == name_lower:
+        a_name = _strip_accents(a.get("name") or "")
+        a_sort = _strip_accents(a.get("sort-name") or "")
+        # Exact match (case+accent insensitive)
+        if a_name == name_stripped or a_sort == name_stripped:
             best_artist = a
             break
         # Substring match
-        if not best_artist and (name_lower in a_name or a_name in name_lower):
+        if not best_artist and (name_stripped in a_name or a_name in name_stripped):
             best_artist = a
 
     if not best_artist:
@@ -233,6 +246,12 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
     if not data:
         return []
 
+    # Keywords in title or disambiguation that indicate a non-studio release
+    _LIVE_HINTS = [
+        "live", "concert", "tour", "halftime", "super bowl", "performance",
+        "unplugged", "session", "in concert", "at the", "mtv",
+    ]
+
     discography = []
     for rg in data.get("release-groups", []):
         first_release = rg.get("first-release-date", "")
@@ -240,8 +259,14 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
         primary_type = (rg.get("primary-type") or "").lower()
         secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
 
-        is_studio = primary_type == "album" and not secondary_types
-        is_live = "live" in secondary_types
+        # Detect live releases even when MusicBrainz secondary_types is empty,
+        # by inspecting the disambiguation and title fields for live indicators
+        title_lower = (rg.get("title") or "").lower()
+        disambig_lower = (rg.get("disambiguation") or "").lower()
+        name_suggests_live = any(h in title_lower or h in disambig_lower for h in _LIVE_HINTS)
+
+        is_live = "live" in secondary_types or name_suggests_live
+        is_studio = primary_type == "album" and not secondary_types and not name_suggests_live
         is_compilation = "compilation" in secondary_types
         is_soundtrack = "soundtrack" in secondary_types
         is_ep = primary_type == "ep"
@@ -966,14 +991,22 @@ class MusicController:
 
                     albums = _parse_ma_results(search_result, "album")
                     if albums:
-                        # Find best match
-                        target_lower = target_album_name.lower()
+                        # Find best match (accent-insensitive for international albums)
+                        target_stripped = _strip_accents(target_album_name)
+                        artist_stripped = _strip_accents(artist) if artist else ""
                         best_album = None
                         for alb in albums:
-                            alb_name = (alb.get("name") or alb.get("title") or "").lower()
-                            if target_lower in alb_name or alb_name in target_lower:
+                            alb_name = _strip_accents(alb.get("name") or alb.get("title") or "")
+                            if target_stripped in alb_name or alb_name in target_stripped:
                                 best_album = alb
                                 break
+                        # Fallback: prefer album by the correct artist
+                        if not best_album and artist_stripped:
+                            for alb in albums:
+                                alb_artist = _strip_accents(_extract_artist(alb))
+                                if artist_stripped in alb_artist or alb_artist in artist_stripped:
+                                    best_album = alb
+                                    break
                         if not best_album:
                             best_album = albums[0]
 
@@ -1000,16 +1033,16 @@ class MusicController:
                 albums = _parse_ma_results(search_result, "album")
 
                 if albums:
-                    artist_lower = artist.lower()
-                    matching_albums = [a for a in albums if artist_lower in _extract_artist(a, lowercase=True) or _extract_artist(a, lowercase=True) in artist_lower]
+                    artist_stripped = _strip_accents(artist)
+                    matching_albums = [a for a in albums if artist_stripped in _strip_accents(_extract_artist(a)) or _strip_accents(_extract_artist(a)) in artist_stripped]
                     _LOGGER.warning("MUSIC DEBUG: Found %d albums, %d match artist '%s'", len(albums), len(matching_albums), artist)
 
                     # Filter by album name if specified (e.g., "christmas" for christmas albums)
                     if album and matching_albums:
-                        album_filter = album.lower()
+                        album_filter = _strip_accents(album)
                         filtered_albums = [
                             a for a in matching_albums
-                            if album_filter in (a.get("name") or a.get("title") or "").lower()
+                            if album_filter in _strip_accents(a.get("name") or a.get("title") or "")
                         ]
                         if filtered_albums:
                             _LOGGER.warning("MUSIC DEBUG: Filtered %d albums to %d matching '%s'",
