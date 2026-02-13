@@ -952,37 +952,37 @@ class MusicController:
                     qualifier = ' '.join(error_parts) + ' ' if error_parts else ''
                     return {"error": f"Could not find {qualifier}albums by {artist}"}
 
-                # Select album based on ordinal or modifier
-                target_album_name = None
-                target_year = 0
+                # Build ordered candidate list based on ordinal or modifier
+                candidates = []
                 if album_ordinal:
                     if album_ordinal <= len(discography):
-                        target_album_name = discography[album_ordinal - 1]["name"]
-                        target_year = discography[album_ordinal - 1]["year"]
-                        _LOGGER.warning("MUSIC DEBUG: Selected ordinal #%d album: '%s' (%d)", album_ordinal, target_album_name, target_year)
+                        candidates = [discography[album_ordinal - 1]]
+                        _LOGGER.warning("MUSIC DEBUG: Selected ordinal #%d album: '%s' (%d)", album_ordinal, candidates[0]["name"], candidates[0]["year"])
                     else:
                         return {"error": f"{artist} only has {len(discography)} {album + ' ' if album else ''}albums"}
                 elif album_modifier == "latest":
-                    target_album_name = discography[-1]["name"]
-                    target_year = discography[-1]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: Selected latest album: '%s' (%d)", target_album_name, target_year)
+                    # Try from newest to oldest — handles cases where the newest
+                    # release isn't in the music library (e.g. live performances
+                    # that MusicBrainz didn't tag with secondary-types)
+                    candidates = list(reversed(discography))
+                    _LOGGER.warning("MUSIC DEBUG: Trying latest album, %d candidates (newest first)", len(candidates))
                 elif album_modifier == "first":
-                    target_album_name = discography[0]["name"]
-                    target_year = discography[0]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: Selected first album: '%s' (%d)", target_album_name, target_year)
+                    # Try from oldest to newest
+                    candidates = list(discography)
+                    _LOGGER.warning("MUSIC DEBUG: Trying first album, %d candidates (oldest first)", len(candidates))
                 elif album_year and discography:
-                    # Year was specified, use the (first) album from that year
-                    target_album_name = discography[0]["name"]
-                    target_year = discography[0]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: Selected album from %d: '%s'", album_year, target_album_name)
+                    candidates = [discography[0]]
+                    _LOGGER.warning("MUSIC DEBUG: Selected album from %d: '%s'", album_year, candidates[0]["name"])
                 elif discography:
-                    # No modifier specified, just use the most recent from the tag/type search
-                    target_album_name = discography[-1]["name"]
-                    target_year = discography[-1]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: No modifier, using most recent: '%s' (%d)", target_album_name, target_year)
+                    candidates = list(reversed(discography))
+                    _LOGGER.warning("MUSIC DEBUG: No modifier, %d candidates (newest first)", len(candidates))
 
-                if target_album_name:
-                    # Search Music Assistant for this specific album
+                # Try each candidate until one is found in Music Assistant
+                first_candidate_name = candidates[0]["name"] if candidates else None
+                for candidate in candidates:
+                    target_album_name = candidate["name"]
+                    target_year = candidate["year"]
+
                     search_result = await self._hass.services.async_call(
                         "music_assistant", "search",
                         {"config_entry_id": ma_config_entry_id, "name": f"{target_album_name} {artist}", "media_type": ["album"], "limit": 5},
@@ -990,32 +990,37 @@ class MusicController:
                     )
 
                     albums = _parse_ma_results(search_result, "album")
-                    if albums:
-                        # Find best match (accent-insensitive for international albums)
-                        target_stripped = _strip_accents(target_album_name)
-                        artist_stripped = _strip_accents(artist) if artist else ""
-                        best_album = None
+                    if not albums:
+                        _LOGGER.warning("MUSIC DEBUG: '%s' (%d) not in music library, trying next", target_album_name, target_year)
+                        continue
+
+                    # Find best match (accent-insensitive for international albums)
+                    target_stripped = _strip_accents(target_album_name)
+                    artist_stripped = _strip_accents(artist) if artist else ""
+                    best_album = None
+                    for alb in albums:
+                        alb_name = _strip_accents(alb.get("name") or alb.get("title") or "")
+                        if target_stripped in alb_name or alb_name in target_stripped:
+                            best_album = alb
+                            break
+                    # Fallback: prefer album by the correct artist
+                    if not best_album and artist_stripped:
                         for alb in albums:
-                            alb_name = _strip_accents(alb.get("name") or alb.get("title") or "")
-                            if target_stripped in alb_name or alb_name in target_stripped:
+                            alb_artist = _strip_accents(_extract_artist(alb))
+                            if artist_stripped in alb_artist or alb_artist in artist_stripped:
                                 best_album = alb
                                 break
-                        # Fallback: prefer album by the correct artist
-                        if not best_album and artist_stripped:
-                            for alb in albums:
-                                alb_artist = _strip_accents(_extract_artist(alb))
-                                if artist_stripped in alb_artist or alb_artist in artist_stripped:
-                                    best_album = alb
-                                    break
-                        if not best_album:
-                            best_album = albums[0]
+                    if not best_album:
+                        _LOGGER.warning("MUSIC DEBUG: '%s' returned results but no good match, trying next", target_album_name)
+                        continue
 
-                        found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
-                        found_uri = best_album.get("uri") or best_album.get("media_id")
-                        await self._play_on_players(target_players, found_uri, "album")
-                        return {"status": "playing", "response_text": f"Playing {found_name} by {artist} in the {room}"}
+                    found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
+                    found_uri = best_album.get("uri") or best_album.get("media_id")
+                    await self._play_on_players(target_players, found_uri, "album")
+                    return {"status": "playing", "response_text": f"Playing {found_name} by {artist} in the {room}"}
 
-                    return {"error": f"Found '{target_album_name}' in MusicBrainz but not in your music library"}
+                if first_candidate_name:
+                    return {"error": f"Found '{first_candidate_name}' in MusicBrainz but none of the albums are in your music library"}
 
                 return {"error": f"Could not find {album + ' ' if album else ''}albums by {artist}"}
 
