@@ -1370,11 +1370,13 @@ class MusicController:
 
                 if artist_name:
                     category = "artist"
-                    search_queries = [artist_name, f"{artist_name} essentials", f"{artist_name} mix"]
+                    # Apple Music curated pattern: "[Artist] Essentials"
+                    search_queries = [f"{artist_name} essentials", artist_name]
                     _LOGGER.info("Shuffle category: ARTIST ('%s') — searching playlists", artist_name)
                 else:
                     category = "genre"
-                    search_queries = [query]
+                    # Apple Music curated patterns: "A-List [Genre]", "[Genre] Hits"
+                    search_queries = [query, f"{query} hits", f"A-List {query}"]
                     _LOGGER.info("Shuffle category: GENRE (no artist match)")
             else:
                 category = "holiday"
@@ -1439,11 +1441,18 @@ class MusicController:
                             score += 15
 
                 # Artist-specific matching
-                if artist_name and artist_name.lower() in name:
-                    score += 30
+                if artist_name:
+                    artist_lower = artist_name.lower()
+                    if artist_lower in name:
+                        score += 30
+                    # Apple Music's "[Artist] Essentials" is the gold standard
+                    if "essentials" in name and artist_lower in name:
+                        score += 150
 
-                # Common curated playlist patterns
-                if any(kw in name for kw in ("essentials", "hits", "top", "best of", "a-list")):
+                # Apple Music curated playlist patterns
+                if any(kw in name for kw in ("essentials", "a-list", "deep cuts")):
+                    score += 20
+                elif any(kw in name for kw in ("hits", "top", "best of")):
                     score += 5
 
                 # Penalize radio-style playlists
