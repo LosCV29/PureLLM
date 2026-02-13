@@ -179,6 +179,7 @@ MUSIC ROOMS: Extract room separately from query.
 For "album with [song] on it" use song_on_album param, NOT query.
 SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
 MUSIC SHUFFLE: For genre, artist, or holiday music, ALWAYS use action='shuffle'. Use 'play' only for specific songs, albums, or tracks.
+MUSIC TRANSFER: action='transfer' is ONLY for moving already-playing music to another room (e.g., "move/transfer the music to the kitchen"). NEVER use 'transfer' when the user asks to play NEW music in a room. "Play album X in the living room" = action='play' with room='living room'. "Transfer to the kitchen" = action='transfer'.
 """
 
 # =============================================================================
