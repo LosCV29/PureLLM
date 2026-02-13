@@ -1401,12 +1401,33 @@ class MusicController:
                     seen_uris.add(uri)
                     playlists.append(p)
 
-            non_radio = [
+            # Filter out radio playlists and official/editorial playlists
+            # ("This Is", "Best Of" by Spotify, etc.) to prefer user-curated lists
+            _OFFICIAL_PREFIXES = ("this is", "best of")
+            _OFFICIAL_OWNERS = ("spotify",)
+
+            def _is_official(p):
+                name = (p.get("name") or p.get("title") or "").lower()
+                owner = (p.get("owner") or "").lower()
+                if any(name.startswith(prefix) for prefix in _OFFICIAL_PREFIXES):
+                    return True
+                if owner in _OFFICIAL_OWNERS:
+                    return True
+                return False
+
+            filtered = [
                 p for p in playlists
                 if "radio" not in (p.get("name") or p.get("title") or "").lower()
+                and not _is_official(p)
             ]
-            if not non_radio:
-                non_radio = playlists  # Fall back to all if everything was filtered
+            if not filtered:
+                # Fall back: allow official but still exclude radio
+                filtered = [
+                    p for p in playlists
+                    if "radio" not in (p.get("name") or p.get("title") or "").lower()
+                ]
+            if not filtered:
+                filtered = playlists  # Last resort: use everything
 
             # ── Score and pick the best playlist ──
             query_words = [w for w in query_lower.split() if len(w) >= 3 and w not in ('the', 'and', 'for', 'music', 'playlist', 'in', 'mix')]
@@ -1426,12 +1447,9 @@ class MusicController:
                     for term in holiday_search_terms:
                         if term in name:
                             score += 10
-                # Small bonus for curated-style names
-                if name.startswith("this is") or name.startswith("best of"):
-                    score += 3
                 return score
 
-            scored = [(score_playlist(p), p) for p in non_radio]
+            scored = [(score_playlist(p), p) for p in filtered]
             scored.sort(key=lambda x: x[0], reverse=True)
 
             for s, p in scored[:5]:
