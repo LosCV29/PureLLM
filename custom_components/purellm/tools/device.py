@@ -363,7 +363,7 @@ async def control_device(
     entity_ids_list = arguments.get("entity_ids", [])
     area_name = arguments.get("area", "").strip()
     domain_filter = arguments.get("domain", "").strip().lower()
-    device_name = arguments.get("device", "").strip()
+    device_name = arguments.get("device", "").strip().rstrip(".,!?;:")
 
     # Fallback: extract device name from original user query when LLM omits it
     if not direct_entity_id and not entity_ids_list and not area_name and not device_name and user_query:
