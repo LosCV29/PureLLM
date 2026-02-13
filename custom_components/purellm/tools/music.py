@@ -246,6 +246,12 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
     if not data:
         return []
 
+    # Keywords in title or disambiguation that indicate a non-studio release
+    _LIVE_HINTS = [
+        "live", "concert", "tour", "halftime", "super bowl", "performance",
+        "unplugged", "session", "in concert", "at the", "mtv",
+    ]
+
     discography = []
     for rg in data.get("release-groups", []):
         first_release = rg.get("first-release-date", "")
@@ -253,8 +259,14 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
         primary_type = (rg.get("primary-type") or "").lower()
         secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
 
-        is_studio = primary_type == "album" and not secondary_types
-        is_live = "live" in secondary_types
+        # Detect live releases even when MusicBrainz secondary_types is empty,
+        # by inspecting the disambiguation and title fields for live indicators
+        title_lower = (rg.get("title") or "").lower()
+        disambig_lower = (rg.get("disambiguation") or "").lower()
+        name_suggests_live = any(h in title_lower or h in disambig_lower for h in _LIVE_HINTS)
+
+        is_live = "live" in secondary_types or name_suggests_live
+        is_studio = primary_type == "album" and not secondary_types and not name_suggests_live
         is_compilation = "compilation" in secondary_types
         is_soundtrack = "soundtrack" in secondary_types
         is_ep = primary_type == "ep"
