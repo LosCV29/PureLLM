@@ -1056,18 +1056,27 @@ class PureLLMConversationEntity(ConversationEntity):
             if function_calls:
                 contents.append({"role": "model", "parts": parts})
                 function_responses = []
+                direct_responses = []
 
                 for fc in function_calls:
                     tools_used_names.append(fc["name"])
                     result = await self._execute_tool(fc["name"], fc.get("args", {}))
                     if isinstance(result, dict) and "response_text" in result:
                         resp_content = result["response_text"]
+                        direct_responses.append(resp_content)
                     else:
                         resp_content = json.dumps(result, ensure_ascii=False)
 
                     function_responses.append({
                         "functionResponse": {"name": fc["name"], "response": {"result": resp_content}}
                     })
+
+                # Short-circuit: if every tool returned response_text, return
+                # directly instead of burning another LLM round-trip.
+                if len(direct_responses) == len(function_calls):
+                    combined = " ".join(direct_responses)
+                    _LOGGER.info("Short-circuit: returning response_text directly (saved ~1 LLM call)")
+                    return (combined, tools_used_names)
 
                 contents.append({"role": "user", "parts": function_responses})
                 continue
@@ -1366,26 +1375,36 @@ class PureLLMConversationEntity(ConversationEntity):
 
                     tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
 
-                    # Yield tool calls and results as deltas
+                    # Process tool results and check for direct responses
+                    direct_responses = []
                     for tool_call, result in zip(unique_tool_calls, tool_results):
                         if isinstance(result, Exception):
                             _LOGGER.error("Tool %s failed: %s", tool_call["function"]["name"], result)
                             result = {"error": str(result)}
 
-                        # Get content for the message
                         if isinstance(result, dict) and "response_text" in result:
                             content = result["response_text"]
+                            direct_responses.append(content)
                         else:
                             content = json.dumps(result, ensure_ascii=False)
 
                         _LOGGER.debug("Tool result for %s: %s", tool_call["function"]["name"], content[:200])
 
-                        # Add tool result to messages for next iteration
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call["id"],
                             "content": content,
                         })
+
+                    # Short-circuit: if every tool returned response_text, return
+                    # directly instead of burning another LLM round-trip.
+                    if len(direct_responses) == len(unique_tool_calls):
+                        combined = " ".join(direct_responses)
+                        _LOGGER.info("Short-circuit: returning response_text directly (saved ~1 LLM call)")
+                        if tools_used_names:
+                            yield {"tools_used": tools_used_names}
+                        yield {"content": combined}
+                        return
 
                     # Continue to next iteration to get LLM's response after tools
                     continue
