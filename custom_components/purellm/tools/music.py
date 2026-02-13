@@ -1311,12 +1311,14 @@ class MusicController:
         return {"status": "transferred", "response_text": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
-        """Play music shuffled for a query.
+        """Find the best playlist for a query and play it shuffled.
 
-        Three categories:
+        Three categories — all resolve to a playlist:
         1. Holiday: detected via keyword → playlist search with holiday terms
-        2. Artist: confirmed via MA artist lookup → play artist directly (shuffled)
+        2. Artist: confirmed via quick MA artist lookup → playlist search by artist name
         3. Genre/mood: no artist match → playlist search with raw query
+
+        Accepts any playable playlist (not limited to official Spotify playlists).
         """
         if not query:
             return {"error": "No search query specified for shuffle"}
@@ -1342,12 +1344,12 @@ class MusicController:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
-            # ── Determine category ──
+            # ── Determine category and build playlist search queries ──
             category = "holiday" if detected_holiday else "genre"
-            matched_artist = None
+            search_queries = []
 
             if not detected_holiday:
-                # Quick artist check
+                # Quick artist check — if it's a real artist, search playlists by artist name
                 artist_result = await self._hass.services.async_call(
                     "music_assistant", "search",
                     {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["artist"], "limit": 5},
@@ -1359,36 +1361,18 @@ class MusicController:
                         name = (a.get("name") or a.get("title") or "").lower()
                         if query_lower == name or query_lower in name or name in query_lower:
                             category = "artist"
-                            matched_artist = a
                             _LOGGER.info("Shuffle category: ARTIST ('%s')", a.get("name") or a.get("title"))
                             break
 
                 if category == "genre":
                     _LOGGER.info("Shuffle category: GENRE (no artist match)")
 
-            # ── Artist shuffle: play the artist directly (no playlists) ──
-            if category == "artist" and matched_artist:
-                artist_uri = matched_artist.get("uri") or matched_artist.get("media_id")
-                artist_name = matched_artist.get("name") or matched_artist.get("title")
-                if not artist_uri:
-                    return {"error": f"Found artist '{artist_name}' but no URI available"}
-
-                _LOGGER.info("Playing artist '%s' shuffled (direct, no playlist)", artist_name)
-                await self._play_on_players(target_players, artist_uri, "artist", shuffle=True)
-
-                room_suffix = f" in the {room}" if room else ""
-                return {
-                    "status": "shuffling",
-                    "artist": artist_name,
-                    "category": "artist",
-                    "room": room,
-                    "response_text": f"Shuffling {artist_name}{room_suffix}"
-                }
-
-            # ── Holiday / Genre: search for playlists ──
-            search_queries = [query]
-            if detected_holiday and holiday_search_terms[0] != query_lower:
-                search_queries.append(holiday_search_terms[0])
+                search_queries = [query]
+            else:
+                # Holiday: full query first, then primary holiday term as fallback
+                search_queries = [query]
+                if holiday_search_terms[0] != query_lower:
+                    search_queries.append(holiday_search_terms[0])
 
             # ── Search for playlists ──
             all_playlists = []
