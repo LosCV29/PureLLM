@@ -1314,10 +1314,13 @@ class MusicController:
         """Shuffle music for a query.
 
         Three categories:
-        1. Artist: confirmed via quick MA artist lookup → fetch top 50 tracks
-           directly, queue them all, and shuffle. No playlists involved.
-        2. Holiday: detected via keyword → playlist search with holiday terms
-        3. Genre/mood: no artist match → playlist search with raw query
+        1. Artist: confirmed via quick MA artist lookup → play artist directly
+           with shuffle enabled. MA handles track resolution internally.
+        2. Holiday: detected via keyword → track search with holiday terms
+        3. Genre/mood: no artist match → track search with raw query
+
+        Categories 2 & 3 use track search (never playlist endpoints) so that
+        MA routes through the dev token's personal rate-limit bucket.
         """
         if not query:
             return {"error": "No search query specified for shuffle"}
@@ -1343,7 +1346,7 @@ class MusicController:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
-            # ── Artist-based track shuffle (no playlists!) ──
+            # ── Artist-based shuffle (play artist directly, no playlists or track lists) ──
             if not detected_holiday:
                 artist_result = await self._hass.services.async_call(
                     "music_assistant", "search",
@@ -1361,143 +1364,82 @@ class MusicController:
 
                 if matched_artist:
                     artist_name = _normalize_unicode(matched_artist.get("name") or matched_artist.get("title") or query)
-                    _LOGGER.info("Shuffle category: ARTIST ('%s') — fetching top 50 tracks", artist_name)
+                    artist_uri = matched_artist.get("uri") or matched_artist.get("media_id")
 
-                    # Fetch top 50 tracks by this artist (sorted by popularity)
-                    track_result = await self._hass.services.async_call(
-                        "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": artist_name, "media_type": ["track"], "limit": 50},
-                        blocking=True, return_response=True
-                    )
-                    tracks = _parse_ma_results(track_result, "track")
+                    if not artist_uri:
+                        return {"error": f"Could not find playable URI for '{artist_name}'."}
 
-                    # Filter to tracks actually by this artist
-                    artist_tracks = []
-                    for t in tracks:
-                        track_artist = _extract_artist(t, lowercase=True)
-                        if track_artist and (query_lower in track_artist or track_artist in query_lower):
-                            artist_tracks.append(t)
+                    _LOGGER.info("Shuffle category: ARTIST ('%s') — playing artist directly with shuffle (uri=%s)", artist_name, artist_uri)
 
-                    if not artist_tracks:
-                        # Fallback: use all returned tracks (search was artist-specific)
-                        artist_tracks = tracks
-
-                    if not artist_tracks:
-                        return {"error": f"Could not find tracks for '{query}'. Try 'play {query}' instead."}
-
-                    # Collect track URIs
-                    track_uris = []
-                    for t in artist_tracks:
-                        uri = t.get("uri") or t.get("media_id")
-                        if uri:
-                            track_uris.append(uri)
-
-                    if not track_uris:
-                        return {"error": f"Could not find playable tracks for '{query}'."}
-
-                    _LOGGER.info("Queuing %d tracks by '%s' for shuffle", len(track_uris), artist_name)
-
-                    # Play all tracks at once and shuffle
-                    for player in target_players:
-                        await self._hass.services.async_call(
-                            "music_assistant", "play_media",
-                            {"media_id": track_uris, "media_type": "track", "enqueue": "replace", "radio_mode": False},
-                            target={"entity_id": player},
-                            blocking=True
-                        )
-                        await self._hass.services.async_call(
-                            "media_player", "shuffle_set",
-                            {"entity_id": player, "shuffle": True},
-                            blocking=True
-                        )
+                    # Play the artist directly — MA resolves tracks internally
+                    await self._play_on_players(target_players, artist_uri, "artist", shuffle=True)
 
                     room_suffix = f" in the {room}" if room else ""
                     return {
                         "status": "shuffling",
                         "artist": artist_name,
-                        "track_count": len(track_uris),
                         "category": "artist",
                         "room": room,
-                        "response_text": f"Shuffling {len(track_uris)} tracks by {artist_name}{room_suffix}"
+                        "response_text": f"Shuffling {artist_name}{room_suffix}"
                     }
 
                 _LOGGER.info("Shuffle category: GENRE (no artist match)")
 
-            # ── Holiday / Genre fallback: playlist-based shuffle ──
+            # ── Holiday / Genre fallback: track-search shuffle ──
+            # Uses /v1/search?type=track (dev token, personal rate bucket)
+            # instead of playlist endpoints (shared global token).
             search_queries = [query]
             if detected_holiday and holiday_search_terms[0] != query_lower:
                 search_queries.append(holiday_search_terms[0])
 
-            all_playlists = []
-            limit = 15 if detected_holiday else 10
+            all_tracks: list[dict] = []
+            seen_uris: set[str] = set()
+            limit = 25 if detected_holiday else 20
             for search_query in search_queries:
                 search_result = await self._hass.services.async_call(
                     "music_assistant", "search",
-                    {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": ["playlist"], "limit": limit},
+                    {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": ["track"], "limit": limit},
                     blocking=True, return_response=True
                 )
-                all_playlists.extend(_parse_ma_results(search_result, "playlist"))
+                for t in _parse_ma_results(search_result, "track"):
+                    uri = t.get("uri") or t.get("media_id") or ""
+                    if uri and uri not in seen_uris:
+                        seen_uris.add(uri)
+                        all_tracks.append(t)
 
-            _LOGGER.info("Playlist search for '%s' found %d results", query, len(all_playlists))
+            _LOGGER.info("Track search for '%s' found %d results", query, len(all_tracks))
 
-            if not all_playlists:
-                category_label = detected_holiday or "genre"
-                return {"error": f"Could not find a playlist for '{query}'. Try 'play {query}' instead."}
+            if not all_tracks:
+                return {"error": f"Could not find tracks for '{query}'. Try 'play {query}' instead."}
 
-            # Deduplicate and filter out radio playlists
-            seen_uris = set()
-            filtered = []
-            for p in all_playlists:
-                uri = p.get("uri") or p.get("media_id") or ""
-                name = (p.get("name") or p.get("title") or "").lower()
-                if uri and uri not in seen_uris and "radio" not in name:
-                    seen_uris.add(uri)
-                    filtered.append(p)
-
-            if not filtered:
-                return {"error": f"Could not find a playlist for '{query}'. Try 'play {query}' instead."}
-
-            # Score and pick the best playlist
-            query_words = [w for w in query_lower.split() if len(w) >= 3 and w not in ('the', 'and', 'for', 'music', 'playlist', 'in', 'mix')]
-
-            def score_playlist(p):
-                name = (p.get("name") or p.get("title") or "").lower()
-                score = 0
-                if query_lower in name:
-                    score += 20
-                for word in query_words:
-                    if word in name:
-                        score += 10
-                if detected_holiday:
-                    for term in holiday_search_terms:
-                        if term in name:
-                            score += 10
-                return score
-
-            scored = [(score_playlist(p), p) for p in filtered]
-            scored.sort(key=lambda x: x[0], reverse=True)
-
-            for s, p in scored[:5]:
-                _LOGGER.info("  score %d: '%s'", s, p.get("name") or p.get("title"))
-
-            if not scored or scored[0][0] <= 0:
-                return {"error": f"Could not find a playlist for '{query}'. Try 'play {query}' instead."}
-
-            chosen = scored[0][1]
-            playlist_name = chosen.get("name") or chosen.get("title")
-            playlist_uri = chosen.get("uri") or chosen.get("media_id")
             category = "holiday" if detected_holiday else "genre"
-            _LOGGER.info("Playing playlist '%s' shuffled (%s)", playlist_name, category)
+            _LOGGER.info("Queuing %d tracks shuffled (%s)", len(all_tracks), category)
 
-            await self._play_on_players(target_players, playlist_uri, "playlist", shuffle=True)
+            for player in target_players:
+                for i, track in enumerate(all_tracks):
+                    track_uri = track.get("uri") or track.get("media_id")
+                    if not track_uri:
+                        continue
+                    enqueue = "replace" if i == 0 else "add"
+                    await self._hass.services.async_call(
+                        "music_assistant", "play_media",
+                        {"media_id": track_uri, "media_type": "track", "enqueue": enqueue, "radio_mode": False},
+                        target={"entity_id": player},
+                        blocking=True
+                    )
+                await self._hass.services.async_call(
+                    "media_player", "shuffle_set",
+                    {"entity_id": player, "shuffle": True},
+                    blocking=True
+                )
 
             room_suffix = f" in the {room}" if room else ""
             return {
                 "status": "shuffling",
-                "playlist_title": playlist_name,
+                "track_count": len(all_tracks),
                 "category": category,
                 "room": room,
-                "response_text": f"Playing {playlist_name}{room_suffix}"
+                "response_text": f"Shuffling {query} music{room_suffix}"
             }
 
         except Exception as search_err:
