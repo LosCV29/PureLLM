@@ -1314,8 +1314,9 @@ class MusicController:
         """Shuffle music for a query.
 
         Three categories:
-        1. Artist: confirmed via quick MA artist lookup → fetch top 50 tracks
-           directly, queue them all, and shuffle. No playlists involved.
+        1. Artist: confirmed via quick MA artist lookup → play artist directly
+           with shuffle enabled. MA handles track resolution internally —
+           no individual track or playlist API calls from PureLLM.
         2. Holiday: detected via keyword → playlist search with holiday terms
         3. Genre/mood: no artist match → playlist search with raw query
         """
@@ -1343,7 +1344,7 @@ class MusicController:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
-            # ── Artist-based track shuffle (no playlists!) ──
+            # ── Artist-based shuffle (play artist directly, no playlists or track lists) ──
             if not detected_holiday:
                 artist_result = await self._hass.services.async_call(
                     "music_assistant", "search",
@@ -1361,64 +1362,23 @@ class MusicController:
 
                 if matched_artist:
                     artist_name = _normalize_unicode(matched_artist.get("name") or matched_artist.get("title") or query)
-                    _LOGGER.info("Shuffle category: ARTIST ('%s') — fetching top 50 tracks", artist_name)
+                    artist_uri = matched_artist.get("uri") or matched_artist.get("media_id")
 
-                    # Fetch top 50 tracks by this artist (sorted by popularity)
-                    track_result = await self._hass.services.async_call(
-                        "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": artist_name, "media_type": ["track"], "limit": 50},
-                        blocking=True, return_response=True
-                    )
-                    tracks = _parse_ma_results(track_result, "track")
+                    if not artist_uri:
+                        return {"error": f"Could not find playable URI for '{artist_name}'."}
 
-                    # Filter to tracks actually by this artist
-                    artist_tracks = []
-                    for t in tracks:
-                        track_artist = _extract_artist(t, lowercase=True)
-                        if track_artist and (query_lower in track_artist or track_artist in query_lower):
-                            artist_tracks.append(t)
+                    _LOGGER.info("Shuffle category: ARTIST ('%s') — playing artist directly with shuffle (uri=%s)", artist_name, artist_uri)
 
-                    if not artist_tracks:
-                        # Fallback: use all returned tracks (search was artist-specific)
-                        artist_tracks = tracks
-
-                    if not artist_tracks:
-                        return {"error": f"Could not find tracks for '{query}'. Try 'play {query}' instead."}
-
-                    # Collect track URIs
-                    track_uris = []
-                    for t in artist_tracks:
-                        uri = t.get("uri") or t.get("media_id")
-                        if uri:
-                            track_uris.append(uri)
-
-                    if not track_uris:
-                        return {"error": f"Could not find playable tracks for '{query}'."}
-
-                    _LOGGER.info("Queuing %d tracks by '%s' for shuffle", len(track_uris), artist_name)
-
-                    # Play all tracks at once and shuffle
-                    for player in target_players:
-                        await self._hass.services.async_call(
-                            "music_assistant", "play_media",
-                            {"media_id": track_uris, "media_type": "track", "enqueue": "replace", "radio_mode": False},
-                            target={"entity_id": player},
-                            blocking=True
-                        )
-                        await self._hass.services.async_call(
-                            "media_player", "shuffle_set",
-                            {"entity_id": player, "shuffle": True},
-                            blocking=True
-                        )
+                    # Play the artist directly — MA resolves tracks internally
+                    await self._play_on_players(target_players, artist_uri, "artist", shuffle=True)
 
                     room_suffix = f" in the {room}" if room else ""
                     return {
                         "status": "shuffling",
                         "artist": artist_name,
-                        "track_count": len(track_uris),
                         "category": "artist",
                         "room": room,
-                        "response_text": f"Shuffling {len(track_uris)} tracks by {artist_name}{room_suffix}"
+                        "response_text": f"Shuffling {artist_name}{room_suffix}"
                     }
 
                 _LOGGER.info("Shuffle category: GENRE (no artist match)")
