@@ -1,4 +1,4 @@
-"""Reminders tool handler for PureLLM."""
+"""Reminders tool handler for PolyVoice."""
 from __future__ import annotations
 
 import logging

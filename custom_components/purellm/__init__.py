@@ -1,4 +1,4 @@
-"""The PureLLM integration."""
+"""The PolyVoice integration."""
 from __future__ import annotations
 
 import asyncio
@@ -88,7 +88,7 @@ class PureLLMSnapshotView(HomeAssistantView):
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
-    """Set up the PureLLM component."""
+    """Set up the PolyVoice component."""
     hass.data.setdefault(DOMAIN, {})
     return True
 
@@ -241,7 +241,7 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate old entry to current version."""
-    _LOGGER.info("Migrating PureLLM from version %s", entry.version)
+    _LOGGER.info("Migrating PolyVoice from version %s", entry.version)
 
     if entry.version < 2:
         hass.config_entries.async_update_entry(entry, version=2)
@@ -261,16 +261,16 @@ def _handle_timer_finished(hass: HomeAssistant, event: Event) -> None:
     if not entity_id:
         return
 
-    # Check if this timer was started by PureLLM
+    # Check if this timer was started by PolyVoice
     timer_info = get_registered_timer(hass, entity_id)
     if not timer_info:
-        _LOGGER.debug("Timer %s finished but was not started by PureLLM", entity_id)
+        _LOGGER.debug("Timer %s finished but was not started by PolyVoice", entity_id)
         return
 
     timer_name = timer_info.get("name", "Timer")
     announce_player = timer_info.get("announce_player")
 
-    _LOGGER.info("PureLLM timer finished: %s -> announcing on %s",
+    _LOGGER.info("PolyVoice timer finished: %s -> announcing on %s",
                  timer_name, announce_player or "default")
 
     # Unregister the timer
@@ -291,14 +291,19 @@ async def _announce_timer_finished(
     message: str,
     target_player: str | None
 ) -> None:
-    """Announce timer completion via TTS or persistent notification fallback."""
+    """Announce timer completion via TTS or notification."""
+    announced = False
+
+    # Try TTS first
     if target_player and hass.services.has_service("tts", "speak"):
-        tts_entities = [
-            s.entity_id for s in hass.states.async_all()
-            if s.entity_id.startswith("tts.")
-        ]
-        if tts_entities:
-            try:
+        try:
+            # Get available TTS engines
+            tts_entities = [
+                s.entity_id for s in hass.states.async_all()
+                if s.entity_id.startswith("tts.")
+            ]
+
+            if tts_entities:
                 await hass.services.async_call(
                     "tts", "speak",
                     {
@@ -308,26 +313,59 @@ async def _announce_timer_finished(
                     },
                     blocking=False
                 )
+                announced = True
                 _LOGGER.debug("Announced timer via tts.speak on %s", target_player)
-                return
-            except Exception as err:
-                _LOGGER.warning("TTS speak failed: %s", err)
+        except Exception as err:
+            _LOGGER.warning("TTS speak failed: %s", err)
 
-    # Fallback: persistent notification
-    await hass.services.async_call(
-        "persistent_notification", "create",
-        {
-            "title": "Timer Finished",
-            "message": message,
-            "notification_id": "purellm_timer",
-        },
-        blocking=False
-    )
-    _LOGGER.debug("Created persistent notification for timer (no TTS available)")
+    # Fallback: try media_player.play_media with TTS URL
+    if not announced and target_player and hass.services.has_service("tts", "google_translate_say"):
+        try:
+            await hass.services.async_call(
+                "tts", "google_translate_say",
+                {
+                    "entity_id": target_player,
+                    "message": message,
+                },
+                blocking=False
+            )
+            announced = True
+            _LOGGER.debug("Announced timer via google_translate_say on %s", target_player)
+        except Exception as err:
+            _LOGGER.debug("google_translate_say failed: %s", err)
+
+    # Fallback: try cloud say
+    if not announced and target_player and hass.services.has_service("tts", "cloud_say"):
+        try:
+            await hass.services.async_call(
+                "tts", "cloud_say",
+                {
+                    "entity_id": target_player,
+                    "message": message,
+                },
+                blocking=False
+            )
+            announced = True
+            _LOGGER.debug("Announced timer via cloud_say on %s", target_player)
+        except Exception as err:
+            _LOGGER.debug("cloud_say failed: %s", err)
+
+    # Last resort: persistent notification
+    if not announced:
+        await hass.services.async_call(
+            "persistent_notification", "create",
+            {
+                "title": "Timer Finished",
+                "message": message,
+                "notification_id": "polyvoice_timer",
+            },
+            blocking=False
+        )
+        _LOGGER.debug("Created persistent notification for timer (no TTS available)")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up PureLLM from a config entry."""
+    """Set up PolyVoice from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
     config = {**entry.data, **entry.options}
@@ -369,7 +407,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.add_update_listener(_async_update_listener)
     )
 
-    _LOGGER.info("PureLLM setup complete")
+    _LOGGER.info("PolyVoice setup complete")
     return True
 
 

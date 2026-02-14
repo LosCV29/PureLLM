@@ -1,4 +1,4 @@
-"""Lists tool handler for PureLLM (shopping list, to-do list)."""
+"""Lists tool handler for PolyVoice (shopping list, to-do list)."""
 from __future__ import annotations
 
 import logging

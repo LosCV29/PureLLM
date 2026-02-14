@@ -1,4 +1,4 @@
-"""Parsing utilities for PureLLM configuration strings."""
+"""Parsing utilities for PolyVoice configuration strings."""
 from __future__ import annotations
 
 
