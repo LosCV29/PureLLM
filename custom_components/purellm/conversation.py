@@ -731,6 +731,15 @@ class PureLLMConversationEntity(ConversationEntity):
         """Remove <think>…</think> reasoning blocks from LLM output."""
         return cls._THINK_RE.sub("", text).strip()
 
+    # Regex for "I've [action verb]" confirmations — catches hallucinated
+    # action claims regardless of response length (e.g. "I've set the
+    # Living Room Shade to its favorite position. Anything else?")
+    _HALLUCINATED_IVE_RE = re.compile(
+        r"\bi'?ve\s+(?:set|turned|opened|closed|locked|unlocked|"
+        r"lowered|raised|adjusted|dimmed|muted|unmuted|started|stopped|"
+        r"paused|resumed|toggled|activated|deactivated)\b"
+    )
+
     @classmethod
     def _is_hallucinated_action(cls, response: str) -> bool:
         """Check if a response claims a device action was performed.
@@ -742,6 +751,12 @@ class PureLLMConversationEntity(ConversationEntity):
         """
         # Strip <think> tags so reasoning tokens don't inflate the length
         resp = cls._strip_think_tags(response).lower().strip().rstrip(".")
+
+        # "I've [action]" is almost always a hallucinated confirmation,
+        # regardless of response length (LLM may append follow-up questions).
+        if cls._HALLUCINATED_IVE_RE.search(resp):
+            return True
+
         # Short confirmations the prompt asks for ("Done.", "Light on.", etc.)
         if len(resp) < 80:
             action_phrases = (
@@ -1008,6 +1023,8 @@ class PureLLMConversationEntity(ConversationEntity):
                     result = await self._execute_tool(fc["name"], fc.get("args", {}))
                     if isinstance(result, dict) and "response_text" in result:
                         resp_content = result["response_text"]
+                    elif isinstance(result, dict) and "error" in result:
+                        resp_content = result["error"]
                     else:
                         resp_content = json.dumps(result, ensure_ascii=False)
 
@@ -1315,6 +1332,8 @@ class PureLLMConversationEntity(ConversationEntity):
                         # Get content for the message
                         if isinstance(result, dict) and "response_text" in result:
                             content = result["response_text"]
+                        elif isinstance(result, dict) and "error" in result:
+                            content = result["error"]
                         else:
                             content = json.dumps(result, ensure_ascii=False)
 

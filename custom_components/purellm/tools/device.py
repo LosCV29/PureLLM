@@ -35,7 +35,7 @@ async def check_device_status(
     Returns:
         Device status dict
     """
-    device = arguments.get("device", "").strip()
+    device = arguments.get("device", "").strip().rstrip(".,!?")
 
     # Extract device name from original query using patterns
     extracted_device = None
@@ -359,7 +359,7 @@ async def control_device(
     entity_ids_list = arguments.get("entity_ids", [])
     area_name = arguments.get("area", "").strip()
     domain_filter = arguments.get("domain", "").strip().lower()
-    device_name = arguments.get("device", "").strip()
+    device_name = arguments.get("device", "").strip().rstrip(".,!?")
 
     # Fallback: extract device name from original user query when LLM omits it
     if not direct_entity_id and not entity_ids_list and not area_name and not device_name and user_query:
@@ -652,14 +652,15 @@ async def control_device(
         if domain == "light" and action in ("turn_on", "dim"):
             if brightness is not None:
                 service_data["brightness_pct"] = max(0, min(100, brightness))
-            if color and color in color_map and color_map[color]:
+            # Color settings are mutually exclusive — only set one
+            if color_temp is not None:
+                service_data["color_temp_kelvin"] = max(2000, min(6500, color_temp))
+            elif color and color in color_map and color_map[color]:
                 service_data["rgb_color"] = color_map[color]
             elif color == "warm":
                 service_data["color_temp_kelvin"] = 2700
             elif color == "cool":
                 service_data["color_temp_kelvin"] = 6500
-            if color_temp is not None:
-                service_data["color_temp_kelvin"] = max(2000, min(6500, color_temp))
 
         # Media player controls
         if domain == "media_player":
