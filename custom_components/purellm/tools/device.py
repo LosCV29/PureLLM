@@ -731,8 +731,16 @@ async def control_device(
     async def execute_call(call_info: tuple[str, str, dict, str]) -> tuple[str, Exception | None]:
         domain, service, data, name = call_info
         try:
-            await hass.services.async_call(domain, service, data, blocking=False)
-            _LOGGER.info("Device control: %s.%s on %s", domain, service, name)
+            # Somfy/Overkiz covers need a double-send: first command wakes the
+            # motor's radio receiver, second command actually executes the action.
+            if domain == "cover":
+                await hass.services.async_call(domain, service, data, blocking=True)
+                await asyncio.sleep(0.8)
+                await hass.services.async_call(domain, service, data, blocking=True)
+                _LOGGER.info("Device control (cover double-send): %s.%s on %s", domain, service, name)
+            else:
+                await hass.services.async_call(domain, service, data, blocking=False)
+                _LOGGER.info("Device control: %s.%s on %s", domain, service, name)
             return (name, None)
         except Exception as err:
             _LOGGER.error("Error controlling device %s: %s", name, err)
