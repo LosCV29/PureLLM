@@ -412,11 +412,6 @@ class PureLLMConversationEntity(ConversationEntity):
         if self.enable_cameras and self.frigate_url:
             asyncio.create_task(self._fetch_frigate_camera_names())
 
-        # Listen for config updates
-        self.entry.async_on_unload(
-            self.entry.add_update_listener(self._async_config_updated)
-        )
-
     async def _warmup_provider_connection(self) -> None:
         """Pre-establish connection to LLM provider.
 
@@ -479,11 +474,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 )
         except Exception as e:
             _LOGGER.debug("Failed to fetch Frigate cameras at startup: %s", e)
-
-    @staticmethod
-    async def _async_config_updated(hass: HomeAssistant, entry: ConfigEntry) -> None:
-        """Handle config entry update."""
-        await hass.config_entries.async_reload(entry.entry_id)
 
     def _track_api_call(self, api_name: str) -> None:
         """Track API usage."""
@@ -820,6 +810,19 @@ class PureLLMConversationEntity(ConversationEntity):
         "control_timer", "manage_list", "create_reminder", "control_sofabaton",
     })
 
+    # Phrases that don't need tool calls
+    _DISMISSALS = frozenset({
+        "no", "nope", "done", "stop", "never mind", "nevermind",
+        "no thanks", "no thank you", "thats all", "that's all",
+        "thats it", "that's it", "nothing", "all done", "im good",
+        "i'm good", "not right now", "cancel",
+    })
+    _GREETINGS = frozenset({
+        "hi", "hey", "hello", "yo", "sup", "whats up", "what's up",
+        "howdy", "hola", "good morning", "good afternoon",
+        "good evening", "good night", "what up", "wassup", "whaddup",
+    })
+
     # Regex to strip <think>…</think> blocks local models may emit
     _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
@@ -944,8 +947,6 @@ class PureLLMConversationEntity(ConversationEntity):
         if extra_system_prompt:
             system_prompt = f"{system_prompt}\n\nAdditional context:\n{extra_system_prompt}"
 
-        max_tokens = self._calculate_max_tokens(user_text)
-
         try:
             tools_used: list[str] = []
 
@@ -953,7 +954,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Use streaming for local models - faster first-token response
                 _LOGGER.debug("Using streaming for local provider: %s", self.provider)
                 stream = self._stream_openai_compatible(
-                    user_text, tools, system_prompt, max_tokens, history
+                    user_text, tools, system_prompt, self.max_tokens, history
                 )
 
                 # Collect streaming response + tool tracking
@@ -966,7 +967,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
             elif self.provider == PROVIDER_GOOGLE:
                 final_response, tools_used = await self._call_google(
-                    user_text, tools, system_prompt, max_tokens, history
+                    user_text, tools, system_prompt, self.max_tokens, history
                 )
             else:
                 final_response = "Unknown provider."
@@ -1048,18 +1049,10 @@ class PureLLMConversationEntity(ConversationEntity):
         # Add current user message
         contents.append({"role": "user", "parts": [{"text": user_text}]})
 
-        # Detect dismissals and greetings for follow-up tool forcing
-        _dismissals = {"no", "nope", "done", "stop", "never mind", "nevermind",
-                       "no thanks", "no thank you", "thats all", "that's all",
-                       "thats it", "that's it", "nothing", "all done", "im good",
-                       "i'm good", "not right now", "cancel"}
-        _greetings = {"hi", "hey", "hello", "yo", "sup", "whats up", "what's up",
-                      "howdy", "hola", "good morning", "good afternoon",
-                      "good evening", "good night", "what up", "wassup", "whaddup"}
         is_followup = bool(history)
         _user_clean = user_text.lower().strip().rstrip(".!,?")
-        is_dismissal = _user_clean in _dismissals
-        is_greeting = _user_clean in _greetings
+        is_dismissal = _user_clean in self._DISMISSALS
+        is_greeting = _user_clean in self._GREETINGS
 
         # Intent-based routing (same logic as OpenAI path)
         primary_tool = None
@@ -1155,10 +1148,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 return (text_response, tools_used_names)
 
         return ("Could not get response.", tools_used_names)
-
-    def _calculate_max_tokens(self, user_text: str) -> int:
-        """Return configured max_tokens - no caps for local GPU."""
-        return self.max_tokens
 
     # =========================================================================
     # Intent-Based Tool Routing
@@ -1279,16 +1268,9 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Add conversation history if present
         # Detect dismissals and greetings — these don't need tool calls
-        _dismissals = {"no", "nope", "done", "stop", "never mind", "nevermind",
-                       "no thanks", "no thank you", "thats all", "that's all",
-                       "thats it", "that's it", "nothing", "all done", "im good",
-                       "i'm good", "not right now", "cancel"}
-        _greetings = {"hi", "hey", "hello", "yo", "sup", "whats up", "what's up",
-                      "howdy", "hola", "good morning", "good afternoon",
-                      "good evening", "good night", "what up", "wassup", "whaddup"}
         _user_clean = user_text.lower().strip().rstrip(".!,?")
-        is_dismissal = _user_clean in _dismissals
-        is_greeting = _user_clean in _greetings
+        is_dismissal = _user_clean in self._DISMISSALS
+        is_greeting = _user_clean in self._GREETINGS
 
         if history:
             messages.extend(history)
@@ -1375,20 +1357,6 @@ class PureLLMConversationEntity(ConversationEntity):
                                         current["function"]["name"] += tc_delta.function.name
                                     if tc_delta.function.arguments:
                                         current["function"]["arguments"] += tc_delta.function.arguments
-
-                        # Handle legacy function_call format (some local LLMs use this)
-                        if hasattr(delta, "function_call") and delta.function_call and not delta.tool_calls:
-                            if not tool_calls_buffer:
-                                tool_calls_buffer.append({
-                                    "id": "call_legacy_0",
-                                    "type": "function",
-                                    "function": {"name": "", "arguments": ""}
-                                })
-                            current = tool_calls_buffer[0]
-                            if delta.function_call.name:
-                                current["function"]["name"] += delta.function_call.name
-                            if delta.function_call.arguments:
-                                current["function"]["arguments"] += delta.function_call.arguments
                 finally:
                     await stream.close()
 

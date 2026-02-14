@@ -291,19 +291,14 @@ async def _announce_timer_finished(
     message: str,
     target_player: str | None
 ) -> None:
-    """Announce timer completion via TTS or notification."""
-    announced = False
-
-    # Try TTS first
+    """Announce timer completion via TTS or persistent notification fallback."""
     if target_player and hass.services.has_service("tts", "speak"):
-        try:
-            # Get available TTS engines
-            tts_entities = [
-                s.entity_id for s in hass.states.async_all()
-                if s.entity_id.startswith("tts.")
-            ]
-
-            if tts_entities:
+        tts_entities = [
+            s.entity_id for s in hass.states.async_all()
+            if s.entity_id.startswith("tts.")
+        ]
+        if tts_entities:
+            try:
                 await hass.services.async_call(
                     "tts", "speak",
                     {
@@ -313,55 +308,22 @@ async def _announce_timer_finished(
                     },
                     blocking=False
                 )
-                announced = True
                 _LOGGER.debug("Announced timer via tts.speak on %s", target_player)
-        except Exception as err:
-            _LOGGER.warning("TTS speak failed: %s", err)
+                return
+            except Exception as err:
+                _LOGGER.warning("TTS speak failed: %s", err)
 
-    # Fallback: try media_player.play_media with TTS URL
-    if not announced and target_player and hass.services.has_service("tts", "google_translate_say"):
-        try:
-            await hass.services.async_call(
-                "tts", "google_translate_say",
-                {
-                    "entity_id": target_player,
-                    "message": message,
-                },
-                blocking=False
-            )
-            announced = True
-            _LOGGER.debug("Announced timer via google_translate_say on %s", target_player)
-        except Exception as err:
-            _LOGGER.debug("google_translate_say failed: %s", err)
-
-    # Fallback: try cloud say
-    if not announced and target_player and hass.services.has_service("tts", "cloud_say"):
-        try:
-            await hass.services.async_call(
-                "tts", "cloud_say",
-                {
-                    "entity_id": target_player,
-                    "message": message,
-                },
-                blocking=False
-            )
-            announced = True
-            _LOGGER.debug("Announced timer via cloud_say on %s", target_player)
-        except Exception as err:
-            _LOGGER.debug("cloud_say failed: %s", err)
-
-    # Last resort: persistent notification
-    if not announced:
-        await hass.services.async_call(
-            "persistent_notification", "create",
-            {
-                "title": "Timer Finished",
-                "message": message,
-                "notification_id": "purellm_timer",
-            },
-            blocking=False
-        )
-        _LOGGER.debug("Created persistent notification for timer (no TTS available)")
+    # Fallback: persistent notification
+    await hass.services.async_call(
+        "persistent_notification", "create",
+        {
+            "title": "Timer Finished",
+            "message": message,
+            "notification_id": "purellm_timer",
+        },
+        blocking=False
+    )
+    _LOGGER.debug("Created persistent notification for timer (no TTS available)")
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
