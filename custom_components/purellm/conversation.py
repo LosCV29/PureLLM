@@ -706,101 +706,6 @@ class PureLLMConversationEntity(ConversationEntity):
         )
 
     # =========================================================================
-    # Shade Favorite Position (Deterministic Intercept)
-    # =========================================================================
-
-    async def _try_shade_favorite(
-        self,
-        user_text: str,
-        user_input: conversation.ConversationInput,
-        conversation_id: str,
-    ) -> conversation.ConversationResult | None:
-        """Intercept 'favorite position' commands for configured shade entities.
-
-        Bypasses LLM tool calling entirely — pure string matching + direct entity press.
-        Returns a ConversationResult if matched, or None to fall through to LLM.
-        """
-        if not self.shade_entities:
-            return None
-
-        text = user_text.lower().strip()
-
-        # Must contain a favorite/preset position trigger phrase
-        trigger_phrases = ["favorite position", "preset position", "favorite the", "preset the"]
-        if not any(phrase in text for phrase in trigger_phrases):
-            return None
-
-        # Find which shade entity matches
-        matched_shade = None
-        for shade in self.shade_entities:
-            name = shade.get("name", "").lower().strip()
-            if name and name in text:
-                matched_shade = shade
-                break
-
-        # If no specific name matched but only one shade configured, use it
-        if not matched_shade and len(self.shade_entities) == 1:
-            matched_shade = self.shade_entities[0]
-
-        if not matched_shade:
-            return None
-
-        favorite_entity = matched_shade.get("favorite_entity", "")
-        friendly_name = matched_shade.get("name", "shade").title()
-
-        if not favorite_entity:
-            return None
-
-        # Determine domain and service from the favorite entity
-        domain = favorite_entity.split(".")[0] if "." in favorite_entity else ""
-        if not domain:
-            return None
-
-        # Execute the appropriate service call
-        try:
-            if domain == "button":
-                await self.hass.services.async_call(
-                    "button", "press",
-                    {"entity_id": favorite_entity},
-                    blocking=False,
-                )
-            elif domain == "scene":
-                await self.hass.services.async_call(
-                    "scene", "turn_on",
-                    {"entity_id": favorite_entity},
-                    blocking=False,
-                )
-            elif domain == "script":
-                await self.hass.services.async_call(
-                    "script", "turn_on",
-                    {"entity_id": favorite_entity},
-                    blocking=False,
-                )
-            else:
-                # Generic fallback — try turn_on
-                await self.hass.services.async_call(
-                    domain, "turn_on",
-                    {"entity_id": favorite_entity},
-                    blocking=False,
-                )
-
-            _LOGGER.info(
-                "Shade favorite: activated %s for %s",
-                favorite_entity, friendly_name,
-            )
-            response_text = f"{friendly_name} set to favorite position."
-        except Exception as err:
-            _LOGGER.error("Error setting shade favorite for %s: %s", favorite_entity, err)
-            response_text = f"Sorry, I couldn't set the {friendly_name} position."
-
-        response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(response_text)
-        return conversation.ConversationResult(
-            response=response,
-            conversation_id=conversation_id,
-        )
-
-    # =========================================================================
     # Follow-up Conversation (Continuing Conversation)
     # =========================================================================
 
@@ -934,11 +839,6 @@ class PureLLMConversationEntity(ConversationEntity):
         )
         if ask_act_result is not None:
             return ask_act_result
-
-        # --- Shade favorite position: deterministic intercept (no LLM needed) ---
-        shade_result = await self._try_shade_favorite(user_text, user_input, conversation_id)
-        if shade_result is not None:
-            return shade_result
 
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
@@ -1173,7 +1073,7 @@ class PureLLMConversationEntity(ConversationEntity):
             "turn on", "turn off", "switch on", "switch off",
             "dim ", "brighten", "set brightness", "set the brightness",
             "lock the", "unlock the",
-            "open the ", "close the ", "stop the ", "raise the ", "lower the ",
+            "open the ", "close the ", "stop the ",
             "pause the tv", "resume the tv", "unpause",
             "mute the", "unmute the", "volume up", "volume down",
             "set position", "set the position",
@@ -1860,7 +1760,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 ),
                 "control_device": lambda: device_tool.control_device(
                     arguments, self.hass, self.device_aliases, self.voice_scripts,
-                    self.shade_entities, self._current_user_query,
+                    self._current_user_query,
                 ),
                 "control_timer": lambda: timer_tool.control_timer(
                     arguments, self.hass,
