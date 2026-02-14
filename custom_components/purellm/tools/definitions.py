@@ -264,7 +264,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== DEVICE CONTROL (always enabled - LLM fallback) =====
     tools.append(_tool(
         "control_device",
-        "Control devices (lights, switches, locks, fans, blinds, covers, media_player). Use device name for fuzzy matching. Blinds: open/close/stop. Media: pause/resume/play/mute/unmute. ALWAYS use this for specific device commands (e.g. 'resume the TV', 'pause the TV').",
+        "Control devices (lights, switches, locks, fans, blinds, covers, media_player). Use device name for fuzzy matching. Blinds: open/close/stop. Media: pause/resume/play/mute/unmute. ALWAYS use this for specific device commands (e.g. 'resume the TV', 'pause the TV'). SHADES/BLINDS: 'Living Room Shade' (cover.living_room_shade), 'Master Shade 1' (cover.master_shade_1), 'Master Shade 2' (cover.master_shade_2), 'Master Shade 3' (cover.master_shade_3). Use ONLY these exact names for shades.",
         {
             "device": {"type": "string", "description": "Device name (fuzzy matched)"},
             "entity_id": {"type": "string", "description": "Exact entity ID (optional)"},
