@@ -1306,9 +1306,9 @@ class MusicController:
         return {"status": "transferred", "message": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
-        """Search for Spotify playlist by artist, genre, or holiday and play shuffled.
+        """Search for Apple Music playlist by artist, genre, or holiday and play shuffled.
 
-        IMPORTANT: This ONLY searches for Spotify playlists - no fallback to artist.
+        IMPORTANT: This ONLY searches for playlists - no fallback to artist.
         Returns the exact playlist title for verbatim announcement.
 
         Holiday support: Detects holiday keywords (christmas, halloween, etc.) and
@@ -1319,7 +1319,7 @@ class MusicController:
         if not target_players:
             return {"error": f"No room specified. Available: {', '.join(self._players.keys())}"}
 
-        _LOGGER.info("Searching Spotify for playlist matching: %s", query)
+        _LOGGER.info("Searching Apple Music for playlist matching: %s", query)
 
         # Detect holiday keywords in query
         query_lower = query.lower()
@@ -1405,11 +1405,11 @@ class MusicController:
                                 return True
                     return False
 
-                # Priority 1: Official Spotify curated playlists ("This Is...", "Best of...", owned by Spotify)
+                # Priority 1: Official Apple Music curated playlists ("Essentials", "Best of...", owned by Apple Music)
                 official_playlists = [
                     p for p in non_radio_playlists
-                    if (p.get("owner") or "").lower() == "spotify"
-                    or (p.get("name") or p.get("title") or "").lower().startswith("this is")
+                    if "apple" in (p.get("owner") or "").lower()
+                    or (p.get("name") or p.get("title") or "").lower().endswith("essentials")
                     or (p.get("name") or p.get("title") or "").lower().startswith("best of")
                 ]
 
@@ -1434,8 +1434,8 @@ class MusicController:
                         for word in query_words:
                             if word in name:
                                 score += 10
-                        # Bonus for official Spotify playlists
-                        if (p.get("owner") or "").lower() == "spotify":
+                        # Bonus for official Apple Music playlists
+                        if "apple" in (p.get("owner") or "").lower():
                             score += 5
                         return score
 
@@ -1449,7 +1449,7 @@ class MusicController:
 
                     if scored_playlists and scored_playlists[0][0] > 0:
                         chosen_playlist = scored_playlists[0][1]
-                        is_official = (chosen_playlist.get("owner") or "").lower() == "spotify"
+                        is_official = "apple" in (chosen_playlist.get("owner") or "").lower()
                         _LOGGER.info("Selected holiday playlist by score: '%s' (score: %d)",
                                    chosen_playlist.get("name"), scored_playlists[0][0])
                     elif non_radio_playlists:
@@ -1463,7 +1463,7 @@ class MusicController:
                         official_with_name = [p for p in official_playlists if name_matches_query(p.get("name") or p.get("title") or "")]
                         chosen_playlist = official_with_name[0] if official_with_name else official_playlists[0]
                         is_official = True
-                        _LOGGER.info("Found official Spotify playlist")
+                        _LOGGER.info("Found official Apple Music playlist")
 
                 # If no playlist found
                 if not chosen_playlist:
@@ -1471,18 +1471,18 @@ class MusicController:
                         _LOGGER.warning("No %s playlist found", detected_holiday)
                         return {"error": f"Could not find a {detected_holiday} playlist. Try a different holiday search."}
                     else:
-                        _LOGGER.warning("No official Spotify playlist found for '%s'", query)
-                        return {"error": f"Could not find an official Spotify playlist for '{query}'. Try 'play {query}' instead to play the artist directly."}
+                        _LOGGER.warning("No official Apple Music playlist found for '%s'", query)
+                        return {"error": f"Could not find an official Apple Music playlist for '{query}'. Try 'play {query}' instead to play the artist directly."}
 
                 # Get the EXACT playlist title for verbatim announcement
                 playlist_name = chosen_playlist.get("name") or chosen_playlist.get("title")
                 playlist_uri = chosen_playlist.get("uri") or chosen_playlist.get("media_id")
                 playlist_owner = chosen_playlist.get("owner", "")
-                _LOGGER.info("Found Spotify playlist: '%s' (owner: %s)", playlist_name, playlist_owner)
+                _LOGGER.info("Found Apple Music playlist: '%s' (owner: %s)", playlist_name, playlist_owner)
 
             # NO artist fallback - shuffle is ONLY for playlists
             if not playlist_uri:
-                return {"error": f"Could not find a Spotify playlist matching '{query}'. Try a different artist or genre."}
+                return {"error": f"Could not find an Apple Music playlist matching '{query}'. Try a different artist or genre."}
 
             player = target_players[0]
             _LOGGER.info("Playing playlist '%s' shuffled on %s", playlist_name, player)
@@ -1496,7 +1496,7 @@ class MusicController:
             )
 
             # Return the EXACT playlist title for verbatim announcement
-            # Include room name and confirm it's an official Spotify playlist
+            # Include room name and confirm it's an official Apple Music playlist
             room_suffix = f" in the {room}" if room else ""
             return {
                 "status": "shuffling",
