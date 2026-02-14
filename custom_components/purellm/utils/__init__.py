@@ -1,4 +1,4 @@
-"""Utility modules for PureLLM."""
+"""Utility modules for PolyVoice."""
 from .fuzzy_matching import (
     normalize_cover_query,
     find_entity_by_name,

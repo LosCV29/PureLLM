@@ -93,7 +93,7 @@ async def get_weather_forecast(
     location_query = arguments.get("location", "").strip()
 
     if not api_key:
-        return {"error": "OpenWeatherMap API key not configured. Add it in Settings → PureLLM → API Keys."}
+        return {"error": "OpenWeatherMap API key not configured. Add it in Settings → PolyVoice → API Keys."}
 
     # Validate that the location was actually mentioned by the user
     # This prevents models from hallucinating locations like "New York" when none was specified
@@ -258,17 +258,6 @@ async def get_weather_forecast(
                         _LOGGER.info("Weather forecast: %d days", len(forecast_list))
 
                 _LOGGER.info("Current weather: %s", result["current"])
-
-                # Build pre-formatted response_text for current weather
-                # so the LLM doesn't inconsistently truncate the response
-                if forecast_type == "current":
-                    c = result["current"]
-                    result["response_text"] = (
-                        f"It's currently {c['temperature']}°F and feels like {c['feels_like']}°F "
-                        f"with {c['conditions']} in {c['location']}. "
-                        f"There is a {c.get('rain_chance_next_hour', 0)}% chance of rain in the next hour. "
-                        f"Today's high is {c.get('todays_high', 'N/A')}°F with an overnight low of {c.get('todays_low', 'N/A')}°F."
-                    )
 
         if not result:
             return {"error": "No weather data retrieved"}

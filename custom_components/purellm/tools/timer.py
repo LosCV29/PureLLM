@@ -1,4 +1,4 @@
-"""Timer tool handler for PureLLM - COMPREHENSIVE EDITION.
+"""Timer tool handler for PolyVoice - COMPREHENSIVE EDITION.
 
 Supports:
 - Natural language: "half an hour", "2 and a half hours", "45 mins", "one minute"
@@ -21,8 +21,8 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Storage key for tracking PureLLM-started timers
-PURELLM_TIMERS_KEY = "purellm_active_timers"
+# Storage key for tracking PolyVoice-started timers
+POLYVOICE_TIMERS_KEY = "polyvoice_active_timers"
 
 
 def register_timer(
@@ -31,7 +31,7 @@ def register_timer(
     friendly_name: str,
     announce_player: str | None = None
 ) -> None:
-    """Register a timer started by PureLLM for finish notifications.
+    """Register a timer started by PolyVoice for finish notifications.
 
     Args:
         hass: Home Assistant instance
@@ -39,20 +39,20 @@ def register_timer(
         friendly_name: Human-readable timer name
         announce_player: Media player to announce on when timer finishes
     """
-    if PURELLM_TIMERS_KEY not in hass.data:
-        hass.data[PURELLM_TIMERS_KEY] = {}
-    hass.data[PURELLM_TIMERS_KEY][entity_id] = {
+    if POLYVOICE_TIMERS_KEY not in hass.data:
+        hass.data[POLYVOICE_TIMERS_KEY] = {}
+    hass.data[POLYVOICE_TIMERS_KEY][entity_id] = {
         "name": friendly_name,
         "announce_player": announce_player,
     }
-    _LOGGER.debug("Registered PureLLM timer: %s (%s) -> announce on %s",
+    _LOGGER.debug("Registered PolyVoice timer: %s (%s) -> announce on %s",
                   entity_id, friendly_name, announce_player or "default")
 
 
 def unregister_timer(hass: "HomeAssistant", entity_id: str) -> dict | None:
     """Unregister a timer and return its info if it was ours."""
-    if PURELLM_TIMERS_KEY in hass.data:
-        return hass.data[PURELLM_TIMERS_KEY].pop(entity_id, None)
+    if POLYVOICE_TIMERS_KEY in hass.data:
+        return hass.data[POLYVOICE_TIMERS_KEY].pop(entity_id, None)
     return None
 
 
@@ -62,8 +62,8 @@ def get_registered_timer(hass: "HomeAssistant", entity_id: str) -> dict | None:
     Returns:
         Dict with 'name' and 'announce_player' keys, or None
     """
-    if PURELLM_TIMERS_KEY in hass.data:
-        return hass.data[PURELLM_TIMERS_KEY].get(entity_id)
+    if POLYVOICE_TIMERS_KEY in hass.data:
+        return hass.data[POLYVOICE_TIMERS_KEY].get(entity_id)
     return None
 
 

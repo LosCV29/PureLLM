@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 # Common ESPN API headers
-ESPN_HEADERS = {"User-Agent": "HomeAssistant-PureLLM/1.0"}
+ESPN_HEADERS = {"User-Agent": "HomeAssistant-PolyVoice/1.0"}
 
 
 def _format_game_date(game_dt_local, now_local, include_time: bool = True) -> str:

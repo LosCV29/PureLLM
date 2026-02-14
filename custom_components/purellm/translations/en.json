@@ -29,7 +29,7 @@
           "connection": "Connection & Provider",
           "model": "Model Settings",
           "features": "Enable/Disable Features",
-          "entities": "PureLLM Default Entities",
+          "entities": "PolyVoice Default Entities",
           "aliases": "LLM Fallback Aliases",
           "music_rooms": "Music Room Mapping",
           "api_keys": "External API Keys",
@@ -74,8 +74,8 @@
         }
       },
       "entities": {
-        "title": "PureLLM Default Entities",
-        "description": "Configure which Home Assistant entities PureLLM uses for its LLM functions",
+        "title": "PolyVoice Default Entities",
+        "description": "Configure which Home Assistant entities PolyVoice uses for its LLM functions",
         "data": {
           "thermostat_entity": "Thermostat",
           "thermostat_use_celsius": "Use Celsius (instead of Fahrenheit)",
@@ -127,7 +127,7 @@
       },
       "intents": {
         "title": "Excluded Intents",
-        "description": "Select intents to skip HA native handling and use PureLLM's LLM functions instead. Default excludes ensure thermostat, device status, and blinds use custom functions.",
+        "description": "Select intents to skip HA native handling and use PolyVoice's LLM functions instead. Default excludes ensure thermostat, device status, and blinds use custom functions.",
         "data": {
           "excluded_intents": "Excluded Intents"
         }

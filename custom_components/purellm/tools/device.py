@@ -299,14 +299,13 @@ async def control_device(
     hass: "HomeAssistant",
     device_aliases: dict[str, str],
     voice_scripts: list[dict[str, str]] | None = None,
-    user_query: str = "",
 ) -> dict[str, Any]:
     """Control smart home devices.
 
     This is the main device control handler that supports:
     - Lights (with brightness, color)
     - Switches
-    - Covers (with position)
+    - Covers/blinds (with position, presets)
     - Locks
     - Fans
     - Media players
@@ -330,8 +329,8 @@ async def control_device(
     from homeassistant.helpers import area_registry as ar
     from homeassistant.helpers import device_registry as dr
 
-    _LOGGER.debug("control_device called with: %s", arguments)
-    _LOGGER.debug("device_aliases: %s", device_aliases)
+    _LOGGER.warning("DEBUG control_device called with: %s", arguments)
+    _LOGGER.warning("DEBUG device_aliases: %s", device_aliases)
 
     action = arguments.get("action", "").strip().lower()
     brightness = arguments.get("brightness")
@@ -359,27 +358,7 @@ async def control_device(
     entity_ids_list = arguments.get("entity_ids", [])
     area_name = arguments.get("area", "").strip()
     domain_filter = arguments.get("domain", "").strip().lower()
-    device_name = arguments.get("device", "").strip().rstrip(".,!?;:")
-
-    # Fallback: extract device name from original user query when LLM omits it
-    if not direct_entity_id and not entity_ids_list and not area_name and not device_name and user_query:
-        original_query = user_query.lower()
-        control_patterns = [
-            r"(?:turn (?:on|off)|toggle|dim|lock|unlock|open|close|stop) (?:the )?(.+?)(?:\s+light[s]?|\s+switch|\s+fan|\s+lock|\s+cover|\s+blind[s]?)?$",
-            r"(.+?)(?:\s+(?:on|off|toggle|dim|lock|unlock|open|close|stop))$",
-        ]
-        for pattern in control_patterns:
-            match = re.search(pattern, original_query)
-            if match:
-                extracted = match.group(1).strip()
-                # Remove trailing articles/prepositions
-                for suffix in [" the", " a", " my", " in", " to"]:
-                    if extracted.endswith(suffix):
-                        extracted = extracted[:-len(suffix)].strip()
-                if extracted:
-                    _LOGGER.info("Device extraction fallback: extracted '%s' from query '%s'", extracted, user_query)
-                    device_name = extracted
-                    break
+    device_name = arguments.get("device", "").strip()
 
     # Check if device_name is actually an entity_id (e.g., "light.master_dimmer_switch_light")
     # If so, treat it as a direct entity_id instead of running fuzzy matching
@@ -402,6 +381,7 @@ async def control_device(
     # Normalize actions
     # "run", "execute", "open", "close" support scripts like "open the garage"
     action_aliases = {
+        "favorite": "preset",
         "return_home": "dock",
         "activate": "turn_on",
         "run": "turn_on",
@@ -418,7 +398,7 @@ async def control_device(
         "cover": {
             "open": "open_cover", "close": "close_cover", "toggle": "toggle",
             "turn_on": "open_cover", "turn_off": "close_cover",
-            "stop": "stop_cover", "set_position": "set_cover_position"
+            "stop": "stop_cover", "set_position": "set_cover_position", "preset": "set_cover_position"
         },
         "climate": {"turn_on": "turn_on", "turn_off": "turn_off", "set_temperature": "set_temperature", "set_hvac_mode": "set_hvac_mode"},
         "media_player": {
@@ -647,7 +627,7 @@ async def control_device(
 
         service_data = {"entity_id": entity_id}
 
-        # Light controls — only one color descriptor allowed per call
+        # Light controls
         if domain == "light" and action in ("turn_on", "dim"):
             if brightness is not None:
                 service_data["brightness_pct"] = max(0, min(100, brightness))
@@ -657,7 +637,7 @@ async def control_device(
                 service_data["color_temp_kelvin"] = 2700
             elif color == "cool":
                 service_data["color_temp_kelvin"] = 6500
-            elif color_temp is not None:
+            if color_temp is not None:
                 service_data["color_temp_kelvin"] = max(2000, min(6500, color_temp))
 
         # Media player controls
@@ -717,6 +697,23 @@ async def control_device(
         if domain == "cover" and action == "set_position" and position is not None:
             service_data["position"] = max(0, min(100, position))
 
+        # Cover preset/favorite - try button.{name}_my_position first
+        if domain == "cover" and action == "preset":
+            cover_object_id = entity_id.split(".")[1]
+            my_position_btn = f"button.{cover_object_id}_my_position"
+
+            if hass.states.get(my_position_btn):
+                service_calls.append(("button", "press", {"entity_id": my_position_btn}, friendly_name))
+                last_service = service
+                continue
+            else:
+                # Fall back to set_cover_position
+                state = hass.states.get(entity_id)
+                preset_pos = state.attributes.get("preset_position") if state else None
+                if preset_pos is None and state:
+                    preset_pos = state.attributes.get("favorite_position")
+                service_data["position"] = preset_pos if preset_pos is not None else 50
+
         service_calls.append((domain, service, service_data, friendly_name))
         last_service = service
 
@@ -743,7 +740,9 @@ async def control_device(
     # Build response
     if controlled:
         if len(controlled) == 1:
-            if action == "set_position" and position is not None:
+            if action == "preset":
+                response = f"I've set the {controlled[0]} to its favorite position."
+            elif action == "set_position" and position is not None:
                 response = f"I've set the {controlled[0]} to {position}% position."
             elif brightness is not None and action in ("turn_on", "dim"):
                 response = f"I've set the {controlled[0]} to {brightness}% brightness."
@@ -768,7 +767,9 @@ async def control_device(
                     action_word = action_words.get(service, action)
                 response = f"I've {action_word} the {controlled[0]}."
         else:
-            if action == "set_position" and position is not None:
+            if action == "preset":
+                response = f"I've set {len(controlled)} devices to their favorite positions: {', '.join(controlled[:5])}"
+            elif action == "set_position" and position is not None:
                 response = f"I've set {len(controlled)} devices to {position}%: {', '.join(controlled[:5])}"
             else:
                 if matched_voice_script:

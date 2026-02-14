@@ -302,7 +302,7 @@ async def find_nearby_places(
     max_results = min(arguments.get("max_results", 5), 20)
 
     if not api_key:
-        return {"error": "Google Places API key not configured. Add it in Settings → PureLLM → API Keys."}
+        return {"error": "Google Places API key not configured. Add it in Settings → PolyVoice → API Keys."}
 
     if not query:
         return {"error": "No search query provided"}
