@@ -473,7 +473,7 @@ class MusicController:
                 self._last_music_command_time and
                 (now - self._last_music_command_time).total_seconds() < self._music_debounce_seconds):
                 _LOGGER.info("DEBOUNCE: Ignoring duplicate '%s' command", action)
-                return {"status": "debounced", "message": f"Command '{action}' ignored (duplicate)"}
+                return {"status": "debounced", "response_text": f"Command '{action}' ignored (duplicate)"}
 
         self._last_music_command = action
         self._last_music_command_time = now
@@ -647,7 +647,7 @@ class MusicController:
     async def _play_on_players(self, target_players: list[str], uri: str, media_type: str, shuffle: bool = False) -> None:
         """Play media on target players with appropriate shuffle setting."""
         for player in target_players:
-            await self._play_media(player, uri, media_type)
+            # Set shuffle BEFORE playing so the album starts from track 1
             if media_type == "album":
                 await self._hass.services.async_call(
                     "media_player", "shuffle_set",
@@ -660,6 +660,7 @@ class MusicController:
                     {"entity_id": player, "shuffle": True},
                     blocking=True
                 )
+            await self._play_media(player, uri, media_type)
 
     async def _call_media_service(self, entity_id: str, service: str) -> None:
         """Call a media_player service using area targeting when available."""
@@ -831,7 +832,7 @@ class MusicController:
                                 # If we have a URI, play directly
                                 if album_uri:
                                     await self._play_on_players(target_players, album_uri, "album")
-                                    return {"status": "playing", "message": f"Playing {album_name} by {found_artist} in the {room}"}
+                                    return {"status": "playing", "response_text": f"Playing {album_name} by {found_artist} in the {room}"}
 
                                 # Otherwise search for the album by name
                                 album_search = await self._hass.services.async_call(
@@ -846,7 +847,7 @@ class MusicController:
                                     found_album_name = _normalize_unicode(found_album.get("name") or found_album.get("title"))
                                     found_album_uri = found_album.get("uri") or found_album.get("media_id")
                                     await self._play_on_players(target_players, found_album_uri, "album")
-                                    return {"status": "playing", "message": f"Playing {found_album_name} by {found_artist} in the {room}"}
+                                    return {"status": "playing", "response_text": f"Playing {found_album_name} by {found_artist} in the {room}"}
 
                 return {"error": f"Could not find album containing '{song_on_album}'" + (f" by {artist}" if artist else "")}
 
@@ -948,7 +949,7 @@ class MusicController:
                         found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
                         found_uri = best_album.get("uri") or best_album.get("media_id")
                         await self._play_on_players(target_players, found_uri, "album")
-                        return {"status": "playing", "message": f"Playing {found_name} by {artist} in the {room}"}
+                        return {"status": "playing", "response_text": f"Playing {found_name} by {artist} in the {room}"}
 
                     return {"error": f"Found '{target_album_name}' in MusicBrainz but not in your music library"}
 
@@ -1043,7 +1044,7 @@ class MusicController:
                             _LOGGER.warning("MUSIC DEBUG: Selected %s album: '%s' (year: %d) by '%s'", album_modifier, found_name, year, found_artist)
 
                             await self._play_on_players(target_players, found_uri, "album")
-                            return {"status": "playing", "message": f"Playing {found_name} by {found_artist} in the {room}"}
+                            return {"status": "playing", "response_text": f"Playing {found_name} by {found_artist} in the {room}"}
 
                 return {"error": f"Could not find albums by {artist}"}
 
@@ -1153,7 +1154,7 @@ class MusicController:
             # Play the found media
             await self._play_on_players(target_players, found_uri, found_type, shuffle=shuffle)
 
-            return {"status": "playing", "message": f"Playing {display_name} in the {room}"}
+            return {"status": "playing", "response_text": f"Playing {display_name} in the {room}"}
 
         except Exception as e:
             _LOGGER.error("Play search/play error: %s", e, exc_info=True)
@@ -1202,7 +1203,7 @@ class MusicController:
         await self._call_media_service(pid, "media_pause")
 
         self._last_paused_player = pid
-        return {"status": "paused", "message": f"Paused in {self._get_room_name(pid)}"}
+        return {"status": "paused", "response_text": f"Paused in {self._get_room_name(pid)}"}
 
     async def _resume(self, all_players: list[str]) -> dict:
         """Resume music - uses area targeting like HA native intents."""
@@ -1214,13 +1215,13 @@ class MusicController:
             await self._call_media_service(self._last_paused_player, "media_play")
             room_name = self._get_room_name(self._last_paused_player)
             self._last_paused_player = None
-            return {"status": "resumed", "message": f"Resumed in {room_name}"}
+            return {"status": "resumed", "response_text": f"Resumed in {room_name}"}
 
         # Find any paused player
         paused = self._find_player_by_state("paused", all_players)
         if paused:
             await self._call_media_service(paused, "media_play")
-            return {"status": "resumed", "message": f"Resumed in {self._get_room_name(paused)}"}
+            return {"status": "resumed", "response_text": f"Resumed in {self._get_room_name(paused)}"}
 
         return {"error": "No paused music to resume"}
 
@@ -1235,7 +1236,7 @@ class MusicController:
 
                 await self._call_media_service(pid, "media_stop")
 
-                return {"status": "stopped", "message": f"Stopped in {self._get_room_name(pid)}"}
+                return {"status": "stopped", "response_text": f"Stopped in {self._get_room_name(pid)}"}
 
         return {"message": "No music is playing"}
 
@@ -1317,7 +1318,7 @@ class MusicController:
             except Exception as e2:
                 _LOGGER.error("Transfer fallback also failed: %s", e2)
 
-        return {"status": "transferred", "message": f"Music transferred to {self._get_room_name(target)}"}
+        return {"status": "transferred", "response_text": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
         """Search for Apple Music playlist by artist, genre, or holiday and play shuffled.
