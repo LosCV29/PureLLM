@@ -647,7 +647,7 @@ class MusicController:
     async def _play_on_players(self, target_players: list[str], uri: str, media_type: str, shuffle: bool = False) -> None:
         """Play media on target players with appropriate shuffle setting."""
         for player in target_players:
-            # Set shuffle BEFORE playing so the album queue loads in order
+            # Set shuffle BEFORE playing so the album starts from track 1
             if media_type == "album":
                 await self._hass.services.async_call(
                     "media_player", "shuffle_set",
@@ -661,13 +661,6 @@ class MusicController:
                     blocking=True
                 )
             await self._play_media(player, uri, media_type)
-            # Set shuffle AFTER playing as well to ensure it sticks
-            if media_type == "album":
-                await self._hass.services.async_call(
-                    "media_player", "shuffle_set",
-                    {"entity_id": player, "shuffle": False},
-                    blocking=True
-                )
 
     async def _call_media_service(self, entity_id: str, service: str) -> None:
         """Call a media_player service using area targeting when available."""
