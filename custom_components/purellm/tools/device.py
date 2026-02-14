@@ -299,6 +299,7 @@ async def control_device(
     hass: "HomeAssistant",
     device_aliases: dict[str, str],
     voice_scripts: list[dict[str, str]] | None = None,
+    user_query: str = "",
 ) -> dict[str, Any]:
     """Control smart home devices.
 
@@ -359,6 +360,26 @@ async def control_device(
     area_name = arguments.get("area", "").strip()
     domain_filter = arguments.get("domain", "").strip().lower()
     device_name = arguments.get("device", "").strip()
+
+    # Fallback: extract device name from original user query when LLM omits it
+    if not direct_entity_id and not entity_ids_list and not area_name and not device_name and user_query:
+        original_query = user_query.lower()
+        control_patterns = [
+            r"(?:turn (?:on|off)|toggle|dim|lock|unlock|open|close|stop) (?:the )?(.+?)(?:\s+light[s]?|\s+switch|\s+fan|\s+lock|\s+cover|\s+blind[s]?)?$",
+            r"(.+?)(?:\s+(?:on|off|toggle|dim|lock|unlock|open|close|stop))$",
+        ]
+        for pattern in control_patterns:
+            match = re.search(pattern, original_query)
+            if match:
+                extracted = match.group(1).strip()
+                # Remove trailing articles/prepositions
+                for suffix in [" the", " a", " my", " in", " to"]:
+                    if extracted.endswith(suffix):
+                        extracted = extracted[:-len(suffix)].strip()
+                if extracted:
+                    _LOGGER.info("Device extraction fallback: extracted '%s' from query '%s'", extracted, user_query)
+                    device_name = extracted
+                    break
 
     # Check if device_name is actually an entity_id (e.g., "light.master_dimmer_switch_light")
     # If so, treat it as a direct entity_id instead of running fuzzy matching
