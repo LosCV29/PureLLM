@@ -450,7 +450,17 @@ async def control_device(
             friendly_name = state.attributes.get("friendly_name", direct_entity_id)
             entities_to_control.append((direct_entity_id, friendly_name))
         else:
-            return {"error": f"Entity '{direct_entity_id}' not found in Home Assistant."}
+            # Entity ID not found (possibly hallucinated or stale after integration reinstall).
+            # Extract a searchable name and try fuzzy matching as fallback.
+            # e.g. "cover.living_room_shade" -> "living room shade"
+            fallback_name = direct_entity_id.split(".", 1)[-1].replace("_", " ")
+            _LOGGER.info("Entity '%s' not found, trying fuzzy match on '%s'", direct_entity_id, fallback_name)
+            found_entity_id, friendly_name = find_entity_by_name(hass, fallback_name, device_aliases)
+            if found_entity_id:
+                _LOGGER.info("Fuzzy fallback matched: '%s' -> %s (%s)", fallback_name, found_entity_id, friendly_name)
+                entities_to_control.append((found_entity_id, friendly_name))
+            else:
+                return {"error": f"Entity '{direct_entity_id}' not found. Use the device's friendly name instead of entity IDs."}
 
     # Method 2: Multiple entity_ids
     elif entity_ids_list:
