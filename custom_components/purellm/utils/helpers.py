@@ -1,4 +1,4 @@
-"""General helper utilities for PolyVoice."""
+"""General helper utilities for PureLLM."""
 from __future__ import annotations
 
 from math import radians, cos, sin, asin, sqrt

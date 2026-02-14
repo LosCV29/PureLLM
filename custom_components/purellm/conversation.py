@@ -36,7 +36,6 @@ from .const import (
     CONF_API_KEY,
     CONF_BASE_URL,
     CONF_CALENDAR_ENTITIES,
-    CONF_CAMERA_ENTITIES,
     CONF_CUSTOM_LATITUDE,
     CONF_CUSTOM_LONGITUDE,
     CONF_DEVICE_ALIASES,
@@ -271,7 +270,6 @@ class PureLLMConversationEntity(ConversationEntity):
         self.room_player_mapping = parse_entity_config(config.get(CONF_ROOM_PLAYER_MAPPING, DEFAULT_ROOM_PLAYER_MAPPING))
         self.thermostat_entity = config.get(CONF_THERMOSTAT_ENTITY, "")
         self.calendar_entities = parse_list_config(config.get(CONF_CALENDAR_ENTITIES, ""))
-        self.camera_entities = parse_list_config(config.get(CONF_CAMERA_ENTITIES, ""))
         self.device_aliases = self._parse_device_aliases(config.get(CONF_DEVICE_ALIASES, ""))
 
         # Thermostat settings
@@ -1745,7 +1743,6 @@ class PureLLMConversationEntity(ConversationEntity):
             # get_url returns the external URL (e.g. Nabu Casa) when available.
             base_url = ""
             try:
-                from homeassistant.helpers.network import get_url
                 base_url = get_url(self.hass, prefer_external=True).rstrip("/")
             except Exception:
                 _LOGGER.debug("Could not determine HA base URL for camera notification")
