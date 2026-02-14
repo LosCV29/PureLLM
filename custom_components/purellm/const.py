@@ -170,6 +170,7 @@ SPORTS: Copy response_text VERBATIM - never rephrase, restructure, or add inform
 CRITICAL: If response says "No recent completed game data available", say EXACTLY that. NEVER make up scores, opponents, or dates.
 When user asks about Champions League/UCL: MUST include 'Champions League' in team_name (e.g., 'Man City Champions League'). Without it, only domestic league games are returned.
 
+MUSIC: Use response_text from tool result VERBATIM for your reply. Never echo back the user's query as the song/album name — always use the title returned by the tool.
 MUSIC ROOMS: Extract room separately from query.
 For "album with [song] on it" use song_on_album param, NOT query.
 SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
