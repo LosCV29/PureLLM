@@ -5,6 +5,7 @@ import asyncio
 import codecs
 import logging
 import re
+import unicodedata
 import aiohttp
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
@@ -117,6 +118,19 @@ def _normalize_unicode(text: str | None) -> str:
         _LOGGER.debug("Encode/decode normalization failed: %s", e)
 
     return text
+
+
+def _strip_accents(text: str) -> str:
+    """Strip accents/diacritics from text for fuzzy matching.
+
+    Converts characters like á→a, é→e, í→i, ó→o, ú→u, ñ→n so that
+    accent-free queries (e.g. 'debi tirar mas fotos') match accented
+    titles (e.g. 'DeBÍ TiRAR MáS fOtOs').
+    """
+    if not text:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
 async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> int:
@@ -1064,10 +1078,10 @@ class MusicController:
 
                 # Filter by album name if specified (e.g., "christmas" for christmas albums)
                 if album and try_type == "album":
-                    album_filter = album.lower()
+                    album_filter = _strip_accents(album.lower())
                     filtered_results = [
                         r for r in results
-                        if album_filter in (r.get("name") or r.get("title") or "").lower()
+                        if album_filter in _strip_accents((r.get("name") or r.get("title") or "").lower())
                     ]
                     if filtered_results:
                         _LOGGER.info("Filtered %d albums to %d matching '%s'",
@@ -1077,14 +1091,14 @@ class MusicController:
                         _LOGGER.warning("No albums matched filter '%s', using all %d results",
                                        album, len(results))
 
-                query_lower = query.lower()
-                artist_lower = artist.lower() if artist else ""
+                query_lower = _strip_accents(query.lower())
+                artist_lower = _strip_accents(artist.lower()) if artist else ""
 
                 # Score results to find best match
                 def score_result(item):
                     score = 0
-                    item_name = (item.get("name") or item.get("title") or "").lower()
-                    item_artist = _extract_artist(item, lowercase=True)
+                    item_name = _strip_accents((item.get("name") or item.get("title") or "").lower())
+                    item_artist = _strip_accents(_extract_artist(item, lowercase=True))
 
                     # Exact query match in name
                     if query_lower == item_name:
@@ -1390,18 +1404,19 @@ class MusicController:
 
                 def name_matches_query(playlist_name_str: str) -> bool:
                     """Check if playlist name contains query or any significant word from query."""
-                    name_lower = playlist_name_str.lower()
+                    name_lower = _strip_accents(playlist_name_str.lower())
+                    query_norm = _strip_accents(query_lower)
                     # Exact query match
-                    if query_lower in name_lower:
+                    if query_norm in name_lower:
                         return True
                     # Match on individual words (handles typos like elliot vs elliott)
                     for word in query_words:
-                        if len(word) >= 4 and word in name_lower:
+                        if len(word) >= 4 and _strip_accents(word) in name_lower:
                             return True
                     # For holidays, also check holiday search terms
                     if detected_holiday:
                         for term in holiday_search_terms:
-                            if term in name_lower:
+                            if _strip_accents(term) in name_lower:
                                 return True
                     return False
 
@@ -1428,11 +1443,11 @@ class MusicController:
                     query_words = [w for w in query_lower.split() if len(w) >= 3 and w not in ('the', 'and', 'for', 'music', 'playlist', 'in')]
 
                     def score_holiday_playlist(p):
-                        name = (p.get("name") or p.get("title") or "").lower()
+                        name = _strip_accents((p.get("name") or p.get("title") or "").lower())
                         score = 0
                         # Score for each query word found in playlist name
                         for word in query_words:
-                            if word in name:
+                            if _strip_accents(word) in name:
                                 score += 10
                         # Bonus for official Apple Music playlists
                         if "apple" in (p.get("owner") or "").lower():
