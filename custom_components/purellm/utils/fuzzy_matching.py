@@ -214,6 +214,9 @@ def find_entity_by_name(
 
     Returns (entity_id, friendly_name) or (None, None) if not found.
     """
+    # Strip trailing punctuation (LLM may copy period from STT output)
+    query = query.strip().rstrip(".,!?")
+
     # Build list of query variations to try
     queries_to_try = [query]
 
