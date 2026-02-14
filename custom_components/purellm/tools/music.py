@@ -459,19 +459,20 @@ class MusicController:
         action = arguments.get("action", "").lower()
         query = arguments.get("query", "")
         media_type = arguments.get("media_type", "artist")
-        room = arguments.get("room", "").lower() if arguments.get("room") else ""
+        room = arguments.get("room", "").strip().lower() if arguments.get("room") else ""
         shuffle = arguments.get("shuffle", False)
         artist = arguments.get("artist", "")
         album = arguments.get("album", "")
         song_on_album = arguments.get("song_on_album", "")
+        user_text = arguments.pop("_user_text", "")
 
         # DEBUG: Log raw arguments received from LLM
         _LOGGER.warning("MUSIC DEBUG: Raw arguments from LLM: %s", arguments)
         _LOGGER.warning("MUSIC DEBUG: Extracted - action='%s', query='%s', room='%s'", action, query, room)
 
-        # DEFENSIVE: Strip room phrases from query AND artist - LLM often includes
-        # "in the living room" in the wrong param instead of extracting to room.
-        room_strip_pattern = r'\s+in\s+the\s+(.+?)\s*$'
+        # DEFENSIVE: Strip room phrases from query, artist, and album - LLM often
+        # includes "in the living room" in the wrong param instead of extracting to room.
+        room_strip_pattern = r'\s+in\s+the\s+(.+?)[.!?]?\s*$'
         configured_rooms = {r.lower() for r in self._players.keys()}
         all_known_rooms = COMMON_ROOM_NAMES | configured_rooms
 
@@ -493,6 +494,16 @@ class MusicController:
                     artist = stripped
                 elif param_name == "album":
                     album = stripped
+
+        # LAST RESORT: If room is still empty, extract from original user text.
+        # Handles cases where the LLM completely drops the room from all params.
+        if not room and user_text:
+            match = re.search(room_strip_pattern, user_text, flags=re.IGNORECASE)
+            if match:
+                potential_room = match.group(1).lower().strip()
+                if potential_room in all_known_rooms or any(potential_room in r or r in potential_room for r in all_known_rooms):
+                    room = potential_room
+                    _LOGGER.warning("MUSIC DEBUG: Extracted room from user text: '%s'", room)
 
         _LOGGER.warning("MUSIC DEBUG: Final - action='%s', query='%s', room='%s'", action, query, room)
 
