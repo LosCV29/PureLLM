@@ -687,6 +687,9 @@ class MusicController:
         - "first/oldest/debut album by X" → finds earliest album
         - song_on_album: finds album containing a specific song
         """
+        # If LLM passed album name in album param but not query, use album as query
+        if not query and album:
+            query = album
         if not query and not song_on_album:
             return {"error": "No music query specified"}
         if not target_players:
