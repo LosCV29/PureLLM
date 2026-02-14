@@ -736,7 +736,7 @@ class PureLLMConversationEntity(ConversationEntity):
         """Check if a response claims a device action was performed.
 
         Used to detect hallucinations where the LLM says "Done" or
-        "Shade opened" without having called a device-control tool.
+        "Light on" without having called a device-control tool.
         The caller must verify that no *action* tool was invoked; this
         method only checks the *language* of the response.
         """
@@ -748,13 +748,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 "done", "got it", "all set", "is now",
                 "has been", "turned on", "turned off",
                 "light on", "light off", "lights on", "lights off",
-                "shade opened", "shade closed", "shades opened", "shades closed",
-                "blind opened", "blind closed", "blinds opened", "blinds closed",
-                "cover opened", "cover closed",
                 "lock locked", "lock unlocked", "locked", "unlocked",
                 "fan on", "fan off",
                 "set to", "adjusted", "now at",
-                "favorite position", "preset position",
                 "opened", "closed", "stopped",
                 "is on", "is off",
                 "playing", "shuffling", "paused", "resumed",

@@ -306,7 +306,7 @@ async def control_device(
     This is the main device control handler that supports:
     - Lights (with brightness, color)
     - Switches
-    - Covers/blinds (with position, presets, favorite positions)
+    - Covers (with position)
     - Locks
     - Fans
     - Media players
@@ -402,7 +402,6 @@ async def control_device(
     # Normalize actions
     # "run", "execute", "open", "close" support scripts like "open the garage"
     action_aliases = {
-        "favorite": "preset",
         "return_home": "dock",
         "activate": "turn_on",
         "run": "turn_on",
@@ -419,7 +418,7 @@ async def control_device(
         "cover": {
             "open": "open_cover", "close": "close_cover", "toggle": "toggle",
             "turn_on": "open_cover", "turn_off": "close_cover",
-            "stop": "stop_cover", "set_position": "set_cover_position", "preset": "set_cover_position"
+            "stop": "stop_cover", "set_position": "set_cover_position"
         },
         "climate": {"turn_on": "turn_on", "turn_off": "turn_off", "set_temperature": "set_temperature", "set_hvac_mode": "set_hvac_mode"},
         "media_player": {
@@ -718,23 +717,6 @@ async def control_device(
         if domain == "cover" and action == "set_position" and position is not None:
             service_data["position"] = max(0, min(100, position))
 
-        # Cover preset/favorite - try button.{name}_my_position first
-        if domain == "cover" and action == "preset":
-            cover_object_id = entity_id.split(".")[1]
-            my_position_btn = f"button.{cover_object_id}_my_position"
-
-            if hass.states.get(my_position_btn):
-                service_calls.append(("button", "press", {"entity_id": my_position_btn}, friendly_name))
-                last_service = service
-                continue
-            else:
-                # Fall back to set_cover_position
-                state = hass.states.get(entity_id)
-                preset_pos = state.attributes.get("preset_position") if state else None
-                if preset_pos is None and state:
-                    preset_pos = state.attributes.get("favorite_position")
-                service_data["position"] = preset_pos if preset_pos is not None else 50
-
         service_calls.append((domain, service, service_data, friendly_name))
         last_service = service
 
@@ -761,9 +743,7 @@ async def control_device(
     # Build response
     if controlled:
         if len(controlled) == 1:
-            if action == "preset":
-                response = f"I've set the {controlled[0]} to its favorite position."
-            elif action == "set_position" and position is not None:
+            if action == "set_position" and position is not None:
                 response = f"I've set the {controlled[0]} to {position}% position."
             elif brightness is not None and action in ("turn_on", "dim"):
                 response = f"I've set the {controlled[0]} to {brightness}% brightness."
@@ -788,9 +768,7 @@ async def control_device(
                     action_word = action_words.get(service, action)
                 response = f"I've {action_word} the {controlled[0]}."
         else:
-            if action == "preset":
-                response = f"I've set {len(controlled)} devices to their favorite positions: {', '.join(controlled[:5])}"
-            elif action == "set_position" and position is not None:
+            if action == "set_position" and position is not None:
                 response = f"I've set {len(controlled)} devices to {position}%: {', '.join(controlled[:5])}"
             else:
                 if matched_voice_script:
