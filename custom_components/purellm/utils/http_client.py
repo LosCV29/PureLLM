@@ -5,8 +5,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from functools import wraps
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
 
@@ -56,18 +55,6 @@ async def _set_cached(cache_key: str, data: Any, ttl: float) -> None:
             expired = [k for k, (_, exp) in _api_cache.items() if now >= exp]
             for k in expired:
                 del _api_cache[k]
-
-
-def tool_error(message: str) -> dict[str, str]:
-    """Create a standardized error response dict.
-
-    Args:
-        message: Error message to include
-
-    Returns:
-        Dict with "error" key
-    """
-    return {"error": message}
 
 
 def log_and_error(message: str, err: Exception | None = None, exc_info: bool = True) -> dict[str, str]:
@@ -170,69 +157,3 @@ async def post_json(
         return None, 500
 
 
-class APIError(Exception):
-    """Exception for API errors with status code."""
-
-    def __init__(self, message: str, status_code: int = 500):
-        super().__init__(message)
-        self.status_code = status_code
-
-
-async def require_json(
-    session: "aiohttp.ClientSession",
-    url: str,
-    *,
-    headers: dict[str, str] | None = None,
-    timeout: float = API_TIMEOUT,
-    error_message: str = "API request failed",
-) -> dict[str, Any]:
-    """Fetch JSON or raise APIError.
-
-    Args:
-        session: aiohttp session
-        url: URL to fetch
-        headers: Optional request headers
-        timeout: Request timeout in seconds
-        error_message: Error message prefix for failures
-
-    Returns:
-        JSON response data
-
-    Raises:
-        APIError: If request fails or returns non-200 status
-    """
-    data, status = await fetch_json(session, url, headers=headers, timeout=timeout)
-    if data is None:
-        raise APIError(f"{error_message}: HTTP {status}", status)
-    return data
-
-
-async def require_post_json(
-    session: "aiohttp.ClientSession",
-    url: str,
-    body: dict[str, Any],
-    *,
-    headers: dict[str, str] | None = None,
-    timeout: float = API_TIMEOUT,
-    error_message: str = "API request failed",
-) -> dict[str, Any]:
-    """POST JSON or raise APIError.
-
-    Args:
-        session: aiohttp session
-        url: URL to post to
-        body: JSON body to send
-        headers: Optional request headers
-        timeout: Request timeout in seconds
-        error_message: Error message prefix for failures
-
-    Returns:
-        JSON response data
-
-    Raises:
-        APIError: If request fails or returns non-200 status
-    """
-    data, status = await post_json(session, url, body, headers=headers, timeout=timeout)
-    if data is None:
-        raise APIError(f"{error_message}: HTTP {status}", status)
-    return data
