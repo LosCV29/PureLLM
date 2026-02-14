@@ -320,15 +320,12 @@ async def control_device(
         hass: Home Assistant instance
         device_aliases: Custom device name -> entity_id mapping
         voice_scripts: List of voice script configs with trigger, open_script, close_script, sensor
-        shade_entities: List of shade configs with name, entity_id, favorite_entity
 
     Returns:
         Control result dict
     """
     if voice_scripts is None:
         voice_scripts = []
-    if shade_entities is None:
-        shade_entities = []
     from homeassistant.helpers import entity_registry as er
     from homeassistant.helpers import area_registry as ar
     from homeassistant.helpers import device_registry as dr
