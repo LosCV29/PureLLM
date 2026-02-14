@@ -35,7 +35,7 @@ async def check_device_status(
     Returns:
         Device status dict
     """
-    device = (arguments.get("device") or "").strip().rstrip(".,!?")
+    device = arguments.get("device", "").strip()
 
     # Extract device name from original query using patterns
     extracted_device = None
@@ -154,9 +154,9 @@ async def get_device_history(
     """
     from homeassistant.util import dt as dt_util
 
-    device = (arguments.get("device") or "").strip()
-    days_back = min(arguments.get("days_back") or 1, 10)
-    specific_date = (arguments.get("date") or "")
+    device = arguments.get("device", "").strip()
+    days_back = min(arguments.get("days_back", 1), 10)
+    specific_date = arguments.get("date", "")
 
     # Extract device name from original query
     original_query = user_query.lower()
@@ -299,7 +299,6 @@ async def control_device(
     hass: "HomeAssistant",
     device_aliases: dict[str, str],
     voice_scripts: list[dict[str, str]] | None = None,
-    user_query: str = "",
 ) -> dict[str, Any]:
     """Control smart home devices.
 
@@ -333,15 +332,15 @@ async def control_device(
     _LOGGER.warning("DEBUG control_device called with: %s", arguments)
     _LOGGER.warning("DEBUG device_aliases: %s", device_aliases)
 
-    action = (arguments.get("action") or "").strip().lower()
+    action = arguments.get("action", "").strip().lower()
     brightness = arguments.get("brightness")
     position = arguments.get("position")
-    color = (arguments.get("color") or "").strip().lower()
+    color = arguments.get("color", "").strip().lower()
     color_temp = arguments.get("color_temp")
     volume = arguments.get("volume")
     temperature = arguments.get("temperature")
-    hvac_mode_raw = (arguments.get("hvac_mode") or "").strip().lower()
-    fan_speed = (arguments.get("fan_speed") or "").strip().lower()
+    hvac_mode_raw = arguments.get("hvac_mode", "").strip().lower()
+    fan_speed = arguments.get("fan_speed", "").strip().lower()
 
     # Normalize HVAC mode aliases to Home Assistant values
     hvac_mode_map = {
@@ -355,31 +354,11 @@ async def control_device(
     hvac_mode = hvac_mode_map.get(hvac_mode_raw, hvac_mode_raw) if hvac_mode_raw else ""
     _LOGGER.debug("HVAC mode: raw=%s, normalized=%s", hvac_mode_raw, hvac_mode)
 
-    direct_entity_id = (arguments.get("entity_id") or "").strip()
-    entity_ids_list = arguments.get("entity_ids") or []
-    area_name = (arguments.get("area") or "").strip()
-    domain_filter = (arguments.get("domain") or "").strip().lower()
-    device_name = (arguments.get("device") or "").strip().rstrip(".,!?")
-
-    # Fallback: extract device name from original user query when LLM omits it
-    if not direct_entity_id and not entity_ids_list and not area_name and not device_name and user_query:
-        original_query = user_query.lower()
-        control_patterns = [
-            r"(?:turn (?:on|off)|toggle|dim|lock|unlock|open|close|stop) (?:the )?(.+?)(?:\s+light[s]?|\s+switch|\s+fan|\s+lock|\s+cover|\s+blind[s]?)?$",
-            r"(.+?)(?:\s+(?:on|off|toggle|dim|lock|unlock|open|close|stop))$",
-        ]
-        for pattern in control_patterns:
-            match = re.search(pattern, original_query)
-            if match:
-                extracted = match.group(1).strip()
-                # Remove trailing articles/prepositions
-                for suffix in [" the", " a", " my", " in", " to"]:
-                    if extracted.endswith(suffix):
-                        extracted = extracted[:-len(suffix)].strip()
-                if extracted:
-                    _LOGGER.info("Device extraction fallback: extracted '%s' from query '%s'", extracted, user_query)
-                    device_name = extracted
-                    break
+    direct_entity_id = arguments.get("entity_id", "").strip()
+    entity_ids_list = arguments.get("entity_ids", [])
+    area_name = arguments.get("area", "").strip()
+    domain_filter = arguments.get("domain", "").strip().lower()
+    device_name = arguments.get("device", "").strip()
 
     # Check if device_name is actually an entity_id (e.g., "light.master_dimmer_switch_light")
     # If so, treat it as a direct entity_id instead of running fuzzy matching
@@ -643,29 +622,8 @@ async def control_device(
         service = domain_services.get(action)
 
         if not service:
-            # Domain fallback: if the matched entity's domain doesn't support
-            # the action, try to find the same device in a compatible domain.
-            # Common case: light.living_room_shade matched, but "close" is a
-            # cover action → try cover.living_room_shade instead.
-            object_id = entity_id.split(".")[1]
-            for alt_domain, alt_services in service_map.items():
-                if alt_domain != domain and action in alt_services:
-                    alt_entity_id = f"{alt_domain}.{object_id}"
-                    alt_state = hass.states.get(alt_entity_id)
-                    if alt_state:
-                        _LOGGER.info(
-                            "Domain fallback: %s doesn't support '%s', using %s",
-                            entity_id, action, alt_entity_id,
-                        )
-                        entity_id = alt_entity_id
-                        domain = alt_domain
-                        friendly_name = alt_state.attributes.get("friendly_name", friendly_name)
-                        service = alt_services[action]
-                        break
-
-            if not service:
-                failed.append(f"{friendly_name} (unsupported action)")
-                continue
+            failed.append(f"{friendly_name} (unsupported action)")
+            continue
 
         service_data = {"entity_id": entity_id}
 
@@ -673,15 +631,14 @@ async def control_device(
         if domain == "light" and action in ("turn_on", "dim"):
             if brightness is not None:
                 service_data["brightness_pct"] = max(0, min(100, brightness))
-            # Color settings are mutually exclusive — only set one
-            if color_temp is not None:
-                service_data["color_temp_kelvin"] = max(2000, min(6500, color_temp))
-            elif color and color in color_map and color_map[color]:
+            if color and color in color_map and color_map[color]:
                 service_data["rgb_color"] = color_map[color]
             elif color == "warm":
                 service_data["color_temp_kelvin"] = 2700
             elif color == "cool":
                 service_data["color_temp_kelvin"] = 6500
+            if color_temp is not None:
+                service_data["color_temp_kelvin"] = max(2000, min(6500, color_temp))
 
         # Media player controls
         if domain == "media_player":
@@ -764,7 +721,7 @@ async def control_device(
     async def execute_call(call_info: tuple[str, str, dict, str]) -> tuple[str, Exception | None]:
         domain, service, data, name = call_info
         try:
-            await hass.services.async_call(domain, service, data, blocking=True)
+            await hass.services.async_call(domain, service, data, blocking=False)
             _LOGGER.info("Device control: %s.%s on %s", domain, service, name)
             return (name, None)
         except Exception as err:

@@ -5,7 +5,6 @@ import asyncio
 import codecs
 import logging
 import re
-import unicodedata
 import aiohttp
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
@@ -120,18 +119,6 @@ def _normalize_unicode(text: str | None) -> str:
     return text
 
 
-def _strip_accents(text: str) -> str:
-    """Strip accents/diacritics and lowercase for fuzzy matching.
-
-    Converts 'DeBí TiRaR MáS fOtOs' → 'debi tirar mas fotos' so that
-    MusicBrainz names match Music Assistant names regardless of accents.
-    """
-    if not text:
-        return ""
-    nfkd = unicodedata.normalize("NFKD", text)
-    return "".join(c for c in nfkd if not unicodedata.combining(c)).lower()
-
-
 async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> int:
     """Look up album release year from MusicBrainz API."""
     clean_album = re.sub(r'\s*[\(\[].*?[\)\]]', '', album_name).strip()
@@ -191,50 +178,25 @@ async def _search_albums_by_tag_musicbrainz(artist_name: str, tag: str) -> list[
         })
 
     albums.sort(key=lambda x: (x["year"] == 0, x["year"]))
-    _LOGGER.debug("MUSIC DEBUG: MusicBrainz tag search for '%s' + tag:'%s' found %d albums",
+    _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag search for '%s' + tag:'%s' found %d albums",
                    artist_name, tag, len(albums))
     for i, alb in enumerate(albums[:10]):
-        _LOGGER.debug("MUSIC DEBUG: MusicBrainz tag [%d] '%s' (%d)", i+1, alb["name"], alb["year"])
+        _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag [%d] '%s' (%d)", i+1, alb["name"], alb["year"])
     return albums
 
 
 async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str = None) -> list[dict]:
     """Get artist's discography from MusicBrainz with album types and years."""
-    # First, find the artist ID — fetch multiple candidates and pick best name match
+    # First, find the artist ID
     artist_data = await _musicbrainz_get("artist", {
-        "query": f'artist:"{artist_name}"', "limit": 10,
+        "query": f'artist:"{artist_name}"', "limit": 1,
     })
     if not artist_data:
         return []
     artists = artist_data.get("artists", [])
-    if not artists:
+    if not artists or not artists[0].get("id"):
         return []
-
-    # Pick the artist whose name best matches the query (accent-insensitive)
-    name_stripped = _strip_accents(artist_name)
-    best_artist = None
-    for a in artists:
-        a_name = _strip_accents(a.get("name") or "")
-        a_sort = _strip_accents(a.get("sort-name") or "")
-        # Exact match (case+accent insensitive)
-        if a_name == name_stripped or a_sort == name_stripped:
-            best_artist = a
-            break
-        # Substring match
-        if not best_artist and (name_stripped in a_name or a_name in name_stripped):
-            best_artist = a
-
-    if not best_artist:
-        # Fall back to first result with a score check
-        if artists[0].get("score", 0) >= 80:
-            best_artist = artists[0]
-        else:
-            _LOGGER.warning("MusicBrainz: No good artist match for '%s' (top result: '%s' score=%s)",
-                           artist_name, artists[0].get("name"), artists[0].get("score"))
-            return []
-
-    artist_id = best_artist["id"]
-    _LOGGER.info("MusicBrainz: Matched artist '%s' → '%s' (id=%s)", artist_name, best_artist.get("name"), artist_id)
+    artist_id = artists[0]["id"]
 
     # MusicBrainz rate limit
     await asyncio.sleep(1)
@@ -246,12 +208,6 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
     if not data:
         return []
 
-    # Keywords in title or disambiguation that indicate a non-studio release
-    _LIVE_HINTS = [
-        "live", "concert", "tour", "halftime", "super bowl", "performance",
-        "unplugged", "session", "in concert", "at the", "mtv",
-    ]
-
     discography = []
     for rg in data.get("release-groups", []):
         first_release = rg.get("first-release-date", "")
@@ -259,14 +215,8 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
         primary_type = (rg.get("primary-type") or "").lower()
         secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
 
-        # Detect live releases even when MusicBrainz secondary_types is empty,
-        # by inspecting the disambiguation and title fields for live indicators
-        title_lower = (rg.get("title") or "").lower()
-        disambig_lower = (rg.get("disambiguation") or "").lower()
-        name_suggests_live = any(h in title_lower or h in disambig_lower for h in _LIVE_HINTS)
-
-        is_live = "live" in secondary_types or name_suggests_live
-        is_studio = primary_type == "album" and not secondary_types and not name_suggests_live
+        is_studio = primary_type == "album" and not secondary_types
+        is_live = "live" in secondary_types
         is_compilation = "compilation" in secondary_types
         is_soundtrack = "soundtrack" in secondary_types
         is_ep = primary_type == "ep"
@@ -298,11 +248,11 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
         })
 
     discography.sort(key=lambda x: (x["year"] == 0, x["year"]))
-    _LOGGER.debug("MUSIC DEBUG: MusicBrainz found %d albums for '%s'%s",
+    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found %d albums for '%s'%s",
                 len(discography), artist_name,
                 f" (filtered by {album_type})" if album_type else "")
     for i, alb in enumerate(discography[:10]):
-        _LOGGER.debug("MUSIC DEBUG: MusicBrainz [%d] '%s' (%d) - type: %s%s",
+        _LOGGER.warning("MUSIC DEBUG: MusicBrainz [%d] '%s' (%d) - type: %s%s",
                        i+1, alb["name"], alb["year"], alb["primary_type"],
                        f" + {alb['secondary_types']}" if alb["secondary_types"] else "")
     return discography
@@ -459,64 +409,41 @@ class MusicController:
         action = arguments.get("action", "").lower()
         query = arguments.get("query", "")
         media_type = arguments.get("media_type", "artist")
-        room = arguments.get("room", "").strip().lower() if arguments.get("room") else ""
+        room = arguments.get("room", "").lower() if arguments.get("room") else ""
         shuffle = arguments.get("shuffle", False)
         artist = arguments.get("artist", "")
         album = arguments.get("album", "")
         song_on_album = arguments.get("song_on_album", "")
-        user_text = arguments.pop("_user_text", "")
 
         # DEBUG: Log raw arguments received from LLM
-        _LOGGER.debug("MUSIC DEBUG: Raw arguments from LLM: %s", arguments)
-        _LOGGER.debug("MUSIC DEBUG: Extracted - action='%s', query='%s', room='%s'", action, query, room)
+        _LOGGER.warning("MUSIC DEBUG: Raw arguments from LLM: %s", arguments)
+        _LOGGER.warning("MUSIC DEBUG: Extracted - action='%s', query='%s', room='%s'", action, query, room)
 
-        # DEFENSIVE: Strip room phrases from query, artist, and album - LLM often
-        # includes "in the living room" in the wrong param instead of extracting to room.
-        room_strip_pattern = r'\s+in\s+the\s+(.+?)[.!?]?\s*$'
-        configured_rooms = {r.lower() for r in self._players.keys()}
-        all_known_rooms = COMMON_ROOM_NAMES | configured_rooms
-
-        for param_name, param_val in [("query", query), ("artist", artist), ("album", album)]:
-            if not param_val:
-                continue
-            match = re.search(room_strip_pattern, param_val, flags=re.IGNORECASE)
-            if not match:
-                continue
-            potential_room = match.group(1).lower().strip()
-            if potential_room in all_known_rooms or any(potential_room in r or r in potential_room for r in all_known_rooms):
-                stripped = re.sub(room_strip_pattern, '', param_val, flags=re.IGNORECASE).strip()
-                if not room:
-                    room = potential_room
-                _LOGGER.debug("MUSIC DEBUG: Stripped room from %s='%s' → '%s', room='%s'", param_name, param_val, stripped, room)
-                if param_name == "query":
-                    query = stripped
-                elif param_name == "artist":
-                    artist = stripped
-                elif param_name == "album":
-                    album = stripped
-
-        # LAST RESORT: If room is still empty, extract from original user text.
-        # Handles cases where the LLM completely drops the room from all params.
-        if not room and user_text:
-            match = re.search(room_strip_pattern, user_text, flags=re.IGNORECASE)
+        # DEFENSIVE: ALWAYS strip room phrases from query - LLM often includes them
+        # This handles cases like query="Young Dolph in the living room"
+        # Strip regardless of whether room param is set or not
+        if query:
+            # Try to extract room from end of query - handles "in the X" pattern
+            # Use word boundary matching for multi-word rooms
+            room_strip_pattern = r'\s+in\s+the\s+(.+?)\s*$'
+            match = re.search(room_strip_pattern, query, flags=re.IGNORECASE)
+            _LOGGER.warning("MUSIC DEBUG: Regex match on query='%s': %s", query, match)
             if match:
                 potential_room = match.group(1).lower().strip()
+                _LOGGER.warning("MUSIC DEBUG: Potential room extracted: '%s'", potential_room)
+                configured_rooms = {r.lower() for r in self._players.keys()}
+                all_known_rooms = COMMON_ROOM_NAMES | configured_rooms
+                _LOGGER.warning("MUSIC DEBUG: Configured rooms: %s", configured_rooms)
+                _LOGGER.warning("MUSIC DEBUG: Is '%s' in known rooms? %s", potential_room, potential_room in all_known_rooms)
+
                 if potential_room in all_known_rooms or any(potential_room in r or r in potential_room for r in all_known_rooms):
-                    room = potential_room
-                    _LOGGER.debug("MUSIC DEBUG: Extracted room from user text: '%s'", room)
+                    original_query = query
+                    query = re.sub(room_strip_pattern, '', query, flags=re.IGNORECASE).strip()
+                    if not room:
+                        room = potential_room
+                    _LOGGER.warning("MUSIC DEBUG: Stripped room - query='%s' → '%s', room='%s'", original_query, query, room)
 
-        _LOGGER.debug("MUSIC DEBUG: Final - action='%s', query='%s', room='%s'", action, query, room)
-
-        # GUARDRAIL: If LLM hallucinated "transfer" but provided any music content
-        # params OR an explicit media_type, it actually meant "play".
-        # The LLM sometimes sends transfer with no music params when the user says
-        # "play X in the [room]" — catch that via explicit media_type check.
-        if action == "transfer" and (query or artist or album or song_on_album or arguments.get("media_type")):
-            _LOGGER.warning(
-                "MUSIC GUARDRAIL: LLM said 'transfer' but included query='%s' artist='%s' album='%s' media_type='%s' — correcting to 'play'",
-                query, artist, album, media_type,
-            )
-            action = "play"
+        _LOGGER.warning("MUSIC DEBUG: Final - action='%s', query='%s', room='%s'", action, query, room)
 
         all_players = list(self._players.values())
 
@@ -532,7 +459,7 @@ class MusicController:
                 self._last_music_command_time and
                 (now - self._last_music_command_time).total_seconds() < self._music_debounce_seconds):
                 _LOGGER.info("DEBOUNCE: Ignoring duplicate '%s' command", action)
-                return {"status": "debounced", "response_text": f"Command '{action}' ignored (duplicate)"}
+                return {"status": "debounced", "message": f"Command '{action}' ignored (duplicate)"}
 
         self._last_music_command = action
         self._last_music_command_time = now
@@ -745,13 +672,6 @@ class MusicController:
         - "first/oldest/debut album by X" → finds earliest album
         - song_on_album: finds album containing a specific song
         """
-        # If LLM put album name in 'album' param instead of 'query', use it as query
-        # so the standard search path handles it (e.g., "play album X by Y in room")
-        if not query and album:
-            _LOGGER.warning("MUSIC FIX: LLM put album name in 'album' param instead of 'query' — using album='%s' as query", album)
-            query = album
-            album = ""
-
         if not query and not song_on_album:
             return {"error": "No music query specified"}
         if not target_players:
@@ -897,7 +817,7 @@ class MusicController:
                                 # If we have a URI, play directly
                                 if album_uri:
                                     await self._play_on_players(target_players, album_uri, "album")
-                                    return {"status": "playing", "response_text": f"Playing {album_name} by {found_artist} in the {room}"}
+                                    return {"status": "playing", "message": f"Playing {album_name} by {found_artist} in the {room}"}
 
                                 # Otherwise search for the album by name
                                 album_search = await self._hass.services.async_call(
@@ -912,14 +832,14 @@ class MusicController:
                                     found_album_name = _normalize_unicode(found_album.get("name") or found_album.get("title"))
                                     found_album_uri = found_album.get("uri") or found_album.get("media_id")
                                     await self._play_on_players(target_players, found_album_uri, "album")
-                                    return {"status": "playing", "response_text": f"Playing {found_album_name} by {found_artist} in the {room}"}
+                                    return {"status": "playing", "message": f"Playing {found_album_name} by {found_artist} in the {room}"}
 
                 return {"error": f"Could not find album containing '{song_on_album}'" + (f" by {artist}" if artist else "")}
 
             # Handle ordinal album requests (second, third album) or type-filtered requests (studio, live)
-            # Also handles tag-based filtering (christmas, holiday albums), year-based and modifier-based requests
-            if artist and (album_ordinal or album_type_filter or album or album_year or album_modifier):
-                _LOGGER.debug("MUSIC DEBUG: Album search - ordinal=%s, type='%s', artist='%s', album_tag='%s', year=%s",
+            # Also handles tag-based filtering (christmas, holiday albums) and year-based requests
+            if artist and (album_ordinal or album_type_filter or album or album_year):
+                _LOGGER.warning("MUSIC DEBUG: Album search - ordinal=%s, type='%s', artist='%s', album_tag='%s', year=%s",
                                album_ordinal, album_type_filter, artist, album, album_year)
 
                 discography = []
@@ -930,20 +850,15 @@ class MusicController:
                     discography = await _search_albums_by_tag_musicbrainz(artist, album)
 
                 # If no results from tag search (or no album tag), get full discography
-                # When using latest/first modifier without an explicit type filter, default to
-                # studio albums so live performances and compilations are excluded
                 if not discography:
-                    effective_type_filter = album_type_filter
-                    if not effective_type_filter and album_modifier:
-                        effective_type_filter = "studio"
-                    discography = await _get_artist_discography_musicbrainz(artist, effective_type_filter)
+                    discography = await _get_artist_discography_musicbrainz(artist, album_type_filter)
 
                     # If we have a discography but also an album filter, try name matching as fallback
                     if discography and album:
                         album_filter_lower = album.lower()
                         filtered_discog = [d for d in discography if album_filter_lower in d["name"].lower()]
                         if filtered_discog:
-                            _LOGGER.debug("MUSIC DEBUG: Name-filtered discography from %d to %d albums matching '%s'",
+                            _LOGGER.warning("MUSIC DEBUG: Name-filtered discography from %d to %d albums matching '%s'",
                                            len(discography), len(filtered_discog), album)
                             discography = filtered_discog
 
@@ -951,7 +866,7 @@ class MusicController:
                 if discography and album_year:
                     year_filtered = [d for d in discography if d["year"] == album_year]
                     if year_filtered:
-                        _LOGGER.debug("MUSIC DEBUG: Year-filtered discography from %d to %d albums from %d",
+                        _LOGGER.warning("MUSIC DEBUG: Year-filtered discography from %d to %d albums from %d",
                                        len(discography), len(year_filtered), album_year)
                         discography = year_filtered
 
@@ -973,27 +888,27 @@ class MusicController:
                     if album_ordinal <= len(discography):
                         target_album_name = discography[album_ordinal - 1]["name"]
                         target_year = discography[album_ordinal - 1]["year"]
-                        _LOGGER.debug("MUSIC DEBUG: Selected ordinal #%d album: '%s' (%d)", album_ordinal, target_album_name, target_year)
+                        _LOGGER.warning("MUSIC DEBUG: Selected ordinal #%d album: '%s' (%d)", album_ordinal, target_album_name, target_year)
                     else:
                         return {"error": f"{artist} only has {len(discography)} {album + ' ' if album else ''}albums"}
                 elif album_modifier == "latest":
                     target_album_name = discography[-1]["name"]
                     target_year = discography[-1]["year"]
-                    _LOGGER.debug("MUSIC DEBUG: Selected latest album: '%s' (%d)", target_album_name, target_year)
+                    _LOGGER.warning("MUSIC DEBUG: Selected latest album: '%s' (%d)", target_album_name, target_year)
                 elif album_modifier == "first":
                     target_album_name = discography[0]["name"]
                     target_year = discography[0]["year"]
-                    _LOGGER.debug("MUSIC DEBUG: Selected first album: '%s' (%d)", target_album_name, target_year)
+                    _LOGGER.warning("MUSIC DEBUG: Selected first album: '%s' (%d)", target_album_name, target_year)
                 elif album_year and discography:
                     # Year was specified, use the (first) album from that year
                     target_album_name = discography[0]["name"]
                     target_year = discography[0]["year"]
-                    _LOGGER.debug("MUSIC DEBUG: Selected album from %d: '%s'", album_year, target_album_name)
+                    _LOGGER.warning("MUSIC DEBUG: Selected album from %d: '%s'", album_year, target_album_name)
                 elif discography:
                     # No modifier specified, just use the most recent from the tag/type search
                     target_album_name = discography[-1]["name"]
                     target_year = discography[-1]["year"]
-                    _LOGGER.debug("MUSIC DEBUG: No modifier, using most recent: '%s' (%d)", target_album_name, target_year)
+                    _LOGGER.warning("MUSIC DEBUG: No modifier, using most recent: '%s' (%d)", target_album_name, target_year)
 
                 if target_album_name:
                     # Search Music Assistant for this specific album
@@ -1005,29 +920,21 @@ class MusicController:
 
                     albums = _parse_ma_results(search_result, "album")
                     if albums:
-                        # Find best match (accent-insensitive for international albums)
-                        target_stripped = _strip_accents(target_album_name)
-                        artist_stripped = _strip_accents(artist) if artist else ""
+                        # Find best match
+                        target_lower = target_album_name.lower()
                         best_album = None
                         for alb in albums:
-                            alb_name = _strip_accents(alb.get("name") or alb.get("title") or "")
-                            if target_stripped in alb_name or alb_name in target_stripped:
+                            alb_name = (alb.get("name") or alb.get("title") or "").lower()
+                            if target_lower in alb_name or alb_name in target_lower:
                                 best_album = alb
                                 break
-                        # Fallback: prefer album by the correct artist
-                        if not best_album and artist_stripped:
-                            for alb in albums:
-                                alb_artist = _strip_accents(_extract_artist(alb))
-                                if artist_stripped in alb_artist or alb_artist in artist_stripped:
-                                    best_album = alb
-                                    break
                         if not best_album:
                             best_album = albums[0]
 
                         found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
                         found_uri = best_album.get("uri") or best_album.get("media_id")
                         await self._play_on_players(target_players, found_uri, "album")
-                        return {"status": "playing", "response_text": f"Playing {found_name} by {artist} in the {room}"}
+                        return {"status": "playing", "message": f"Playing {found_name} by {artist} in the {room}"}
 
                     return {"error": f"Found '{target_album_name}' in MusicBrainz but not in your music library"}
 
@@ -1035,7 +942,7 @@ class MusicController:
 
             # Handle smart album search (latest/first album by artist)
             if album_modifier and artist:
-                _LOGGER.debug("MUSIC DEBUG: Smart album search - modifier='%s', artist='%s', album_filter='%s'", album_modifier, artist, album)
+                _LOGGER.warning("MUSIC DEBUG: Smart album search - modifier='%s', artist='%s', album_filter='%s'", album_modifier, artist, album)
 
                 # Search for albums by artist only
                 search_result = await self._hass.services.async_call(
@@ -1047,23 +954,23 @@ class MusicController:
                 albums = _parse_ma_results(search_result, "album")
 
                 if albums:
-                    artist_stripped = _strip_accents(artist)
-                    matching_albums = [a for a in albums if artist_stripped in _strip_accents(_extract_artist(a)) or _strip_accents(_extract_artist(a)) in artist_stripped]
-                    _LOGGER.debug("MUSIC DEBUG: Found %d albums, %d match artist '%s'", len(albums), len(matching_albums), artist)
+                    artist_lower = artist.lower()
+                    matching_albums = [a for a in albums if artist_lower in _extract_artist(a, lowercase=True) or _extract_artist(a, lowercase=True) in artist_lower]
+                    _LOGGER.warning("MUSIC DEBUG: Found %d albums, %d match artist '%s'", len(albums), len(matching_albums), artist)
 
                     # Filter by album name if specified (e.g., "christmas" for christmas albums)
                     if album and matching_albums:
-                        album_filter = _strip_accents(album)
+                        album_filter = album.lower()
                         filtered_albums = [
                             a for a in matching_albums
-                            if album_filter in _strip_accents(a.get("name") or a.get("title") or "")
+                            if album_filter in (a.get("name") or a.get("title") or "").lower()
                         ]
                         if filtered_albums:
-                            _LOGGER.debug("MUSIC DEBUG: Filtered %d albums to %d matching '%s'",
+                            _LOGGER.warning("MUSIC DEBUG: Filtered %d albums to %d matching '%s'",
                                         len(matching_albums), len(filtered_albums), album)
                             matching_albums = filtered_albums
                         else:
-                            _LOGGER.debug("MUSIC DEBUG: No albums matched filter '%s', using all %d albums by artist",
+                            _LOGGER.warning("MUSIC DEBUG: No albums matched filter '%s', using all %d albums by artist",
                                            album, len(matching_albums))
 
                     if matching_albums:
@@ -1090,7 +997,7 @@ class MusicController:
                         for alb in matching_albums[:5]:
                             alb_name = alb.get("name") or alb.get("title")
                             alb_year = get_year(alb)
-                            _LOGGER.debug("MUSIC DEBUG: Album candidate: '%s' (year: %s, raw: %s)",
+                            _LOGGER.warning("MUSIC DEBUG: Album candidate: '%s' (year: %s, raw: %s)",
                                         alb_name, alb_year,
                                         alb.get("year") or alb.get("release_date") or "unknown")
 
@@ -1098,14 +1005,14 @@ class MusicController:
 
                         # Check if all years are 0 (missing) - if so, use MusicBrainz to look up years
                         if all(y == 0 for y, _ in albums_with_year):
-                            _LOGGER.debug("MUSIC DEBUG: All years are 0, querying MusicBrainz for release dates...")
+                            _LOGGER.warning("MUSIC DEBUG: All years are 0, querying MusicBrainz for release dates...")
                             updated_albums = []
                             for _, alb in albums_with_year:
                                 alb_name = alb.get("name") or alb.get("title") or ""
                                 mb_year = await _lookup_album_year_musicbrainz(alb_name, artist)
                                 updated_albums.append((mb_year, alb))
                                 if mb_year > 0:
-                                    _LOGGER.debug("MUSIC DEBUG: MusicBrainz found year %d for '%s'", mb_year, alb_name)
+                                    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found year %d for '%s'", mb_year, alb_name)
                             albums_with_year = updated_albums
 
                         # Sort: albums with year=0 go to end, then sort by year (desc for latest, asc for first)
@@ -1119,10 +1026,10 @@ class MusicController:
                             found_type = "album"
 
                             year = albums_with_year[0][0]
-                            _LOGGER.debug("MUSIC DEBUG: Selected %s album: '%s' (year: %d) by '%s'", album_modifier, found_name, year, found_artist)
+                            _LOGGER.warning("MUSIC DEBUG: Selected %s album: '%s' (year: %d) by '%s'", album_modifier, found_name, year, found_artist)
 
                             await self._play_on_players(target_players, found_uri, "album")
-                            return {"status": "playing", "response_text": f"Playing {found_name} by {found_artist} in the {room}"}
+                            return {"status": "playing", "message": f"Playing {found_name} by {found_artist} in the {room}"}
 
                 return {"error": f"Could not find albums by {artist}"}
 
@@ -1232,7 +1139,7 @@ class MusicController:
             # Play the found media
             await self._play_on_players(target_players, found_uri, found_type, shuffle=shuffle)
 
-            return {"status": "playing", "response_text": f"Playing {display_name} in the {room}"}
+            return {"status": "playing", "message": f"Playing {display_name} in the {room}"}
 
         except Exception as e:
             _LOGGER.error("Play search/play error: %s", e, exc_info=True)
@@ -1281,7 +1188,7 @@ class MusicController:
         await self._call_media_service(pid, "media_pause")
 
         self._last_paused_player = pid
-        return {"status": "paused", "response_text": f"Paused in {self._get_room_name(pid)}"}
+        return {"status": "paused", "message": f"Paused in {self._get_room_name(pid)}"}
 
     async def _resume(self, all_players: list[str]) -> dict:
         """Resume music - uses area targeting like HA native intents."""
@@ -1293,13 +1200,13 @@ class MusicController:
             await self._call_media_service(self._last_paused_player, "media_play")
             room_name = self._get_room_name(self._last_paused_player)
             self._last_paused_player = None
-            return {"status": "resumed", "response_text": f"Resumed in {room_name}"}
+            return {"status": "resumed", "message": f"Resumed in {room_name}"}
 
         # Find any paused player
         paused = self._find_player_by_state("paused", all_players)
         if paused:
             await self._call_media_service(paused, "media_play")
-            return {"status": "resumed", "response_text": f"Resumed in {self._get_room_name(paused)}"}
+            return {"status": "resumed", "message": f"Resumed in {self._get_room_name(paused)}"}
 
         return {"error": "No paused music to resume"}
 
@@ -1314,9 +1221,9 @@ class MusicController:
 
                 await self._call_media_service(pid, "media_stop")
 
-                return {"status": "stopped", "response_text": f"Stopped in {self._get_room_name(pid)}"}
+                return {"status": "stopped", "message": f"Stopped in {self._get_room_name(pid)}"}
 
-        return {"response_text": "No music is playing"}
+        return {"message": "No music is playing"}
 
     async def _skip_next(self, all_players: list[str]) -> dict:
         """Skip to next track."""
@@ -1324,7 +1231,7 @@ class MusicController:
         playing = self._find_player_by_state("playing", all_players)
         if playing:
             await self._hass.services.async_call("media_player", "media_next_track", {"entity_id": playing})
-            return {"status": "skipped", "response_text": "Skipped to next track"}
+            return {"status": "skipped", "message": "Skipped to next track"}
         return {"error": "No music is playing to skip"}
 
     async def _skip_previous(self, all_players: list[str]) -> dict:
@@ -1333,7 +1240,7 @@ class MusicController:
         playing = self._find_player_by_state("playing", all_players)
         if playing:
             await self._hass.services.async_call("media_player", "media_previous_track", {"entity_id": playing})
-            return {"status": "skipped", "response_text": "Previous track"}
+            return {"status": "skipped", "message": "Previous track"}
         return {"error": "No music is playing"}
 
     async def _restart_track(self, all_players: list[str]) -> dict:
@@ -1342,7 +1249,7 @@ class MusicController:
         playing = self._find_player_by_state("playing", all_players)
         if playing:
             await self._hass.services.async_call("media_player", "media_seek", {"entity_id": playing, "seek_position": 0})
-            return {"status": "restarted", "response_text": "Bringing it back from the top"}
+            return {"status": "restarted", "message": "Bringing it back from the top"}
         return {"error": "No music is playing"}
 
     async def _what_playing(self, all_players: list[str]) -> dict:
@@ -1358,7 +1265,7 @@ class MusicController:
                 "album": attrs.get("media_album_name", ""),
                 "room": self._get_room_name(playing)
             }
-        return {"response_text": "No music currently playing"}
+        return {"message": "No music currently playing"}
 
     async def _transfer(self, all_players: list[str], target_players: list[str], room: str) -> dict:
         """Transfer music to another room."""
@@ -1396,35 +1303,33 @@ class MusicController:
             except Exception as e2:
                 _LOGGER.error("Transfer fallback also failed: %s", e2)
 
-        return {"status": "transferred", "response_text": f"Music transferred to {self._get_room_name(target)}"}
+        return {"status": "transferred", "message": f"Music transferred to {self._get_room_name(target)}"}
 
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
-        """Shuffle music by finding and playing a playlist.
+        """Search for Spotify playlist by artist, genre, or holiday and play shuffled.
 
-        Searches for playlists matching the query and plays in shuffle mode.
-        Prefers official Apple Music curated playlists. Falls back to most popular.
+        IMPORTANT: This ONLY searches for Spotify playlists - no fallback to artist.
+        Returns the exact playlist title for verbatim announcement.
 
-        Three categories (all resolved to a playlist):
-        1. Artist: confirmed via MA artist lookup → search playlists by artist name
-        2. Holiday: detected via keyword → search playlists with holiday terms
-        3. Genre/mood: no artist match → search playlists with raw query
+        Holiday support: Detects holiday keywords (christmas, halloween, etc.) and
+        searches for themed playlists with more flexible matching.
         """
         if not query:
             return {"error": "No search query specified for shuffle"}
         if not target_players:
             return {"error": f"No room specified. Available: {', '.join(self._players.keys())}"}
 
-        _LOGGER.info("Shuffle request: '%s'", query)
-        query_lower = query.lower()
+        _LOGGER.info("Searching Spotify for playlist matching: %s", query)
 
-        # ── Detect holiday keywords ──
+        # Detect holiday keywords in query
+        query_lower = query.lower()
         detected_holiday = None
         holiday_search_terms = []
         for keyword, search_terms in HOLIDAY_KEYWORDS.items():
             if keyword in query_lower:
                 detected_holiday = keyword
                 holiday_search_terms = search_terms
-                _LOGGER.info("Shuffle category: HOLIDAY ('%s')", keyword)
+                _LOGGER.info("Detected holiday keyword: '%s', search terms: %s", keyword, search_terms)
                 break
 
         try:
@@ -1433,154 +1338,175 @@ class MusicController:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
-            # ── Determine search queries and category ──
-            search_queries = []
-            category = "genre"
-            artist_name = None
+            all_playlists = []
 
-            if not detected_holiday:
-                # Check if query matches a known artist
-                try:
-                    artist_result = await self._hass.services.async_call(
-                        "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["artist"], "limit": 5},
-                        blocking=True, return_response=True
-                    )
-                except Exception:
-                    artist_result = None
-                artists = _parse_ma_results(artist_result, "artist")
-                if artists:
-                    for a in artists:
-                        name = (a.get("name") or a.get("title") or "").lower()
-                        if query_lower == name or query_lower in name or name in query_lower:
-                            artist_name = _normalize_unicode(a.get("name") or a.get("title") or query)
-                            break
+            if detected_holiday:
+                # For holidays, search using the FULL query first, then fallback to generic terms
+                # This ensures "80s christmas" finds "80s Christmas" playlists, not just generic "Christmas Hits"
+                search_queries = [query]  # Full query first (e.g., "80s christmas music")
+                # Add the primary holiday term if not already the full query
+                if holiday_search_terms[0] != query_lower:
+                    search_queries.append(holiday_search_terms[0])
 
-                if artist_name:
-                    category = "artist"
-                    # Apple Music curated pattern: "[Artist] Essentials"
-                    search_queries = [f"{artist_name} essentials", artist_name]
-                    _LOGGER.info("Shuffle category: ARTIST ('%s') — searching playlists", artist_name)
-                else:
-                    category = "genre"
-                    # Apple Music curated patterns: "A-List [Genre]", "[Genre] Hits"
-                    search_queries = [query, f"{query} hits", f"A-List {query}"]
-                    _LOGGER.info("Shuffle category: GENRE (no artist match)")
-            else:
-                category = "holiday"
-                # Search with original query + all holiday search terms for broad coverage
-                search_queries = [query]
-                for term in holiday_search_terms:
-                    if term.lower() != query_lower:
-                        search_queries.append(term)
-
-            # ── Search for playlists (all categories) ──
-            all_playlists: list[dict] = []
-            seen_uris: set[str] = set()
-            for search_query in search_queries:
-                try:
+                for search_query in search_queries:
                     search_result = await self._hass.services.async_call(
                         "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": ["playlist"], "limit": 20},
+                        {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": ["playlist"], "limit": 15},
                         blocking=True, return_response=True
                     )
-                except Exception as search_exc:
-                    _LOGGER.debug("Playlist search for '%s' returned no results: %s", search_query, search_exc)
-                    continue
-                for p in _parse_ma_results(search_result, "playlist"):
+                    all_playlists.extend(_parse_ma_results(search_result, "playlist"))
+                _LOGGER.info("Holiday search for '%s' found %d total playlists", query, len(all_playlists))
+            else:
+                # Standard search for non-holiday queries
+                search_result = await self._hass.services.async_call(
+                    "music_assistant", "search",
+                    {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["playlist"], "limit": 10},
+                    blocking=True, return_response=True
+                )
+                all_playlists = _parse_ma_results(search_result, "playlist")
+
+            playlist_name = None
+            playlist_uri = None
+            playlist_owner = ""
+            is_official = False
+
+            if all_playlists:
+                # Deduplicate playlists by URI
+                seen_uris = set()
+                playlists = []
+                for p in all_playlists:
                     uri = p.get("uri") or p.get("media_id") or ""
                     if uri and uri not in seen_uris:
                         seen_uris.add(uri)
-                        all_playlists.append(p)
+                        playlists.append(p)
 
-            _LOGGER.info("Playlist search for '%s' found %d results", query, len(all_playlists))
+                # Filter out playlists with "Radio" in the name - we don't want auto-generated radio playlists
+                non_radio_playlists = [
+                    p for p in playlists
+                    if "radio" not in (p.get("name") or p.get("title") or "").lower()
+                ]
 
-            if not all_playlists:
-                return {"error": f"Could not find playlists for '{query}'. Try 'play {query}' instead."}
+                query_words = query_lower.split()
 
-            # ── Score playlists — prefer official Apple Music curated ──
-            query_words = [w for w in query_lower.split() if len(w) > 2]
+                def name_matches_query(playlist_name_str: str) -> bool:
+                    """Check if playlist name contains query or any significant word from query."""
+                    name_lower = playlist_name_str.lower()
+                    # Exact query match
+                    if query_lower in name_lower:
+                        return True
+                    # Match on individual words (handles typos like elliot vs elliott)
+                    for word in query_words:
+                        if len(word) >= 4 and word in name_lower:
+                            return True
+                    # For holidays, also check holiday search terms
+                    if detected_holiday:
+                        for term in holiday_search_terms:
+                            if term in name_lower:
+                                return True
+                    return False
 
-            def score_playlist(p):
-                name = (p.get("name") or p.get("title") or "").lower()
-                owner = (p.get("owner") or p.get("curator") or "").lower()
-                score = 0
+                # Priority 1: Official Spotify curated playlists ("This Is...", "Best of...", owned by Spotify)
+                official_playlists = [
+                    p for p in non_radio_playlists
+                    if (p.get("owner") or "").lower() == "spotify"
+                    or (p.get("name") or p.get("title") or "").lower().startswith("this is")
+                    or (p.get("name") or p.get("title") or "").lower().startswith("best of")
+                ]
 
-                # Official Apple Music curated playlist gets huge boost
-                if "apple music" in owner or "apple music" in name:
-                    score += 200
-                # Other editorial/curated indicators
-                if any(kw in owner for kw in ("apple", "editorial", "curated")):
-                    score += 100
+                # Priority 2: Playlists with artist/query name in title
+                matching_name_playlists = [
+                    p for p in non_radio_playlists
+                    if name_matches_query(p.get("name") or p.get("title") or "")
+                ]
 
-                # Name relevance
-                if query_lower == name:
-                    score += 50
-                elif query_lower in name:
-                    score += 30
-                for word in query_words:
-                    if word in name:
-                        score += 10
+                is_official = False
+                chosen_playlist = None
 
-                # Holiday-specific matching
                 if detected_holiday:
-                    for term in holiday_search_terms:
-                        if term in name:
-                            score += 15
+                    # For holiday playlists, score by how well they match the FULL query
+                    # "80s christmas music" should prefer "80s Christmas" over generic "Christmas Hits"
+                    query_words = [w for w in query_lower.split() if len(w) >= 3 and w not in ('the', 'and', 'for', 'music', 'playlist', 'in')]
 
-                # Artist-specific matching
-                if artist_name:
-                    artist_lower = artist_name.lower()
-                    if artist_lower in name:
-                        score += 30
-                    # Apple Music's "[Artist] Essentials" is the gold standard
-                    if "essentials" in name and artist_lower in name:
-                        score += 150
+                    def score_holiday_playlist(p):
+                        name = (p.get("name") or p.get("title") or "").lower()
+                        score = 0
+                        # Score for each query word found in playlist name
+                        for word in query_words:
+                            if word in name:
+                                score += 10
+                        # Bonus for official Spotify playlists
+                        if (p.get("owner") or "").lower() == "spotify":
+                            score += 5
+                        return score
 
-                # Apple Music curated playlist patterns
-                if any(kw in name for kw in ("essentials", "a-list", "deep cuts")):
-                    score += 20
-                elif any(kw in name for kw in ("hits", "top", "best of")):
-                    score += 5
+                    # Score all playlists
+                    scored_playlists = [(score_holiday_playlist(p), p) for p in non_radio_playlists]
+                    scored_playlists.sort(key=lambda x: x[0], reverse=True)
 
-                # Penalize radio-style playlists
-                if "radio" in name:
-                    score -= 50
+                    # Log top matches for debugging
+                    for score, p in scored_playlists[:5]:
+                        _LOGGER.info("Holiday playlist score %d: '%s'", score, p.get("name") or p.get("title"))
 
-                return score
+                    if scored_playlists and scored_playlists[0][0] > 0:
+                        chosen_playlist = scored_playlists[0][1]
+                        is_official = (chosen_playlist.get("owner") or "").lower() == "spotify"
+                        _LOGGER.info("Selected holiday playlist by score: '%s' (score: %d)",
+                                   chosen_playlist.get("name"), scored_playlists[0][0])
+                    elif non_radio_playlists:
+                        # Last resort: first available playlist from search
+                        chosen_playlist = non_radio_playlists[0]
+                        _LOGGER.info("Using first available holiday playlist")
+                else:
+                    # Standard playlist selection (strict official-only)
+                    if official_playlists:
+                        # Among official, prefer ones with query in name
+                        official_with_name = [p for p in official_playlists if name_matches_query(p.get("name") or p.get("title") or "")]
+                        chosen_playlist = official_with_name[0] if official_with_name else official_playlists[0]
+                        is_official = True
+                        _LOGGER.info("Found official Spotify playlist")
 
-            scored = [(score_playlist(p), p) for p in all_playlists]
-            scored.sort(key=lambda x: x[0], reverse=True)
+                # If no playlist found
+                if not chosen_playlist:
+                    if detected_holiday:
+                        _LOGGER.warning("No %s playlist found", detected_holiday)
+                        return {"error": f"Could not find a {detected_holiday} playlist. Try a different holiday search."}
+                    else:
+                        _LOGGER.warning("No official Spotify playlist found for '%s'", query)
+                        return {"error": f"Could not find an official Spotify playlist for '{query}'. Try 'play {query}' instead to play the artist directly."}
 
-            # Log top candidates
-            for i, (s, p) in enumerate(scored[:5]):
-                name = p.get("name") or p.get("title") or ""
-                owner = p.get("owner") or p.get("curator") or ""
-                _LOGGER.debug("MUSIC DEBUG: Playlist [%d] score=%d '%s' (owner: '%s')", i + 1, s, name, owner)
+                # Get the EXACT playlist title for verbatim announcement
+                playlist_name = chosen_playlist.get("name") or chosen_playlist.get("title")
+                playlist_uri = chosen_playlist.get("uri") or chosen_playlist.get("media_id")
+                playlist_owner = chosen_playlist.get("owner", "")
+                _LOGGER.info("Found Spotify playlist: '%s' (owner: %s)", playlist_name, playlist_owner)
 
-            best = scored[0][1]
-            best_name = _normalize_unicode(best.get("name") or best.get("title"))
-            best_uri = best.get("uri") or best.get("media_id")
+            # NO artist fallback - shuffle is ONLY for playlists
+            if not playlist_uri:
+                return {"error": f"Could not find a Spotify playlist matching '{query}'. Try a different artist or genre."}
 
-            # ── Play the playlist in shuffle mode ──
-            for player in target_players:
-                await self._play_media(player, best_uri, "playlist")
-                await self._hass.services.async_call(
-                    "media_player", "shuffle_set",
-                    {"entity_id": player, "shuffle": True},
-                    blocking=True
-                )
+            player = target_players[0]
+            _LOGGER.info("Playing playlist '%s' shuffled on %s", playlist_name, player)
 
+            await self._play_media(player, playlist_uri, "playlist")
+
+            await self._hass.services.async_call(
+                "media_player", "shuffle_set",
+                {"entity_id": player, "shuffle": True},
+                blocking=True
+            )
+
+            # Return the EXACT playlist title for verbatim announcement
+            # Include room name and confirm it's an official Spotify playlist
             room_suffix = f" in the {room}" if room else ""
-            display_name = artist_name or query
             return {
                 "status": "shuffling",
-                "playlist": best_name,
-                "category": category,
+                "playlist_title": playlist_name,
+                "playlist_owner": playlist_owner,
+                "is_official_playlist": is_official,
                 "room": room,
-                "response_text": f"Shuffling {display_name}{room_suffix}"
+                "response_text": f"Playing {playlist_name}{room_suffix}"
             }
 
         except Exception as search_err:
             _LOGGER.error("Shuffle search/play error: %s", search_err, exc_info=True)
-            return {"error": f"Failed to shuffle music: {str(search_err)}"}
+            return {"error": f"Failed to find or play playlist: {str(search_err)}"}
