@@ -647,7 +647,7 @@ class MusicController:
     async def _play_on_players(self, target_players: list[str], uri: str, media_type: str, shuffle: bool = False) -> None:
         """Play media on target players with appropriate shuffle setting."""
         for player in target_players:
-            # Set shuffle BEFORE playing so the album starts from track 1
+            # Set shuffle BEFORE playing so the album queue loads in order
             if media_type == "album":
                 await self._hass.services.async_call(
                     "media_player", "shuffle_set",
@@ -661,6 +661,13 @@ class MusicController:
                     blocking=True
                 )
             await self._play_media(player, uri, media_type)
+            # Set shuffle AFTER playing as well to ensure it sticks
+            if media_type == "album":
+                await self._hass.services.async_call(
+                    "media_player", "shuffle_set",
+                    {"entity_id": player, "shuffle": False},
+                    blocking=True
+                )
 
     async def _call_media_service(self, entity_id: str, service: str) -> None:
         """Call a media_player service using area targeting when available."""
@@ -782,13 +789,13 @@ class MusicController:
                 tracks = _parse_ma_results(search_result, "track")
                 if tracks:
                         # Score tracks to find best match
-                        song_lower = song_on_album.lower()
-                        artist_lower = artist.lower() if artist else ""
+                        song_lower = _strip_accents(song_on_album.lower())
+                        artist_lower = _strip_accents(artist.lower()) if artist else ""
 
                         def score_track(track):
                             score = 0
-                            track_name = (track.get("name") or track.get("title") or "").lower()
-                            track_artist = _extract_artist(track, lowercase=True)
+                            track_name = _strip_accents((track.get("name") or track.get("title") or "").lower())
+                            track_artist = _strip_accents(_extract_artist(track, lowercase=True))
 
                             # Song name match
                             if song_lower == track_name:
@@ -870,8 +877,8 @@ class MusicController:
 
                     # If we have a discography but also an album filter, try name matching as fallback
                     if discography and album:
-                        album_filter_lower = album.lower()
-                        filtered_discog = [d for d in discography if album_filter_lower in d["name"].lower()]
+                        album_filter_lower = _strip_accents(album.lower())
+                        filtered_discog = [d for d in discography if album_filter_lower in _strip_accents(d["name"].lower())]
                         if filtered_discog:
                             _LOGGER.warning("MUSIC DEBUG: Name-filtered discography from %d to %d albums matching '%s'",
                                            len(discography), len(filtered_discog), album)
@@ -936,10 +943,10 @@ class MusicController:
                     albums = _parse_ma_results(search_result, "album")
                     if albums:
                         # Find best match
-                        target_lower = target_album_name.lower()
+                        target_lower = _strip_accents(target_album_name.lower())
                         best_album = None
                         for alb in albums:
-                            alb_name = (alb.get("name") or alb.get("title") or "").lower()
+                            alb_name = _strip_accents((alb.get("name") or alb.get("title") or "").lower())
                             if target_lower in alb_name or alb_name in target_lower:
                                 best_album = alb
                                 break
