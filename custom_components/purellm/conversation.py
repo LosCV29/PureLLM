@@ -1751,7 +1751,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 ),
                 "control_device": lambda: device_tool.control_device(
                     arguments, self.hass, self.device_aliases, self.voice_scripts,
-                    self._current_user_query,
                 ),
                 "control_timer": lambda: timer_tool.control_timer(
                     arguments, self.hass,
