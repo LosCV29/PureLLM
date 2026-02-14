@@ -299,7 +299,6 @@ async def control_device(
     hass: "HomeAssistant",
     device_aliases: dict[str, str],
     voice_scripts: list[dict[str, str]] | None = None,
-    shade_entities: list[dict[str, str]] | None = None,
     user_query: str = "",
 ) -> dict[str, Any]:
     """Control smart home devices.
@@ -369,8 +368,8 @@ async def control_device(
     if not direct_entity_id and not entity_ids_list and not area_name and not device_name and user_query:
         original_query = user_query.lower()
         control_patterns = [
-            r"(?:turn (?:on|off)|toggle|dim|lock|unlock|open|close|raise|lower|stop) (?:the )?(.+?)(?:\s+light[s]?|\s+switch|\s+fan|\s+lock|\s+cover|\s+blind[s]?|\s+shade[s]?)?$",
-            r"(.+?)(?:\s+(?:on|off|toggle|dim|lock|unlock|open|close|raise|lower|stop))$",
+            r"(?:turn (?:on|off)|toggle|dim|lock|unlock|open|close|stop) (?:the )?(.+?)(?:\s+light[s]?|\s+switch|\s+fan|\s+lock|\s+cover|\s+blind[s]?)?$",
+            r"(.+?)(?:\s+(?:on|off|toggle|dim|lock|unlock|open|close|stop))$",
         ]
         for pattern in control_patterns:
             match = re.search(pattern, original_query)
@@ -407,50 +406,12 @@ async def control_device(
     # "run", "execute", "open", "close" support scripts like "open the garage"
     action_aliases = {
         "favorite": "preset",
-        "raise": "open",
-        "lower": "close",
         "return_home": "dock",
         "activate": "turn_on",
         "run": "turn_on",
         "execute": "turn_on",
     }
     action = action_aliases.get(action, action)
-
-    # --- Shade favorite position: press configured button entity directly ---
-    if action == "preset" and shade_entities and not position:
-        # LLM sent "favorite" (→ "preset") for a cover — find matching shade config
-        search_name = (device_name or "").lower().strip()
-        search_entity = direct_entity_id.lower().strip() if direct_entity_id else ""
-        matched_fav = None
-        for shade in shade_entities:
-            shade_name = shade.get("name", "").lower().strip()
-            shade_eid = shade.get("entity_id", "").lower().strip()
-            if (search_name and shade_name and shade_name in search_name) or \
-               (search_name and shade_name and search_name in shade_name) or \
-               (search_entity and shade_eid and search_entity == shade_eid):
-                matched_fav = shade
-                break
-        # Single shade fallback
-        if not matched_fav and len(shade_entities) == 1:
-            matched_fav = shade_entities[0]
-
-        if matched_fav:
-            fav_entity = matched_fav.get("favorite_entity", "")
-            friendly = matched_fav.get("name", "shade").title()
-            if fav_entity:
-                fav_domain = fav_entity.split(".")[0] if "." in fav_entity else ""
-                svc = {"button": "press", "scene": "turn_on", "script": "turn_on"}.get(fav_domain, "turn_on")
-                try:
-                    await hass.services.async_call(
-                        fav_domain, svc,
-                        {"entity_id": fav_entity},
-                        blocking=False,
-                    )
-                    _LOGGER.info("Shade favorite (tool): activated %s for %s", fav_entity, friendly)
-                    return {"success": True, "response_text": f"{friendly} set to favorite position."}
-                except Exception as err:
-                    _LOGGER.error("Error setting shade favorite for %s: %s", fav_entity, err)
-                    return {"error": f"Failed to set {friendly} favorite position: {err}"}
 
     # Service map
     service_map = {
@@ -679,23 +640,8 @@ async def control_device(
     failed = []
     last_service = None
 
-    # Build set of configured shade entity IDs for fast lookup
-    _shade_eids = {s.get("entity_id", "").lower().strip() for s in shade_entities} - {""}
-
     for entity_id, friendly_name in entities_to_control:
         domain = entity_id.split(".")[0]
-
-        # For configured shade entities, use explicit position instead of
-        # open_cover/close_cover which go to favorite/preset on many devices.
-        if domain == "cover" and action in ("open", "close") and entity_id.lower() in _shade_eids:
-            pos = 100 if action == "open" else 0
-            service_data = {"entity_id": entity_id, "position": pos}
-            service_calls.append((domain, "set_cover_position", service_data, friendly_name))
-            # Preserve the original action's service name for response wording
-            last_service = "open_cover" if action == "open" else "close_cover"
-            _LOGGER.info("Shade override: %s -> set_cover_position(%d) for %s", action, pos, entity_id)
-            continue
-
         domain_services = service_map.get(domain, {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"})
         service = domain_services.get(action)
 
@@ -774,6 +720,23 @@ async def control_device(
         # Cover position
         if domain == "cover" and action == "set_position" and position is not None:
             service_data["position"] = max(0, min(100, position))
+
+        # Cover preset/favorite - try button.{name}_my_position first
+        if domain == "cover" and action == "preset":
+            cover_object_id = entity_id.split(".")[1]
+            my_position_btn = f"button.{cover_object_id}_my_position"
+
+            if hass.states.get(my_position_btn):
+                service_calls.append(("button", "press", {"entity_id": my_position_btn}, friendly_name))
+                last_service = service
+                continue
+            else:
+                # Fall back to set_cover_position
+                state = hass.states.get(entity_id)
+                preset_pos = state.attributes.get("preset_position") if state else None
+                if preset_pos is None and state:
+                    preset_pos = state.attributes.get("favorite_position")
+                service_data["position"] = preset_pos if preset_pos is not None else 50
 
         service_calls.append((domain, service, service_data, friendly_name))
         last_service = service
