@@ -475,7 +475,7 @@ class MusicController:
         configured_rooms = {r.lower() for r in self._players.keys()}
         all_known_rooms = COMMON_ROOM_NAMES | configured_rooms
 
-        for param_name, param_val in [("query", query), ("artist", artist)]:
+        for param_name, param_val in [("query", query), ("artist", artist), ("album", album)]:
             if not param_val:
                 continue
             match = re.search(room_strip_pattern, param_val, flags=re.IGNORECASE)
@@ -491,6 +491,8 @@ class MusicController:
                     query = stripped
                 elif param_name == "artist":
                     artist = stripped
+                elif param_name == "album":
+                    album = stripped
 
         _LOGGER.warning("MUSIC DEBUG: Final - action='%s', query='%s', room='%s'", action, query, room)
 
