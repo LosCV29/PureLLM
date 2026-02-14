@@ -736,7 +736,7 @@ class PureLLMConversationEntity(ConversationEntity):
         """Check if a response claims a device action was performed.
 
         Used to detect hallucinations where the LLM says "Done" or
-        "Shade opened" without having called a device-control tool.
+        "Light on" without having called a device-control tool.
         The caller must verify that no *action* tool was invoked; this
         method only checks the *language* of the response.
         """
