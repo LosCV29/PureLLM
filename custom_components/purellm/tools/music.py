@@ -687,7 +687,7 @@ class MusicController:
         - "first/oldest/debut album by X" → finds earliest album
         - song_on_album: finds album containing a specific song
         """
-        # If LLM passed album name in album param but not query, use album as query
+        # Sync query ↔ album so both code paths work regardless of how LLM maps params
         if not query and album:
             query = album
         if not query and not song_on_album:
@@ -762,6 +762,11 @@ class MusicController:
                     album_year = int(match.group(1))
                     _LOGGER.info("Detected album year: %d", album_year)
                     break
+
+        # If query is an actual album name (not a modifier) and album is empty,
+        # populate album so the MusicBrainz discography path is used for accent resolution
+        if media_type == "album" and artist and query and not album and not album_modifier and not album_ordinal:
+            album = query
 
         try:
             # Get Music Assistant config entry
