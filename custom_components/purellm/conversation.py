@@ -1961,6 +1961,7 @@ class PureLLMConversationEntity(ConversationEntity):
             if tool_name == "control_music":
                 if not self._music_controller:
                     return {"error": "Music control not configured"}
+                arguments["_user_text"] = getattr(self, "_current_user_query", "")
                 return await self._music_controller.control_music(arguments)
 
             # Fall back to script execution
