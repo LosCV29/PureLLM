@@ -31,7 +31,6 @@
           "features": "Enable/Disable Features",
           "entities": "PureLLM Default Entities",
           "device_aliases": "Device Aliases",
-          "shade_entities": "Shade / Cover Entities",
           "voice_scripts": "Voice Scripts",
           "sofabaton": "SofaBaton Activities",
           "music_rooms": "Music Room Mapping",
@@ -98,17 +97,6 @@
           "select_alias": "Select Existing Alias",
           "alias_name": "Alias Name (what you say, e.g., 'receiver', 'front door')",
           "entity_id": "Entity",
-          "action": "Action"
-        }
-      },
-      "shade_entities": {
-        "title": "Shade / Cover Entities",
-        "description": "{shades_info}",
-        "data": {
-          "select_shade": "Select Existing Shade",
-          "shade_name": "Name (what you say, e.g., 'blinds', 'bedroom shade')",
-          "shade_entity": "Cover Entity",
-          "favorite_entity": "Favorite Position Entity (button, scene, or script to activate)",
           "action": "Action"
         }
       },

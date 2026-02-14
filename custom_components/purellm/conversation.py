@@ -70,8 +70,6 @@ from .const import (
     CONF_NOTIFY_ON_RESTAURANTS,
     CONF_NOTIFY_ON_CAMERA,
     CONF_NOTIFY_ON_SEARCH,
-    CONF_SHADE_ENTITIES,
-    DEFAULT_SHADE_ENTITIES,
     CONF_VOICE_SCRIPTS,
     DEFAULT_VOICE_SCRIPTS,
     CONF_FRIGATE_URL,
@@ -307,9 +305,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Voice scripts configuration
         self.voice_scripts = _parse_json_list(CONF_VOICE_SCRIPTS, DEFAULT_VOICE_SCRIPTS)
-
-        # Shade entities configuration (cover entities with favorite positions)
-        self.shade_entities = _parse_json_list(CONF_SHADE_ENTITIES, DEFAULT_SHADE_ENTITIES)
 
         # Frigate configuration - camera names and RTSP URLs are fetched
         # directly from Frigate's API at runtime (source of truth).
