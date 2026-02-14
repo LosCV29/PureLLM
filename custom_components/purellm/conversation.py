@@ -487,15 +487,70 @@ class PureLLMConversationEntity(ConversationEntity):
             self._api_calls[api_name] += 1
 
     def _get_effective_system_prompt(self) -> str:
-        """Get system prompt with current date."""
-        today = datetime.now().strftime("%Y-%m-%d")
-        if self._cached_system_prompt and self._cached_system_prompt_date == today:
+        """Get system prompt with current date and available devices."""
+        now = time.time()
+        # Cache for 30 seconds — device list is dynamic (entities can appear/disappear)
+        if (self._cached_system_prompt
+                and getattr(self, '_cached_prompt_time', 0)
+                and now - self._cached_prompt_time < 30):
             return self._cached_system_prompt
 
+        today = datetime.now().strftime("%Y-%m-%d")
         prompt = self.system_prompt.replace("{current_date}", today)
+
+        # Inject available device names to prevent LLM hallucination
+        devices_prompt = self._get_available_devices_prompt()
+        if devices_prompt:
+            prompt += devices_prompt
+
         self._cached_system_prompt = prompt
-        self._cached_system_prompt_date = today
+        self._cached_prompt_time = now
         return prompt
+
+    def _get_available_devices_prompt(self) -> str:
+        """Build a prompt section listing available controllable devices.
+
+        Prevents the LLM from hallucinating device names or entity IDs
+        by providing the actual list of devices in Home Assistant.
+        """
+        if not self.hass:
+            return ""
+
+        controllable_domains = {
+            "cover": "Covers/Blinds",
+            "light": "Lights",
+            "switch": "Switches",
+            "fan": "Fans",
+            "lock": "Locks",
+            "media_player": "Media Players",
+            "climate": "Thermostats",
+            "vacuum": "Vacuums",
+        }
+        domain_order = ["cover", "light", "switch", "fan", "lock",
+                        "media_player", "climate", "vacuum"]
+
+        devices_by_domain: dict[str, list[str]] = {}
+        for state in self.hass.states.async_all():
+            domain = state.entity_id.split(".")[0]
+            if domain not in controllable_domains:
+                continue
+            if state.state == "unavailable":
+                continue
+            friendly_name = state.attributes.get("friendly_name", "")
+            if friendly_name:
+                devices_by_domain.setdefault(domain, []).append(friendly_name)
+
+        if not devices_by_domain:
+            return ""
+
+        lines = ["\n\nAVAILABLE DEVICES (use these exact names with control_device - do NOT invent device names or entity IDs):"]
+        for domain in domain_order:
+            if domain in devices_by_domain:
+                names = sorted(set(devices_by_domain[domain]))
+                label = controllable_domains[domain]
+                lines.append(f"  {label}: {', '.join(names)}")
+
+        return "\n".join(lines)
 
     def _build_tools(self) -> list[dict]:
         """Build tools list based on enabled features."""
