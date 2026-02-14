@@ -1173,7 +1173,7 @@ class PureLLMConversationEntity(ConversationEntity):
             "turn on", "turn off", "switch on", "switch off",
             "dim ", "brighten", "set brightness", "set the brightness",
             "lock the", "unlock the",
-            "open the ", "close the ", "stop the ",
+            "open the ", "close the ", "stop the ", "raise the ", "lower the ",
             "pause the tv", "resume the tv", "unpause",
             "mute the", "unmute the", "volume up", "volume down",
             "set position", "set the position",

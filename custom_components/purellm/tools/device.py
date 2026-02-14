@@ -369,8 +369,8 @@ async def control_device(
     if not direct_entity_id and not entity_ids_list and not area_name and not device_name and user_query:
         original_query = user_query.lower()
         control_patterns = [
-            r"(?:turn (?:on|off)|toggle|dim|lock|unlock|open|close|stop) (?:the )?(.+?)(?:\s+light[s]?|\s+switch|\s+fan|\s+lock|\s+cover|\s+blind[s]?)?$",
-            r"(.+?)(?:\s+(?:on|off|toggle|dim|lock|unlock|open|close|stop))$",
+            r"(?:turn (?:on|off)|toggle|dim|lock|unlock|open|close|raise|lower|stop) (?:the )?(.+?)(?:\s+light[s]?|\s+switch|\s+fan|\s+lock|\s+cover|\s+blind[s]?|\s+shade[s]?)?$",
+            r"(.+?)(?:\s+(?:on|off|toggle|dim|lock|unlock|open|close|raise|lower|stop))$",
         ]
         for pattern in control_patterns:
             match = re.search(pattern, original_query)
@@ -407,6 +407,8 @@ async def control_device(
     # "run", "execute", "open", "close" support scripts like "open the garage"
     action_aliases = {
         "favorite": "preset",
+        "raise": "open",
+        "lower": "close",
         "return_home": "dock",
         "activate": "turn_on",
         "run": "turn_on",
@@ -677,8 +679,23 @@ async def control_device(
     failed = []
     last_service = None
 
+    # Build set of configured shade entity IDs for fast lookup
+    _shade_eids = {s.get("entity_id", "").lower().strip() for s in shade_entities} - {""}
+
     for entity_id, friendly_name in entities_to_control:
         domain = entity_id.split(".")[0]
+
+        # For configured shade entities, use explicit position instead of
+        # open_cover/close_cover which go to favorite/preset on many devices.
+        if domain == "cover" and action in ("open", "close") and entity_id.lower() in _shade_eids:
+            pos = 100 if action == "open" else 0
+            service_data = {"entity_id": entity_id, "position": pos}
+            service_calls.append((domain, "set_cover_position", service_data, friendly_name))
+            # Preserve the original action's service name for response wording
+            last_service = "open_cover" if action == "open" else "close_cover"
+            _LOGGER.info("Shade override: %s -> set_cover_position(%d) for %s", action, pos, entity_id)
+            continue
+
         domain_services = service_map.get(domain, {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"})
         service = domain_services.get(action)
 
