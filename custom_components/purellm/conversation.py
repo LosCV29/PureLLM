@@ -893,8 +893,8 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             if function_declarations:
                 payload["tools"] = [{"functionDeclarations": function_declarations}]
-                # Force tool calling on follow-up action requests
-                if is_followup and not is_dismissal and not is_greeting and iteration == 0:
+                # Force tool calling on first iteration (Gemini hallucinates without it)
+                if not is_dismissal and not is_greeting and iteration == 0:
                     payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
                 else:
                     payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
