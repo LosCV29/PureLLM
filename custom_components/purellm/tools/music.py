@@ -763,11 +763,6 @@ class MusicController:
                     _LOGGER.info("Detected album year: %d", album_year)
                     break
 
-        # If query is an actual album name (not a modifier) and album is empty,
-        # populate album so the MusicBrainz discography path is used for accent resolution
-        if media_type == "album" and artist and query and not album and not album_modifier and not album_ordinal:
-            album = query
-
         try:
             # Get Music Assistant config entry
             ma_entries = self._hass.config_entries.async_entries("music_assistant")
