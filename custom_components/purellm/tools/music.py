@@ -1077,6 +1077,18 @@ class MusicController:
 
                 results = _parse_ma_results(search_result, try_type)
 
+                # Fallback: if combined query found nothing for album+artist,
+                # search by artist only so we can match album name locally
+                # (handles accented names like "DeBÍ TiRAR MáS fOtOs")
+                if not results and try_type == "album" and artist:
+                    _LOGGER.info("Combined search empty, trying artist-only search for '%s'", artist)
+                    artist_search = await self._hass.services.async_call(
+                        "music_assistant", "search",
+                        {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["album"], "limit": 20},
+                        blocking=True, return_response=True
+                    )
+                    results = _parse_ma_results(artist_search, "album")
+
                 if not results:
                     continue
 
