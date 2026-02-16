@@ -90,7 +90,7 @@ async def control_thermostat(
             # Friendly mode name for response
             mode_names = {"heat": "heating", "cool": "cooling", "heat_cool": "heat/cool", "off": "off"}
             friendly_mode = mode_names.get(new_mode, new_mode)
-            return {"response_text": f"I've set the thermostat to {friendly_mode} mode."}
+            return {"response_text": f"I've set the thermostat to {friendly_mode} mode.", "instruction": "Confirm briefly and stop. Do NOT ask a follow-up question."}
 
         # Calculate new temperature
         if action == "set":
@@ -128,7 +128,7 @@ async def control_thermostat(
         else:
             response_text = f"I've lowered the thermostat to {format_temp_func(new_temp)}."
 
-        return {"response_text": response_text}
+        return {"response_text": response_text, "instruction": "Confirm briefly and stop. Do NOT ask a follow-up question."}
 
     except Exception as err:
         _LOGGER.error("Error controlling thermostat: %s", err, exc_info=True)
