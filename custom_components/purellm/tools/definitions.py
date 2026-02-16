@@ -209,15 +209,15 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control room-based music only (NOT for specific devices like TVs). To pause/resume/play a specific device, use control_device. Rooms: {rooms_list}. Room required for play/shuffle.",
+            f"Control room-based music only (NOT for specific devices like TVs). To pause/resume/play a specific device, use control_device. Rooms: {rooms_list}. Room required for play/shuffle. For play action you MUST set media_type.",
             {
                 "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"], "description": "Action"},
-                "query": {"type": "string", "description": "Song/album name, or 'latest'/'first' for albums"},
+                "media_type": {"type": "string", "enum": ["artist", "album", "track"], "description": "REQUIRED for play action. Set 'album' for albums, 'track' for songs, 'artist' for artist radio"},
+                "query": {"type": "string", "description": "Song name or artist name for track/artist searches"},
+                "album": {"type": "string", "description": "Album name - REQUIRED when media_type is 'album'"},
                 "artist": {"type": "string", "description": "Artist name"},
-                "album": {"type": "string", "description": "Album name - set this when user wants a specific album by name"},
-                "song_on_album": {"type": "string", "description": "Song name to find album containing it"},
+                "song_on_album": {"type": "string", "description": "Song name to find the album containing it"},
                 "room": {"type": "string", "description": "Target room"},
-                "media_type": {"type": "string", "enum": ["artist", "album", "track"], "description": "REQUIRED for play. 'album' when playing an album by name/latest/first, 'track' for a song, 'artist' for all music by artist"}
             },
             ["action"]
         ))
