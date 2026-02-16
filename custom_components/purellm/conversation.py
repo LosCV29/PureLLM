@@ -677,21 +677,27 @@ class PureLLMConversationEntity(ConversationEntity):
             service_str = action_config.get("service", "")
             service_parts = service_str.split(".", 1)
             if len(service_parts) == 2:
-                service_data = action_config.get("data") or {}
+                # Merge target (entity_id etc.) directly into service_data
+                # instead of using the separate target= kwarg. This matches
+                # how device.py calls services and avoids HA target-resolution
+                # issues that can silently drop the call inside pipelines.
+                service_data = dict(action_config.get("data") or {})
                 target = action_config.get("target")
+                if target:
+                    service_data.update(target)
 
                 try:
                     _LOGGER.info(
-                        "ask_and_act: executing %s target=%s data=%s",
-                        service_str, target, service_data,
+                        "ask_and_act: executing %s data=%s",
+                        service_str, service_data,
                     )
                     await self.hass.services.async_call(
                         service_parts[0],
                         service_parts[1],
                         service_data,
-                        target=target,
                         blocking=True,
                     )
+                    _LOGGER.info("ask_and_act: action executed successfully")
                 except Exception as err:
                     _LOGGER.error("ask_and_act: action execution failed: %s", err)
 
