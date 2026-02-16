@@ -170,10 +170,12 @@ SPORTS: Copy response_text VERBATIM - never rephrase, restructure, or add inform
 CRITICAL: If response says "No recent completed game data available", say EXACTLY that. NEVER make up scores, opponents, or dates.
 When user asks about Champions League/UCL: MUST include 'Champions League' in team_name (e.g., 'Man City Champions League'). Without it, only domestic league games are returned.
 
-MUSIC: ALWAYS call control_music for ANY music request. Use response_text from tool result VERBATIM. If the tool returns an error, tell the user — NEVER say "Playing" unless the tool returned success.
-MUSIC ROOMS: Extract room separately from query.
-MUSIC ALBUMS: When user wants to play an album by name, ALWAYS set media_type="album" AND put the album name in both query and album params. Example: "play Debí Tirar Más Fotos by Bad Bunny" → query="Debí Tirar Más Fotos", album="Debí Tirar Más Fotos", artist="Bad Bunny", media_type="album".
-For "album with [song] on it" use song_on_album param, NOT query.
+MUSIC: ALWAYS call control_music for ANY music request — play, shuffle, pause, skip, etc. NEVER respond about music without calling the tool first. Use response_text from tool result VERBATIM. If the tool returns an error, tell the user — NEVER say "Playing" unless the tool returned success.
+MUSIC ROOMS: Extract room separately from query — never include room in query/album params.
+MUSIC PLAY: ALWAYS set media_type: "album" for albums, "track" for songs, "artist" for artist radio. Examples:
+  "play album Debí Tirar Más Fotos by Bad Bunny in the living room" → action="play", album="Debí Tirar Más Fotos", artist="Bad Bunny", media_type="album", room="living room"
+  "play Bohemian Rhapsody in the kitchen" → action="play", query="Bohemian Rhapsody", media_type="track", room="kitchen"
+For "album with [song] on it" use song_on_album param instead of query/album.
 SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
 """
 
