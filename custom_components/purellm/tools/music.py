@@ -700,12 +700,21 @@ class MusicController:
         if media_type not in valid_types:
             media_type = "artist"
 
+        # If album parameter was explicitly provided, this is an album request
+        if album and media_type != "album":
+            _LOGGER.info("Overriding media_type to 'album' since album parameter was specified")
+            media_type = "album"
+
         # Smart override: if artist is specified with a query but media_type is "artist",
         # user likely wants a track: "Big Pimpin by Jay-Z" = track, not artist
         # BUT if user explicitly said "album", respect that choice
         if artist and query and media_type == "artist":
             media_type = "track"
             _LOGGER.info("Overriding media_type to 'track' since both query and artist specified")
+
+        # Sync query → album for album requests so album filter works in search
+        if media_type == "album" and query and not album:
+            album = query
 
         # Detect smart album modifiers
         album_modifier = None
@@ -856,7 +865,10 @@ class MusicController:
 
             # Handle ordinal album requests (second, third album) or type-filtered requests (studio, live)
             # Also handles tag-based filtering (christmas, holiday albums) and year-based requests
-            if artist and (album_ordinal or album_type_filter or album or album_year):
+            # When album is a direct name (same as query), skip this path and use standard search
+            album_is_direct_name = album and query and _strip_accents(album.lower()) == _strip_accents(query.lower())
+            album_is_tag = album and not album_is_direct_name  # e.g., "christmas", "holiday"
+            if artist and (album_ordinal or album_type_filter or album_is_tag or album_year):
                 _LOGGER.warning("MUSIC DEBUG: Album search - ordinal=%s, type='%s', artist='%s', album_tag='%s', year=%s",
                                album_ordinal, album_type_filter, artist, album, album_year)
 
@@ -1052,7 +1064,13 @@ class MusicController:
                 return {"error": f"Could not find albums by {artist}"}
 
             # Standard search (non-modifier path)
-            search_query = f"{query} {artist}" if artist else query
+            # For albums with artist, search by album name alone first (not concatenated)
+            # to avoid confusing Music Assistant's search with combined strings.
+            # Artist matching is handled by the scoring function below.
+            if media_type == "album" and artist:
+                search_query = query
+            else:
+                search_query = f"{query} {artist}" if artist else query
 
             # NO cascading - search ONLY the requested type
             search_types_to_try = [media_type]
@@ -1077,9 +1095,17 @@ class MusicController:
 
                 results = _parse_ma_results(search_result, try_type)
 
-                # Fallback: if combined query found nothing for album+artist,
-                # search by artist only so we can match album name locally
+                # Fallback for albums: try combined query, then artist-only search
                 # (handles accented names like "DeBÍ TiRAR MáS fOtOs")
+                if not results and try_type == "album" and artist:
+                    _LOGGER.info("Album-name search empty, trying combined query '%s %s'", query, artist)
+                    combined_search = await self._hass.services.async_call(
+                        "music_assistant", "search",
+                        {"config_entry_id": ma_config_entry_id, "name": f"{query} {artist}", "media_type": ["album"], "limit": 10},
+                        blocking=True, return_response=True
+                    )
+                    results = _parse_ma_results(combined_search, "album")
+
                 if not results and try_type == "album" and artist:
                     _LOGGER.info("Combined search empty, trying artist-only search for '%s'", artist)
                     artist_search = await self._hass.services.async_call(
@@ -1158,7 +1184,7 @@ class MusicController:
                     break  # Found a good match, stop searching
 
             if not found_uri:
-                return {"error": f"Could not find track matching '{query}'" + (f" by {artist}" if artist else "")}
+                return {"error": f"Could not find {media_type} matching '{query}'" + (f" by {artist}" if artist else "")}
 
             # Build display name from actual found result
             if found_artist and found_type in ("track", "album"):
