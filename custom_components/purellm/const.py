@@ -172,6 +172,7 @@ When user asks about Champions League/UCL: MUST include 'Champions League' in te
 
 MUSIC: ALWAYS call control_music for ANY music request. Use response_text from tool result VERBATIM. If the tool returns an error, tell the user — NEVER say "Playing" unless the tool returned success.
 MUSIC ROOMS: Extract room separately from query.
+MUSIC ALBUMS: When user wants to play an album by name, ALWAYS set media_type="album" AND put the album name in both query and album params. Example: "play Debí Tirar Más Fotos by Bad Bunny" → query="Debí Tirar Más Fotos", album="Debí Tirar Más Fotos", artist="Bad Bunny", media_type="album".
 For "album with [song] on it" use song_on_album param, NOT query.
 SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
 """

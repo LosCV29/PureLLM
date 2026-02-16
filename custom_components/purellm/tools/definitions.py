@@ -214,10 +214,10 @@ def build_tools(config: "ToolConfig") -> list[dict]:
                 "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"], "description": "Action"},
                 "query": {"type": "string", "description": "Song/album name, or 'latest'/'first' for albums"},
                 "artist": {"type": "string", "description": "Artist name"},
-                "album": {"type": "string", "description": "Album name"},
+                "album": {"type": "string", "description": "Album name - set this when user wants a specific album by name"},
                 "song_on_album": {"type": "string", "description": "Song name to find album containing it"},
                 "room": {"type": "string", "description": "Target room"},
-                "media_type": {"type": "string", "enum": ["artist", "album", "track"], "description": "track, album, or artist"}
+                "media_type": {"type": "string", "enum": ["artist", "album", "track"], "description": "REQUIRED for play. 'album' when playing an album by name/latest/first, 'track' for a song, 'artist' for all music by artist"}
             },
             ["action"]
         ))
