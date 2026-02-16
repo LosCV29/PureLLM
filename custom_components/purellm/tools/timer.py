@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -264,12 +264,23 @@ def _parse_duration(duration_str: str) -> timedelta | None:
             total_seconds += int(time_format.group(1)) * 60
             total_seconds += int(time_format.group(2))
 
-    # If just a number with no unit, assume minutes
+    # If just a number with no unit, use smart defaults:
+    # - Bare integers 1-99 → minutes (most common ask: "set a 10 timer")
+    # - Numbers >= 100 → seconds (likely precise input like "120" for 2 min)
+    # - Decimal values → minutes (e.g. "1.5" → 90 seconds)
     if total_seconds == 0:
         num_match = re.search(r'(\d+\.?\d*)', duration_str)
         if num_match:
             num = float(num_match.group(1))
-            total_seconds = int(num * 60)  # Assume minutes
+            if num != int(num):
+                # Decimal like 1.5 → treat as minutes
+                total_seconds = int(num * 60)
+            elif num >= 100:
+                # Large integers → treat as seconds (e.g. 120 = 2 min)
+                total_seconds = int(num)
+            else:
+                # Small integers → treat as minutes (e.g. 10 = 10 min)
+                total_seconds = int(num * 60)
 
     if total_seconds <= 0:
         _LOGGER.warning("Could not parse duration from: %s", original)
@@ -512,7 +523,7 @@ async def control_timer(
                 "timer_name": friendly,
                 "duration": _format_duration(total_secs),
                 "duration_seconds": total_secs,
-                "message": f"Started {friendly} for {_format_duration(total_secs)}"
+                "message": f"Started {friendly} for {_format_duration(total_secs)}. You can check remaining time, pause, add time, or cancel anytime."
             }
 
         elif action == "cancel":
@@ -564,17 +575,44 @@ async def control_timer(
             active_info = []
             for timer in timers:
                 if timer.state in ("active", "paused"):
-                    remaining = timer.attributes.get("remaining", "")
-                    remaining_secs = _parse_remaining(remaining)
                     friendly = timer.attributes.get("friendly_name", timer.entity_id)
+                    original_duration = timer.attributes.get("duration", "")
+                    original_secs = _parse_remaining(original_duration)
+
+                    # For active timers, calculate real-time remaining from
+                    # finishes_at instead of the stale 'remaining' attribute
+                    remaining_secs = None
+                    if timer.state == "active":
+                        finishes_at = timer.attributes.get("finishes_at")
+                        if finishes_at:
+                            try:
+                                finish_dt = datetime.fromisoformat(finishes_at)
+                                now = datetime.now(timezone.utc)
+                                remaining_secs = max(0, int((finish_dt - now).total_seconds()))
+                            except (ValueError, TypeError):
+                                pass
+
+                    # Fall back to 'remaining' attribute (accurate for paused timers)
+                    if remaining_secs is None:
+                        remaining = timer.attributes.get("remaining", "")
+                        remaining_secs = _parse_remaining(remaining)
+
+                    # Calculate elapsed and progress
+                    elapsed_secs = None
+                    progress_pct = None
+                    if original_secs and remaining_secs is not None:
+                        elapsed_secs = max(0, original_secs - remaining_secs)
+                        progress_pct = round((elapsed_secs / original_secs) * 100) if original_secs > 0 else 0
 
                     active_info.append({
                         "name": friendly,
                         "entity_id": timer.entity_id,
                         "state": timer.state,
-                        "remaining": remaining,
-                        "remaining_friendly": _format_duration(remaining_secs) if remaining_secs else remaining,
+                        "remaining_friendly": _format_duration(remaining_secs) if remaining_secs is not None else "unknown",
                         "remaining_seconds": remaining_secs,
+                        "original_duration": _format_duration(original_secs) if original_secs else original_duration,
+                        "elapsed_friendly": _format_duration(elapsed_secs) if elapsed_secs is not None else None,
+                        "progress_percent": progress_pct,
                     })
 
             if not active_info:
@@ -590,11 +628,16 @@ async def control_timer(
                 t = active_info[0]
                 state_word = "paused with" if t["state"] == "paused" else ""
                 msg = f"{t['name']}: {state_word} {t['remaining_friendly']} remaining"
+                if t["original_duration"]:
+                    msg += f" (out of {t['original_duration']})"
             else:
                 parts = []
                 for t in active_info:
                     state_prefix = "(paused) " if t["state"] == "paused" else ""
-                    parts.append(f"{state_prefix}{t['name']}: {t['remaining_friendly']}")
+                    entry = f"{state_prefix}{t['name']}: {t['remaining_friendly']} remaining"
+                    if t["original_duration"]:
+                        entry += f" (out of {t['original_duration']})"
+                    parts.append(entry)
                 msg = "; ".join(parts)
 
             return {
