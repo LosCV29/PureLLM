@@ -1,4 +1,4 @@
-"""Fuzzy matching utilities for PolyVoice.
+"""Fuzzy matching utilities for PureLLM.
 
 This module handles device name matching with:
 - Synonym expansion (blind/shade/curtain/cover are interchangeable)

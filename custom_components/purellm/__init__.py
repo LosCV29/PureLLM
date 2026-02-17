@@ -1,4 +1,4 @@
-"""The PolyVoice integration."""
+"""The PureLLM integration."""
 from __future__ import annotations
 
 import asyncio
@@ -88,7 +88,7 @@ class PureLLMSnapshotView(HomeAssistantView):
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
-    """Set up the PolyVoice component."""
+    """Set up the PureLLM component."""
     hass.data.setdefault(DOMAIN, {})
     return True
 
@@ -241,7 +241,7 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Migrate old entry to current version."""
-    _LOGGER.info("Migrating PolyVoice from version %s", entry.version)
+    _LOGGER.info("Migrating PureLLM from version %s", entry.version)
 
     if entry.version < 2:
         hass.config_entries.async_update_entry(entry, version=2)
@@ -261,16 +261,16 @@ def _handle_timer_finished(hass: HomeAssistant, event: Event) -> None:
     if not entity_id:
         return
 
-    # Check if this timer was started by PolyVoice
+    # Check if this timer was started by PureLLM
     timer_info = get_registered_timer(hass, entity_id)
     if not timer_info:
-        _LOGGER.debug("Timer %s finished but was not started by PolyVoice", entity_id)
+        _LOGGER.debug("Timer %s finished but was not started by PureLLM", entity_id)
         return
 
     timer_name = timer_info.get("name", "Timer")
     announce_player = timer_info.get("announce_player")
 
-    _LOGGER.info("PolyVoice timer finished: %s -> announcing on %s",
+    _LOGGER.info("PureLLM timer finished: %s -> announcing on %s",
                  timer_name, announce_player or "default")
 
     # Unregister the timer
@@ -357,7 +357,7 @@ async def _announce_timer_finished(
             {
                 "title": "Timer Finished",
                 "message": message,
-                "notification_id": "polyvoice_timer",
+                "notification_id": "purellm_timer",
             },
             blocking=False
         )
@@ -365,7 +365,7 @@ async def _announce_timer_finished(
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up PolyVoice from a config entry."""
+    """Set up PureLLM from a config entry."""
     hass.data.setdefault(DOMAIN, {})
 
     config = {**entry.data, **entry.options}
@@ -407,7 +407,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.add_update_listener(_async_update_listener)
     )
 
-    _LOGGER.info("PolyVoice setup complete")
+    _LOGGER.info("PureLLM setup complete")
     return True
 
 

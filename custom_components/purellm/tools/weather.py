@@ -93,7 +93,7 @@ async def get_weather_forecast(
     location_query = arguments.get("location", "").strip()
 
     if not api_key:
-        return {"error": "OpenWeatherMap API key not configured. Add it in Settings → PolyVoice → API Keys."}
+        return {"error": "OpenWeatherMap API key not configured. Add it in Settings → PureLLM → API Keys."}
 
     # Validate that the location was actually mentioned by the user
     # This prevents models from hallucinating locations like "New York" when none was specified

@@ -1,4 +1,4 @@
-"""Update entity for PolyVoice integration."""
+"""Update entity for PureLLM integration."""
 from __future__ import annotations
 
 import logging
@@ -22,7 +22,7 @@ from .const import DOMAIN, get_version
 
 _LOGGER = logging.getLogger(__name__)
 
-GITHUB_REPO = "LosCV29/polyvoice"
+GITHUB_REPO = "LosCV29/PureLLM"
 SCAN_INTERVAL = timedelta(hours=4)
 
 
@@ -31,12 +31,12 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up PolyVoice update entity."""
-    async_add_entities([PolyVoiceUpdateEntity(hass, entry)])
+    """Set up PureLLM update entity."""
+    async_add_entities([PureLLMUpdateEntity(hass, entry)])
 
 
-class PolyVoiceUpdateEntity(UpdateEntity):
-    """Update entity for PolyVoice."""
+class PureLLMUpdateEntity(UpdateEntity):
+    """Update entity for PureLLM."""
 
     _attr_has_entity_name = True
     _attr_name = "Update"
@@ -88,7 +88,7 @@ class PolyVoiceUpdateEntity(UpdateEntity):
                 device.id, sw_version=current_version
             )
             _LOGGER.info(
-                "Updated PolyVoice device version from %s to %s",
+                "Updated PureLLM device version from %s to %s",
                 device.sw_version,
                 current_version,
             )
@@ -98,7 +98,7 @@ class PolyVoiceUpdateEntity(UpdateEntity):
         """Return device info."""
         return {
             "identifiers": {(DOMAIN, self._entry.entry_id)},
-            "name": "PolyVoice",
+            "name": "PureLLM",
             "manufacturer": "LosCV29",
             "model": "Voice Assistant",
             "sw_version": get_version(),
@@ -126,7 +126,7 @@ class PolyVoiceUpdateEntity(UpdateEntity):
                         self._release_notes = body
 
                     _LOGGER.debug(
-                        "PolyVoice update check: installed=%s, latest=%s",
+                        "PureLLM update check: installed=%s, latest=%s",
                         self._installed_version,
                         self._latest_version
                     )
@@ -150,16 +150,16 @@ class PolyVoiceUpdateEntity(UpdateEntity):
                 },
                 blocking=True,
             )
-            _LOGGER.info("PolyVoice update triggered via HACS")
+            _LOGGER.info("PureLLM update triggered via HACS")
 
             # Show notification to restart
             await self.hass.services.async_call(
                 "persistent_notification",
                 "create",
                 {
-                    "title": "PolyVoice Updated",
-                    "message": f"PolyVoice has been updated to version {version}. Please restart Home Assistant to complete the update.",
-                    "notification_id": "polyvoice_update",
+                    "title": "PureLLM Updated",
+                    "message": f"PureLLM has been updated to version {version}. Please restart Home Assistant to complete the update.",
+                    "notification_id": "purellm_update",
                 },
             )
         except Exception as err:
@@ -169,8 +169,8 @@ class PolyVoiceUpdateEntity(UpdateEntity):
                 "persistent_notification",
                 "create",
                 {
-                    "title": "PolyVoice Update Available",
-                    "message": f"Please update PolyVoice to version {version} via HACS:\n\n1. Go to HACS → Integrations\n2. Find PolyVoice\n3. Click Update\n4. Restart Home Assistant",
-                    "notification_id": "polyvoice_update",
+                    "title": "PureLLM Update Available",
+                    "message": f"Please update PureLLM to version {version} via HACS:\n\n1. Go to HACS → Integrations\n2. Find PureLLM\n3. Click Update\n4. Restart Home Assistant",
+                    "notification_id": "purellm_update",
                 },
             )
