@@ -18,13 +18,25 @@ from typing import Any, TYPE_CHECKING
 CONVERSATION_TIMEOUT_SECONDS = 300  # 5 minutes - conversations expire after this
 MAX_CONVERSATION_HISTORY = 4  # Max message pairs to keep per conversation (reduced for memory)
 
+# Phrases that should skip forced tool calling
+_DISMISSALS = frozenset({
+    "no", "nope", "done", "stop", "never mind", "nevermind",
+    "no thanks", "no thank you", "thats all", "that's all",
+    "thats it", "that's it", "nothing", "all done", "im good",
+    "i'm good", "not right now", "cancel",
+})
+_GREETINGS = frozenset({
+    "hi", "hey", "hello", "yo", "sup", "whats up", "what's up",
+    "howdy", "hola", "good morning", "good afternoon",
+    "good evening", "good night", "what up", "wassup", "whaddup",
+})
+
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ChatLog, ConversationEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import intent
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.network import get_url
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
@@ -880,17 +892,10 @@ class PureLLMConversationEntity(ConversationEntity):
         contents.append({"role": "user", "parts": [{"text": user_text}]})
 
         # Detect dismissals and greetings for follow-up tool forcing
-        _dismissals = {"no", "nope", "done", "stop", "never mind", "nevermind",
-                       "no thanks", "no thank you", "thats all", "that's all",
-                       "thats it", "that's it", "nothing", "all done", "im good",
-                       "i'm good", "not right now", "cancel"}
-        _greetings = {"hi", "hey", "hello", "yo", "sup", "whats up", "what's up",
-                      "howdy", "hola", "good morning", "good afternoon",
-                      "good evening", "good night", "what up", "wassup", "whaddup"}
         is_followup = bool(history)
         _user_clean = user_text.lower().strip().rstrip(".!,?")
-        is_dismissal = _user_clean in _dismissals
-        is_greeting = _user_clean in _greetings
+        is_dismissal = _user_clean in _DISMISSALS
+        is_greeting = _user_clean in _GREETINGS
 
         for iteration in range(5):
             payload = {
@@ -979,17 +984,10 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Add conversation history if present
         # Detect dismissals and greetings — these don't need tool calls
-        _dismissals = {"no", "nope", "done", "stop", "never mind", "nevermind",
-                       "no thanks", "no thank you", "thats all", "that's all",
-                       "thats it", "that's it", "nothing", "all done", "im good",
-                       "i'm good", "not right now", "cancel"}
-        _greetings = {"hi", "hey", "hello", "yo", "sup", "whats up", "what's up",
-                      "howdy", "hola", "good morning", "good afternoon",
-                      "good evening", "good night", "what up", "wassup", "whaddup"}
         is_followup = bool(history)
         _user_clean = user_text.lower().strip().rstrip(".!,?")
-        is_dismissal = _user_clean in _dismissals
-        is_greeting = _user_clean in _greetings
+        is_dismissal = _user_clean in _DISMISSALS
+        is_greeting = _user_clean in _GREETINGS
 
         if history:
             messages.extend(history)

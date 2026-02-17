@@ -104,7 +104,6 @@ DEFAULT_ENABLE_SEARCH: Final = True  # Web search via Tavily
 # ENTITY CONFIGURATION - User-defined entities
 # =============================================================================
 CONF_THERMOSTAT_ENTITY: Final = "thermostat_entity"
-CONF_WEATHER_ENTITY: Final = "weather_entity"
 CONF_CALENDAR_ENTITIES: Final = "calendar_entities"
 CONF_ROOM_PLAYER_MAPPING: Final = "room_player_mapping"
 CONF_DEVICE_ALIASES: Final = "device_aliases"
@@ -122,7 +121,6 @@ CONF_THERMOSTAT_TEMP_STEP: Final = "thermostat_temp_step"
 CONF_THERMOSTAT_USE_CELSIUS: Final = "thermostat_use_celsius"
 
 DEFAULT_THERMOSTAT_ENTITY: Final = ""
-DEFAULT_WEATHER_ENTITY: Final = ""
 DEFAULT_CALENDAR_ENTITIES: Final = ""
 DEFAULT_ROOM_PLAYER_MAPPING: Final = ""  # room:entity_id, one per line
 DEFAULT_DEVICE_ALIASES: Final = ""
