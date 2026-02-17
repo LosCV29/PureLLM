@@ -169,31 +169,85 @@ async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> i
     return 0
 
 
-async def _search_albums_by_tag_musicbrainz(artist_name: str, tag: str) -> list[dict]:
-    """Search MusicBrainz for albums by artist with a specific tag (e.g., christmas, holiday)."""
-    data = await _musicbrainz_get("release-group", {
-        "query": f'artist:"{artist_name}" AND tag:{tag}',
-        "limit": 25,
-    }, timeout=10)
-    if not data:
-        return []
+# Related tag variations for holiday searches - MusicBrainz tags aren't always consistent
+_HOLIDAY_TAG_VARIATIONS = {
+    "christmas": ["christmas", "holiday", "xmas", "christmas music"],
+    "halloween": ["halloween", "horror", "spooky"],
+    "thanksgiving": ["thanksgiving"],
+    "easter": ["easter"],
+    "valentine": ["valentine", "love songs"],
+}
 
+# Keywords that appear in holiday album NAMES (for name-based fallback)
+# This catches albums like "Christmas Isn't Canceled" or "Merry Christmas"
+_HOLIDAY_NAME_KEYWORDS = {
+    "christmas": ["christmas", "xmas", "holiday", "noel", "jingle", "santa", "merry", "silent night", "winter wonderland", "nutcracker"],
+    "halloween": ["halloween", "spooky", "scary", "horror", "haunted"],
+    "thanksgiving": ["thanksgiving", "grateful"],
+    "easter": ["easter"],
+    "valentine": ["valentine", "love"],
+}
+
+
+async def _search_albums_by_tag_musicbrainz(artist_name: str, tag: str) -> list[dict]:
+    """Search MusicBrainz for albums by artist with a specific tag (e.g., christmas, holiday).
+
+    Uses multiple search strategies:
+    1. Tag-based search with multiple tag variations
+    2. Name-based search for albums with holiday keywords in the title
+    Results are combined and deduplicated.
+    """
+    seen_mbids = set()
     albums = []
-    for rg in data.get("release-groups", []):
+
+    def _add_album(rg: dict) -> None:
+        """Add album from release group data, deduplicating by MBID."""
         primary_type = (rg.get("primary-type") or "").lower()
         if primary_type != "album":
-            continue
+            return
+        mbid = rg.get("id", "")
+        if mbid in seen_mbids:
+            return
+        seen_mbids.add(mbid)
         first_release = rg.get("first-release-date", "")
         albums.append({
             "name": rg.get("title", ""),
             "year": int(first_release[:4]) if first_release and len(first_release) >= 4 else 0,
-            "mbid": rg.get("id", ""),
+            "mbid": mbid,
             "primary_type": primary_type,
         })
 
+    # Strategy 1: Tag-based search with multiple tag variations
+    tag_variations = _HOLIDAY_TAG_VARIATIONS.get(tag.lower(), [tag])
+    for tag_variant in tag_variations:
+        data = await _musicbrainz_get("release-group", {
+            "query": f'artist:"{artist_name}" AND tag:"{tag_variant}"',
+            "limit": 25,
+        }, timeout=10)
+        if data:
+            for rg in data.get("release-groups", []):
+                _add_album(rg)
+        # MusicBrainz rate limit - brief pause between queries
+        if tag_variant != tag_variations[-1]:
+            await asyncio.sleep(0.5)
+
+    # Strategy 2: Name-based search - find albums with holiday keywords in the title
+    # This catches albums like "Merry Christmas" or "Christmas Isn't Canceled"
+    name_keywords = _HOLIDAY_NAME_KEYWORDS.get(tag.lower(), [tag])
+    # Only use the primary keyword for name search to avoid too many API calls
+    primary_keyword = name_keywords[0] if name_keywords else tag
+    await asyncio.sleep(0.5)
+    name_data = await _musicbrainz_get("release-group", {
+        "query": f'artist:"{artist_name}" AND releasegroup:"{primary_keyword}"',
+        "limit": 25,
+    }, timeout=10)
+    if name_data:
+        for rg in name_data.get("release-groups", []):
+            _add_album(rg)
+
     albums.sort(key=lambda x: (x["year"] == 0, x["year"]))
-    _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag search for '%s' + tag:'%s' found %d albums",
-                   artist_name, tag, len(albums))
+    _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag search for '%s' + tag:'%s' found %d albums (tags: %s)",
+                   artist_name, tag, len(albums), tag_variations)
     for i, alb in enumerate(albums[:10]):
         _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag [%d] '%s' (%d)", i+1, alb["name"], alb["year"])
     return albums
@@ -716,6 +770,20 @@ class MusicController:
         if media_type == "album" and query and not album:
             album = query
 
+        # Defensive: detect holiday keywords in query and ensure album param is set
+        # This catches cases where the LLM fails to set album="christmas" etc.
+        _HOLIDAY_QUERY_KEYWORDS = {"christmas", "xmas", "holiday", "halloween", "thanksgiving", "easter", "valentine"}
+        if media_type == "album":
+            query_lower_check = query.lower()
+            for hk in _HOLIDAY_QUERY_KEYWORDS:
+                if hk in query_lower_check:
+                    if not album or _strip_accents(album.lower()) == _strip_accents(query.lower()):
+                        # album is empty or album==query (meaning LLM didn't separate the tag)
+                        # Map "holiday" → "christmas" since that's the MusicBrainz tag
+                        album = "christmas" if hk in ("holiday", "xmas") else hk
+                        _LOGGER.warning("MUSIC DEBUG: Defensive holiday detection - set album='%s' from query keyword '%s'", album, hk)
+                    break
+
         # Detect smart album modifiers
         album_modifier = None
         album_ordinal = None  # For "second", "third", etc.
@@ -884,13 +952,23 @@ class MusicController:
                     discography = await _get_artist_discography_musicbrainz(artist, album_type_filter)
 
                     # If we have a discography but also an album filter, try name matching as fallback
+                    # For holiday tags, use expanded keyword list to catch albums like "Wrapped in Red"
+                    # that don't have the holiday word in their title
                     if discography and album:
-                        album_filter_lower = _strip_accents(album.lower())
-                        filtered_discog = [d for d in discography if album_filter_lower in _strip_accents(d["name"].lower())]
+                        album_lower = album.lower()
+                        # Get expanded keywords for holiday searches
+                        name_keywords = _HOLIDAY_NAME_KEYWORDS.get(album_lower, [album_lower])
+                        filtered_discog = [
+                            d for d in discography
+                            if any(kw in _strip_accents(d["name"].lower()) for kw in name_keywords)
+                        ]
                         if filtered_discog:
-                            _LOGGER.warning("MUSIC DEBUG: Name-filtered discography from %d to %d albums matching '%s'",
-                                           len(discography), len(filtered_discog), album)
+                            _LOGGER.warning("MUSIC DEBUG: Name-filtered discography from %d to %d albums matching '%s' (keywords: %s)",
+                                           len(discography), len(filtered_discog), album, name_keywords)
                             discography = filtered_discog
+                        else:
+                            _LOGGER.warning("MUSIC DEBUG: No albums matched name keywords %s - using full discography of %d albums (TAG SEARCH SHOULD HAVE FOUND RESULTS)",
+                                           name_keywords, len(discography))
 
                 # Filter by year if specified
                 if discography and album_year:
