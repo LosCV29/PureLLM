@@ -181,6 +181,11 @@ ORDINAL/TAGGED ALBUMS: For "first/second/latest [genre] album by [artist]", set 
   "play Taylor Swift's second album" → action="play", media_type="album", query="second album", artist="Taylor Swift"
   "play the latest studio album by Adele" → action="play", media_type="album", album="studio", query="latest studio album", artist="Adele"
   "play Drake's third album" → action="play", media_type="album", query="third album", artist="Drake"
+CHRISTMAS/HOLIDAY ALBUMS: ALWAYS set album to the holiday keyword and artist to the artist name. NEVER omit artist. Examples:
+  "play kelly clarksons christmas music" → action="play", media_type="album", album="christmas", query="christmas album", artist="Kelly Clarkson"
+  "play christmas music by Michael Buble" → action="play", media_type="album", album="christmas", query="christmas album", artist="Michael Buble"
+  "play Mariah Carey's holiday album" → action="play", media_type="album", album="christmas", query="holiday album", artist="Mariah Carey"
+  "play kelly clarkson second christmas album" → action="play", media_type="album", album="christmas", query="second christmas album", artist="Kelly Clarkson"
 For "album with [song] on it" use song_on_album param instead of query/album.
 SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
 """
