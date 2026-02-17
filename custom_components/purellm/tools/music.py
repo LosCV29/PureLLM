@@ -5,6 +5,7 @@ import asyncio
 import logging
 import re
 import unicodedata
+import aiohttp
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -17,6 +18,29 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
+
+# Shared MusicBrainz constants
+_MB_HEADERS = {"User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"}
+_MB_BASE = "https://musicbrainz.org/ws/2"
+
+
+async def _musicbrainz_get(endpoint: str, params: dict, timeout: float = 5) -> dict | None:
+    """Make a GET request to MusicBrainz API. Returns JSON data or None."""
+    try:
+        params["fmt"] = "json"
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{_MB_BASE}/{endpoint}", params=params,
+                headers=_MB_HEADERS, timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as response:
+                if response.status == 200:
+                    return await response.json()
+                _LOGGER.debug("MusicBrainz API returned status %d", response.status)
+    except asyncio.TimeoutError:
+        _LOGGER.debug("MusicBrainz request timed out: %s", endpoint)
+    except Exception as e:
+        _LOGGER.debug("MusicBrainz request failed: %s %s", endpoint, e)
+    return None
 
 
 def _parse_ma_results(search_result: Any, media_type: str) -> list:
@@ -107,6 +131,224 @@ def _strip_accents(text: str) -> str:
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
+
+async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> int:
+    """Look up album release year from MusicBrainz API."""
+    clean_album = re.sub(r'\s*[\(\[].*?[\)\]]', '', album_name).strip()
+    clean_album = re.sub(r'\s*[-–].*?(edition|version|deluxe|remaster).*$', '', clean_album, flags=re.IGNORECASE).strip()
+
+    data = await _musicbrainz_get("release-group", {
+        "query": f'releasegroup:"{clean_album}" AND artist:"{artist_name}"',
+        "limit": 5,
+    })
+    if not data:
+        return 0
+
+    release_groups = data.get("release-groups", [])
+    if not release_groups:
+        return 0
+
+    # Find best match - prefer exact title match
+    for rg in release_groups:
+        rg_title = rg.get("title", "").lower()
+        if clean_album.lower() in rg_title or rg_title in clean_album.lower():
+            first_release = rg.get("first-release-date", "")
+            if first_release and len(first_release) >= 4:
+                year = int(first_release[:4])
+                _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s'", year, album_name, artist_name)
+                return year
+
+    # Fallback to first result
+    first_release = release_groups[0].get("first-release-date", "")
+    if first_release and len(first_release) >= 4:
+        year = int(first_release[:4])
+        _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s' (fallback)", year, album_name, artist_name)
+        return year
+
+    return 0
+
+
+# Related tag variations for holiday searches - MusicBrainz tags aren't always consistent
+_HOLIDAY_TAG_VARIATIONS = {
+    "christmas": ["christmas", "holiday", "xmas", "christmas music"],
+    "halloween": ["halloween", "horror", "spooky"],
+    "thanksgiving": ["thanksgiving"],
+    "easter": ["easter"],
+    "valentine": ["valentine", "love songs"],
+}
+
+# Keywords that appear in holiday album NAMES (for name-based fallback)
+_HOLIDAY_NAME_KEYWORDS = {
+    "christmas": ["christmas", "xmas", "holiday", "noel", "jingle", "santa", "merry", "silent night", "winter wonderland", "nutcracker"],
+    "halloween": ["halloween", "spooky", "scary", "horror", "haunted"],
+    "thanksgiving": ["thanksgiving", "grateful"],
+    "easter": ["easter"],
+    "valentine": ["valentine", "love"],
+}
+
+
+async def _search_albums_by_tag_musicbrainz(artist_name: str, tag: str) -> list[dict]:
+    """Search MusicBrainz for albums by artist with a specific tag (e.g., christmas, holiday).
+
+    Uses multiple search strategies:
+    1. Tag-based search with multiple tag variations
+    2. Name-based search for albums with holiday keywords in the title
+    Results are combined and deduplicated.
+    """
+    seen_mbids = set()
+    albums = []
+
+    def _add_album(rg: dict) -> None:
+        """Add album from release group data, deduplicating by MBID."""
+        primary_type = (rg.get("primary-type") or "").lower()
+        if primary_type != "album":
+            return
+        mbid = rg.get("id", "")
+        if mbid in seen_mbids:
+            return
+        seen_mbids.add(mbid)
+        first_release = rg.get("first-release-date", "")
+        albums.append({
+            "name": rg.get("title", ""),
+            "year": int(first_release[:4]) if first_release and len(first_release) >= 4 else 0,
+            "mbid": mbid,
+            "primary_type": primary_type,
+        })
+
+    # Strategy 1: Tag-based search with multiple tag variations
+    tag_variations = _HOLIDAY_TAG_VARIATIONS.get(tag.lower(), [tag])
+    for tag_variant in tag_variations:
+        data = await _musicbrainz_get("release-group", {
+            "query": f'artist:"{artist_name}" AND tag:"{tag_variant}"',
+            "limit": 25,
+        }, timeout=10)
+        if data:
+            for rg in data.get("release-groups", []):
+                _add_album(rg)
+        # MusicBrainz rate limit - brief pause between queries
+        if tag_variant != tag_variations[-1]:
+            await asyncio.sleep(0.5)
+
+    # Strategy 2: Name-based search - find albums with holiday keywords in the title
+    name_keywords = _HOLIDAY_NAME_KEYWORDS.get(tag.lower(), [tag])
+    primary_keyword = name_keywords[0] if name_keywords else tag
+    await asyncio.sleep(0.5)
+    name_data = await _musicbrainz_get("release-group", {
+        "query": f'artist:"{artist_name}" AND releasegroup:"{primary_keyword}"',
+        "limit": 25,
+    }, timeout=10)
+    if name_data:
+        for rg in name_data.get("release-groups", []):
+            _add_album(rg)
+
+    albums.sort(key=lambda x: (x["year"] == 0, x["year"]))
+    _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag search for '%s' + tag:'%s' found %d albums (tags: %s)",
+                   artist_name, tag, len(albums), tag_variations)
+    for i, alb in enumerate(albums[:10]):
+        _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag [%d] '%s' (%d)", i+1, alb["name"], alb["year"])
+    return albums
+
+
+async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str = None) -> list[dict]:
+    """Get artist's discography from MusicBrainz with album types and years."""
+    # First, find the artist ID
+    artist_data = await _musicbrainz_get("artist", {
+        "query": f'artist:"{artist_name}"', "limit": 1,
+    })
+    if not artist_data:
+        return []
+    artists = artist_data.get("artists", [])
+    if not artists or not artists[0].get("id"):
+        return []
+    artist_id = artists[0]["id"]
+
+    # MusicBrainz rate limit
+    await asyncio.sleep(1)
+
+    # Get artist's release groups
+    data = await _musicbrainz_get("release-group", {
+        "artist": artist_id, "type": "album|ep", "limit": 100,
+    }, timeout=10)
+    if not data:
+        return []
+
+    discography = []
+    for rg in data.get("release-groups", []):
+        first_release = rg.get("first-release-date", "")
+        year = int(first_release[:4]) if first_release and len(first_release) >= 4 else 0
+        primary_type = (rg.get("primary-type") or "").lower()
+        secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
+
+        is_studio = primary_type == "album" and not secondary_types
+        is_live = "live" in secondary_types
+        is_compilation = "compilation" in secondary_types
+        is_soundtrack = "soundtrack" in secondary_types
+        is_ep = primary_type == "ep"
+
+        if album_type:
+            type_lower = album_type.lower()
+            if type_lower == "studio" and not is_studio:
+                continue
+            elif type_lower == "live" and not is_live:
+                continue
+            elif type_lower in ("compilation", "greatest hits", "best of") and not is_compilation:
+                continue
+            elif type_lower == "soundtrack" and not is_soundtrack:
+                continue
+            elif type_lower == "ep" and not is_ep:
+                continue
+        else:
+            if primary_type != "album":
+                continue
+
+        discography.append({
+            "name": rg.get("title", ""),
+            "year": year,
+            "primary_type": primary_type,
+            "secondary_types": secondary_types,
+            "is_studio": is_studio,
+            "is_live": is_live,
+            "is_compilation": is_compilation,
+        })
+
+    discography.sort(key=lambda x: (x["year"] == 0, x["year"]))
+    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found %d albums for '%s'%s",
+                len(discography), artist_name,
+                f" (filtered by {album_type})" if album_type else "")
+    for i, alb in enumerate(discography[:10]):
+        _LOGGER.warning("MUSIC DEBUG: MusicBrainz [%d] '%s' (%d) - type: %s%s",
+                       i+1, alb["name"], alb["year"], alb["primary_type"],
+                       f" + {alb['secondary_types']}" if alb["secondary_types"] else "")
+    return discography
+
+
+# Ordinal number mapping
+ORDINALS = {
+    "first": 1, "1st": 1,
+    "second": 2, "2nd": 2,
+    "third": 3, "3rd": 3,
+    "fourth": 4, "4th": 4,
+    "fifth": 5, "5th": 5,
+    "sixth": 6, "6th": 6,
+    "seventh": 7, "7th": 7,
+    "eighth": 8, "8th": 8,
+    "ninth": 9, "9th": 9,
+    "tenth": 10, "10th": 10,
+}
+
+# Album type keywords mapping
+ALBUM_TYPE_KEYWORDS = {
+    "studio": "studio",
+    "live": "live",
+    "concert": "live",
+    "compilation": "compilation",
+    "greatest hits": "compilation",
+    "best of": "compilation",
+    "hits": "compilation",
+    "soundtrack": "soundtrack",
+    "ost": "soundtrack",
+    "ep": "ep",
+}
 
 # Broadway cast recording keywords - used to EXCLUDE these from movie soundtrack searches
 BROADWAY_KEYWORDS = [
