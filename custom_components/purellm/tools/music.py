@@ -199,12 +199,34 @@ async def _search_albums_by_tag_musicbrainz(artist_name: str, tag: str) -> list[
     """
     seen_mbids = set()
     albums = []
+    artist_lower = _strip_accents(artist_name.lower())
 
     def _add_album(rg: dict) -> None:
-        """Add album from release group data, deduplicating by MBID."""
+        """Add album from release group data, deduplicating by MBID.
+
+        Verifies artist-credit matches the requested artist to prevent
+        contamination from other artists (e.g., Bublé albums when searching
+        for Kelly Clarkson).
+        """
         primary_type = (rg.get("primary-type") or "").lower()
         if primary_type != "album":
             return
+        # Verify artist matches - MusicBrainz search is fuzzy and can return
+        # albums from other artists
+        artist_credit = rg.get("artist-credit", [])
+        if artist_credit:
+            rg_artists = []
+            for ac in artist_credit:
+                ac_name = _strip_accents((ac.get("name") or ac.get("artist", {}).get("name", "")).lower())
+                if ac_name:
+                    rg_artists.append(ac_name)
+            if rg_artists and not any(
+                artist_lower in rg_art or rg_art in artist_lower
+                for rg_art in rg_artists
+            ):
+                _LOGGER.debug("MUSIC DEBUG: Skipping '%s' - artist mismatch (got %s, wanted '%s')",
+                             rg.get("title"), rg_artists, artist_name)
+                return
         mbid = rg.get("id", "")
         if mbid in seen_mbids:
             return
@@ -1028,16 +1050,25 @@ class MusicController:
 
                     albums = _parse_ma_results(search_result, "album")
                     if albums:
-                        # Find best match
+                        # Find best match - prefer albums matching both name AND artist
                         target_lower = _strip_accents(target_album_name.lower())
+                        artist_lower_ma = _strip_accents(artist.lower()) if artist else ""
                         best_album = None
+                        best_album_no_artist = None  # Fallback: name match only
                         for alb in albums:
                             alb_name = _strip_accents((alb.get("name") or alb.get("title") or "").lower())
                             if target_lower in alb_name or alb_name in target_lower:
-                                best_album = alb
-                                break
+                                # Check artist match
+                                alb_artist = _strip_accents(_extract_artist(alb, lowercase=True))
+                                if artist_lower_ma and alb_artist and (
+                                    artist_lower_ma in alb_artist or alb_artist in artist_lower_ma
+                                ):
+                                    best_album = alb
+                                    break
+                                if not best_album_no_artist:
+                                    best_album_no_artist = alb
                         if not best_album:
-                            best_album = albums[0]
+                            best_album = best_album_no_artist or albums[0]
 
                         found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
                         found_uri = best_album.get("uri") or best_album.get("media_id")
@@ -1242,6 +1273,10 @@ class MusicController:
                             score += 100
                         elif artist_lower in item_artist or item_artist in artist_lower:
                             score += 50
+                        elif item_artist:
+                            # Artist was specified but doesn't match - penalize heavily
+                            # to prevent e.g. Bublé's "Christmas" beating Clarkson's album
+                            score -= 200
 
                     return score
 
