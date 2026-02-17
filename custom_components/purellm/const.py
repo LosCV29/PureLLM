@@ -173,6 +173,11 @@ MUSIC ROOMS: Extract room separately from query — never include room in query/
 MUSIC PLAY: ALWAYS set media_type: "album" for albums, "track" for songs, "artist" for artist radio. Examples:
   "play album Debí Tirar Más Fotos by Bad Bunny in the living room" → action="play", album="Debí Tirar Más Fotos", artist="Bad Bunny", media_type="album", room="living room"
   "play Bohemian Rhapsody in the kitchen" → action="play", query="Bohemian Rhapsody", media_type="track", room="kitchen"
+ORDINAL/TAGGED ALBUMS: For "first/second/latest [genre] album by [artist]", set media_type="album", album=genre/tag ONLY, query=full modifier phrase, artist=artist name. Examples:
+  "play Kelly Clarkson's first christmas album" → action="play", media_type="album", album="christmas", query="first christmas album", artist="Kelly Clarkson"
+  "play Taylor Swift's second album" → action="play", media_type="album", query="second album", artist="Taylor Swift"
+  "play the latest studio album by Adele" → action="play", media_type="album", album="studio", query="latest studio album", artist="Adele"
+  "play Drake's third album" → action="play", media_type="album", query="third album", artist="Drake"
 For "album with [song] on it" use song_on_album param instead of query/album.
 SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
 """
