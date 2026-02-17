@@ -1019,20 +1019,23 @@ class MusicController:
                     _LOGGER.warning("MUSIC DEBUG: No modifier, using most recent: '%s' (%d)", target_album_name, target_year)
 
                 if target_album_name:
+                    # Normalize the album name for searching (e.g., "…" → "...")
+                    search_album_name = _strip_accents(target_album_name)
                     # Search Music Assistant for this specific album
                     search_result = await self._hass.services.async_call(
                         "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": f"{target_album_name} {artist}", "media_type": ["album"], "limit": 5},
+                        {"config_entry_id": ma_config_entry_id, "name": f"{search_album_name} {artist}", "media_type": ["album"], "limit": 5},
                         blocking=True, return_response=True
                     )
 
                     albums = _parse_ma_results(search_result, "album")
                     if albums:
-                        # Find best match
-                        target_lower = _strip_accents(target_album_name.lower())
+                        # Find best match - strip punctuation for comparison to handle
+                        # variations like "When Christmas Comes Around…" vs "When Christmas Comes Around"
+                        target_lower = re.sub(r'[^\w\s]', '', _strip_accents(target_album_name.lower())).strip()
                         best_album = None
                         for alb in albums:
-                            alb_name = _strip_accents((alb.get("name") or alb.get("title") or "").lower())
+                            alb_name = re.sub(r'[^\w\s]', '', _strip_accents((alb.get("name") or alb.get("title") or "").lower())).strip()
                             if target_lower in alb_name or alb_name in target_lower:
                                 best_album = alb
                                 break
