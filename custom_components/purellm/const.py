@@ -176,17 +176,17 @@ SHUFFLE: For shuffle requests, use action="shuffle" with query= the genre/playli
 MUSIC PLAY: ALWAYS set media_type: "album" for albums, "track" for songs, "artist" for artist radio. Examples:
   "play album Debí Tirar Más Fotos by Bad Bunny in the living room" → action="play", album="Debí Tirar Más Fotos", artist="Bad Bunny", media_type="album", room="living room"
   "play Bohemian Rhapsody in the kitchen" → action="play", query="Bohemian Rhapsody", media_type="track", room="kitchen"
-ORDINAL ALBUMS: For "first/second/third/latest album by [artist]", use the ordinal parameter (1=first, 2=second, -1=latest). If a genre/tag is mentioned, set album to the tag ONLY. NEVER guess the album name — the system looks it up. Examples:
-  "play Kelly Clarkson's first christmas album" → action="play", media_type="album", album="christmas", ordinal=1, artist="Kelly Clarkson"
-  "play Kelly Clarkson's second christmas album" → action="play", media_type="album", album="christmas", ordinal=2, artist="Kelly Clarkson"
-  "play Kelly Clarkson's latest christmas album" → action="play", media_type="album", album="christmas", ordinal=-1, artist="Kelly Clarkson"
-  "play Taylor Swift's second album" → action="play", media_type="album", ordinal=2, artist="Taylor Swift"
-  "play the latest studio album by Adele" → action="play", media_type="album", album="studio", ordinal=-1, artist="Adele"
-  "play Drake's third album" → action="play", media_type="album", ordinal=3, artist="Drake"
+ORDINAL ALBUMS: For "first/second/latest [genre] album by [artist]", set media_type="album", album=genre/tag ONLY, query=full modifier phrase, artist=artist name, ordinal=position number. NEVER guess the album name. Examples:
+  "play Kelly Clarkson's first christmas album" → action="play", media_type="album", album="christmas", query="first christmas album", ordinal=1, artist="Kelly Clarkson"
+  "play Kelly Clarkson's second christmas album" → action="play", media_type="album", album="christmas", query="second christmas album", ordinal=2, artist="Kelly Clarkson"
+  "play Taylor Swift's second album" → action="play", media_type="album", query="second album", ordinal=2, artist="Taylor Swift"
+  "play the latest studio album by Adele" → action="play", media_type="album", album="studio", query="latest studio album", ordinal=-1, artist="Adele"
+  "play Drake's third album" → action="play", media_type="album", query="third album", ordinal=3, artist="Drake"
 CHRISTMAS/HOLIDAY ALBUMS: ALWAYS set album to the holiday keyword and artist to the artist name. NEVER omit artist. Examples:
-  "play kelly clarksons christmas music" → action="play", media_type="album", album="christmas", artist="Kelly Clarkson"
-  "play christmas music by Michael Buble" → action="play", media_type="album", album="christmas", artist="Michael Buble"
-  "play Mariah Carey's holiday album" → action="play", media_type="album", album="christmas", artist="Mariah Carey"
+  "play kelly clarksons christmas music" → action="play", media_type="album", album="christmas", query="christmas album", artist="Kelly Clarkson"
+  "play christmas music by Michael Buble" → action="play", media_type="album", album="christmas", query="christmas album", artist="Michael Buble"
+  "play Mariah Carey's holiday album" → action="play", media_type="album", album="christmas", query="holiday album", artist="Mariah Carey"
+  "play kelly clarkson second christmas album" → action="play", media_type="album", album="christmas", query="second christmas album", ordinal=2, artist="Kelly Clarkson"
 For "album with [song] on it" use song_on_album param instead of query/album.
 SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
 """

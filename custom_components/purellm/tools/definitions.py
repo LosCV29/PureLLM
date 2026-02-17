@@ -213,8 +213,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             {
                 "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"], "description": "Action"},
                 "media_type": {"type": "string", "enum": ["artist", "album", "track"], "description": "REQUIRED for play action. Set 'album' for albums, 'track' for songs, 'artist' for artist radio"},
-                "query": {"type": "string", "description": "Search query. For tracks: song name. For artists: artist name."},
-                "album": {"type": "string", "description": "Album name - REQUIRED when media_type is 'album'. For ordinal requests, set this to the genre/tag ONLY (e.g. 'christmas', 'studio', 'live') or omit if no genre filter."},
+                "query": {"type": "string", "description": "Search query. For tracks: song name. For artists: artist name. For ordinal/tagged album requests (e.g. 'first christmas album'), put the full modifier phrase here (e.g. 'first christmas album')"},
+                "album": {"type": "string", "description": "Album name - REQUIRED when media_type is 'album'. For ordinal/tagged requests (first/second/latest + genre), set this to the genre/tag word only (e.g. 'christmas', 'holiday', 'live')"},
                 "artist": {"type": "string", "description": "Artist name"},
                 "ordinal": {"type": "integer", "description": "Album position for ordinal requests: 1=first, 2=second, 3=third, etc. Use -1 for latest/newest/most recent."},
                 "song_on_album": {"type": "string", "description": "Song name to find the album containing it"},
