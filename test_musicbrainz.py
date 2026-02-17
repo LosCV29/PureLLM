@@ -4,7 +4,7 @@
 Run: python3 test_musicbrainz.py
 
 Tests _escape_lucene (unit), then makes real API calls to verify
-rate limiting, retry logic, escaping, and caching all work.
+rate limiting, retry logic, and escaping all work.
 
 No Home Assistant dependency — imports only the MusicBrainz functions
 by monkey-patching the HA imports out.
@@ -50,9 +50,7 @@ from custom_components.purellm.tools.music import (
     _escape_lucene,
     _mb_rate_limit,
     _musicbrainz_get,
-    _mb_artist_id_cache,
     _lookup_album_year_musicbrainz,
-    _get_artist_discography_musicbrainz,
 )
 
 PASS = "\033[92mPASS\033[0m"
@@ -186,34 +184,14 @@ async def test_live_api():
             print(f"  {INFO}  Found: '{name}'")
             assert_true("Found AC/DC", "ac/dc" in name.lower() or "ac dc" in name.lower())
 
-    # 3d. Full discography lookup (tests artist ID cache + browse)
-    print("\n  --- 3d. Discography: Radiohead (tests artist cache) ---")
-    _mb_artist_id_cache.clear()
-    disco = await _get_artist_discography_musicbrainz("Radiohead", "studio")
-    assert_true("Got discography", len(disco) > 0)
-    if disco:
-        print(f"  {INFO}  Found {len(disco)} studio albums:")
-        for d in disco[:5]:
-            print(f"         {d['year']}  {d['name']}")
-        assert_true("OK Computer is in there", any("ok computer" in d["name"].lower() for d in disco))
-
-    # Verify cache was populated
-    assert_true("Artist ID cache populated", "radiohead" in _mb_artist_id_cache)
-    cached_id = _mb_artist_id_cache.get("radiohead")
-    print(f"  {INFO}  Cached artist ID: {cached_id}")
-
-    # Call again — should use cache (artist lookup skipped)
-    disco2 = await _get_artist_discography_musicbrainz("Radiohead", "studio")
-    assert_true(f"Second call still works ({len(disco2)} albums)", len(disco2) > 0)
-
-    # 3e. Album year lookup
-    print("\n  --- 3e. Album year: 'OK Computer' by Radiohead ---")
+    # 3d. Album year lookup
+    print("\n  --- 3d. Album year: 'OK Computer' by Radiohead ---")
     year = await _lookup_album_year_musicbrainz("OK Computer", "Radiohead")
     print(f"  {INFO}  Year: {year}")
     assert_true("Year is 1997", year == 1997)
 
-    # 3f. Album year with special chars in name
-    print("\n  --- 3f. Album year: 'Funhouse' by P!nk ---")
+    # 3e. Album year with special chars in name
+    print("\n  --- 3e. Album year: 'Funhouse' by P!nk ---")
     year = await _lookup_album_year_musicbrainz("Funhouse", "P!nk")
     print(f"  {INFO}  Year: {year}")
     assert_true("Year is 2008 or 2009", year in (2008, 2009))
