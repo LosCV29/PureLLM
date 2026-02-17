@@ -795,14 +795,19 @@ class MusicController:
         first_keywords = ["first", "oldest", "debut", "earliest"]
 
         if media_type == "album":
-            # Priority 1: Explicit ordinal parameter from LLM (most reliable)
+            # Priority 1: Explicit ordinal parameter from LLM
+            if ordinal is not None:
+                try:
+                    ordinal = int(ordinal)
+                except (ValueError, TypeError):
+                    ordinal = None
             if ordinal is not None:
                 if ordinal == -1:
                     album_modifier = "latest"
                     _LOGGER.info("Detected album modifier: 'latest' (ordinal param=%d)", ordinal)
                 elif ordinal == 1:
-                    album_ordinal = 1
-                    _LOGGER.info("Detected album ordinal: 1 (ordinal param)")
+                    album_modifier = "first"
+                    _LOGGER.info("Detected album modifier: 'first' (ordinal param)")
                 elif ordinal >= 2:
                     album_ordinal = ordinal
                     _LOGGER.info("Detected album ordinal: %d (ordinal param)", ordinal)
@@ -812,8 +817,8 @@ class MusicController:
                 for ordinal_word, ordinal_num in ORDINALS.items():
                     if ordinal_word in query_lower:
                         if ordinal_word in ("first", "1st"):
-                            album_ordinal = 1
-                            _LOGGER.info("Detected album ordinal: 1 (keyword: %s)", ordinal_word)
+                            album_modifier = "first"
+                            _LOGGER.info("Detected album modifier: 'first' (keyword: %s)", ordinal_word)
                         else:
                             album_ordinal = ordinal_num
                             _LOGGER.info("Detected album ordinal: %d (keyword: %s)", ordinal_num, ordinal_word)
