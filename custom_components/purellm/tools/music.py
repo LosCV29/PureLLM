@@ -2,11 +2,9 @@
 from __future__ import annotations
 
 import asyncio
-import codecs
 import logging
 import re
 import unicodedata
-import aiohttp
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -19,29 +17,6 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
-
-# Shared MusicBrainz constants
-_MB_HEADERS = {"User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"}
-_MB_BASE = "https://musicbrainz.org/ws/2"
-
-
-async def _musicbrainz_get(endpoint: str, params: dict, timeout: float = 5) -> dict | None:
-    """Make a GET request to MusicBrainz API. Returns JSON data or None."""
-    try:
-        params["fmt"] = "json"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{_MB_BASE}/{endpoint}", params=params,
-                headers=_MB_HEADERS, timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as response:
-                if response.status == 200:
-                    return await response.json()
-                _LOGGER.debug("MusicBrainz API returned status %d", response.status)
-    except asyncio.TimeoutError:
-        _LOGGER.debug("MusicBrainz request timed out: %s", endpoint)
-    except Exception as e:
-        _LOGGER.debug("MusicBrainz request failed: %s %s", endpoint, e)
-    return None
 
 
 def _parse_ma_results(search_result: Any, media_type: str) -> list:
@@ -132,227 +107,6 @@ def _strip_accents(text: str) -> str:
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
-
-async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> int:
-    """Look up album release year from MusicBrainz API."""
-    clean_album = re.sub(r'\s*[\(\[].*?[\)\]]', '', album_name).strip()
-    clean_album = re.sub(r'\s*[-–].*?(edition|version|deluxe|remaster).*$', '', clean_album, flags=re.IGNORECASE).strip()
-
-    data = await _musicbrainz_get("release-group", {
-        "query": f'releasegroup:"{clean_album}" AND artist:"{artist_name}"',
-        "limit": 5,
-    })
-    if not data:
-        return 0
-
-    release_groups = data.get("release-groups", [])
-    if not release_groups:
-        return 0
-
-    # Find best match - prefer exact title match
-    for rg in release_groups:
-        rg_title = rg.get("title", "").lower()
-        if clean_album.lower() in rg_title or rg_title in clean_album.lower():
-            first_release = rg.get("first-release-date", "")
-            if first_release and len(first_release) >= 4:
-                year = int(first_release[:4])
-                _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s'", year, album_name, artist_name)
-                return year
-
-    # Fallback to first result
-    first_release = release_groups[0].get("first-release-date", "")
-    if first_release and len(first_release) >= 4:
-        year = int(first_release[:4])
-        _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s' (fallback)", year, album_name, artist_name)
-        return year
-
-    return 0
-
-
-# Related tag variations for holiday searches - MusicBrainz tags aren't always consistent
-_HOLIDAY_TAG_VARIATIONS = {
-    "christmas": ["christmas", "holiday", "xmas", "christmas music"],
-    "halloween": ["halloween", "horror", "spooky"],
-    "thanksgiving": ["thanksgiving"],
-    "easter": ["easter"],
-    "valentine": ["valentine", "love songs"],
-}
-
-# Keywords that appear in holiday album NAMES (for name-based fallback)
-# This catches albums like "Christmas Isn't Canceled" or "Merry Christmas"
-_HOLIDAY_NAME_KEYWORDS = {
-    "christmas": ["christmas", "xmas", "holiday", "noel", "jingle", "santa", "merry", "silent night", "winter wonderland", "nutcracker"],
-    "halloween": ["halloween", "spooky", "scary", "horror", "haunted"],
-    "thanksgiving": ["thanksgiving", "grateful"],
-    "easter": ["easter"],
-    "valentine": ["valentine", "love"],
-}
-
-
-async def _search_albums_by_tag_musicbrainz(artist_name: str, tag: str) -> list[dict]:
-    """Search MusicBrainz for albums by artist with a specific tag (e.g., christmas, holiday).
-
-    Uses multiple search strategies:
-    1. Tag-based search with multiple tag variations
-    2. Name-based search for albums with holiday keywords in the title
-    Results are combined and deduplicated.
-    """
-    seen_mbids = set()
-    albums = []
-
-    def _add_album(rg: dict) -> None:
-        """Add album from release group data, deduplicating by MBID."""
-        primary_type = (rg.get("primary-type") or "").lower()
-        if primary_type != "album":
-            return
-        mbid = rg.get("id", "")
-        if mbid in seen_mbids:
-            return
-        seen_mbids.add(mbid)
-        first_release = rg.get("first-release-date", "")
-        albums.append({
-            "name": rg.get("title", ""),
-            "year": int(first_release[:4]) if first_release and len(first_release) >= 4 else 0,
-            "mbid": mbid,
-            "primary_type": primary_type,
-        })
-
-    # Strategy 1: Tag-based search with multiple tag variations
-    tag_variations = _HOLIDAY_TAG_VARIATIONS.get(tag.lower(), [tag])
-    for tag_variant in tag_variations:
-        data = await _musicbrainz_get("release-group", {
-            "query": f'artist:"{artist_name}" AND tag:"{tag_variant}"',
-            "limit": 25,
-        }, timeout=10)
-        if data:
-            for rg in data.get("release-groups", []):
-                _add_album(rg)
-        # MusicBrainz rate limit - brief pause between queries
-        if tag_variant != tag_variations[-1]:
-            await asyncio.sleep(0.5)
-
-    # Strategy 2: Name-based search - find albums with holiday keywords in the title
-    # This catches albums like "Merry Christmas" or "Christmas Isn't Canceled"
-    name_keywords = _HOLIDAY_NAME_KEYWORDS.get(tag.lower(), [tag])
-    # Only use the primary keyword for name search to avoid too many API calls
-    primary_keyword = name_keywords[0] if name_keywords else tag
-    await asyncio.sleep(0.5)
-    name_data = await _musicbrainz_get("release-group", {
-        "query": f'artist:"{artist_name}" AND releasegroup:"{primary_keyword}"',
-        "limit": 25,
-    }, timeout=10)
-    if name_data:
-        for rg in name_data.get("release-groups", []):
-            _add_album(rg)
-
-    albums.sort(key=lambda x: (x["year"] == 0, x["year"]))
-    _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag search for '%s' + tag:'%s' found %d albums (tags: %s)",
-                   artist_name, tag, len(albums), tag_variations)
-    for i, alb in enumerate(albums[:10]):
-        _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag [%d] '%s' (%d)", i+1, alb["name"], alb["year"])
-    return albums
-
-
-async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str = None) -> list[dict]:
-    """Get artist's discography from MusicBrainz with album types and years."""
-    # First, find the artist ID
-    artist_data = await _musicbrainz_get("artist", {
-        "query": f'artist:"{artist_name}"', "limit": 1,
-    })
-    if not artist_data:
-        return []
-    artists = artist_data.get("artists", [])
-    if not artists or not artists[0].get("id"):
-        return []
-    artist_id = artists[0]["id"]
-
-    # MusicBrainz rate limit
-    await asyncio.sleep(1)
-
-    # Get artist's release groups
-    data = await _musicbrainz_get("release-group", {
-        "artist": artist_id, "type": "album|ep", "limit": 100,
-    }, timeout=10)
-    if not data:
-        return []
-
-    discography = []
-    for rg in data.get("release-groups", []):
-        first_release = rg.get("first-release-date", "")
-        year = int(first_release[:4]) if first_release and len(first_release) >= 4 else 0
-        primary_type = (rg.get("primary-type") or "").lower()
-        secondary_types = [t.lower() for t in (rg.get("secondary-types") or [])]
-
-        is_studio = primary_type == "album" and not secondary_types
-        is_live = "live" in secondary_types
-        is_compilation = "compilation" in secondary_types
-        is_soundtrack = "soundtrack" in secondary_types
-        is_ep = primary_type == "ep"
-
-        if album_type:
-            type_lower = album_type.lower()
-            if type_lower == "studio" and not is_studio:
-                continue
-            elif type_lower == "live" and not is_live:
-                continue
-            elif type_lower in ("compilation", "greatest hits", "best of") and not is_compilation:
-                continue
-            elif type_lower == "soundtrack" and not is_soundtrack:
-                continue
-            elif type_lower == "ep" and not is_ep:
-                continue
-        else:
-            if primary_type != "album":
-                continue
-
-        discography.append({
-            "name": rg.get("title", ""),
-            "year": year,
-            "primary_type": primary_type,
-            "secondary_types": secondary_types,
-            "is_studio": is_studio,
-            "is_live": is_live,
-            "is_compilation": is_compilation,
-        })
-
-    discography.sort(key=lambda x: (x["year"] == 0, x["year"]))
-    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found %d albums for '%s'%s",
-                len(discography), artist_name,
-                f" (filtered by {album_type})" if album_type else "")
-    for i, alb in enumerate(discography[:10]):
-        _LOGGER.warning("MUSIC DEBUG: MusicBrainz [%d] '%s' (%d) - type: %s%s",
-                       i+1, alb["name"], alb["year"], alb["primary_type"],
-                       f" + {alb['secondary_types']}" if alb["secondary_types"] else "")
-    return discography
-
-
-# Ordinal number mapping
-ORDINALS = {
-    "first": 1, "1st": 1,
-    "second": 2, "2nd": 2,
-    "third": 3, "3rd": 3,
-    "fourth": 4, "4th": 4,
-    "fifth": 5, "5th": 5,
-    "sixth": 6, "6th": 6,
-    "seventh": 7, "7th": 7,
-    "eighth": 8, "8th": 8,
-    "ninth": 9, "9th": 9,
-    "tenth": 10, "10th": 10,
-}
-
-# Album type keywords mapping
-ALBUM_TYPE_KEYWORDS = {
-    "studio": "studio",
-    "live": "live",
-    "concert": "live",
-    "compilation": "compilation",
-    "greatest hits": "compilation",
-    "best of": "compilation",
-    "hits": "compilation",
-    "soundtrack": "soundtrack",
-    "ost": "soundtrack",
-    "ep": "ep",
-}
 
 # Broadway cast recording keywords - used to EXCLUDE these from movie soundtrack searches
 BROADWAY_KEYWORDS = [
@@ -482,8 +236,6 @@ class MusicController:
         artist = arguments.get("artist", "")
         album = arguments.get("album", "")
         song_on_album = arguments.get("song_on_album", "")
-        ordinal = arguments.get("ordinal")  # 1=first, 2=second, -1=latest, etc.
-
         # DEBUG: Log raw arguments received from LLM
         _LOGGER.warning("MUSIC DEBUG: Raw arguments from LLM: %s", arguments)
         _LOGGER.warning("MUSIC DEBUG: Extracted - action='%s', query='%s', room='%s'", action, query, room)
@@ -540,7 +292,7 @@ class MusicController:
             target_players = self._find_target_players(room)
 
             if action == "play":
-                return await self._play(query, media_type, room, shuffle, target_players, artist, album, song_on_album, ordinal)
+                return await self._play(query, media_type, room, shuffle, target_players, artist, album, song_on_album)
             elif action == "pause":
                 return await self._pause(all_players, target_players if target_players else None)
             elif action == "resume":
@@ -731,16 +483,11 @@ class MusicController:
                 "media_player", service, {},
                 target={"entity_id": entity_id}, blocking=True)
 
-    async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "", song_on_album: str = "", ordinal: int | None = None) -> dict:
+    async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "", song_on_album: str = "") -> dict:
         """Play music via Music Assistant with search-first for accuracy.
 
         Searches Music Assistant first to find the exact track/album/artist,
         then plays the found result and returns the actual name.
-
-        Smart album features:
-        - "latest/last/newest album by X" → finds most recent album
-        - "first/oldest/debut album by X" → finds earliest album
-        - song_on_album: finds album containing a specific song
         """
         # Sync query ↔ album so both code paths work regardless of how LLM maps params
         if not query and album:
@@ -780,111 +527,9 @@ class MusicController:
                 if hk in query_lower_check:
                     if not album or _strip_accents(album.lower()) == _strip_accents(query.lower()):
                         # album is empty or album==query (meaning LLM didn't separate the tag)
-                        # Map "holiday" → "christmas" since that's the MusicBrainz tag
                         album = "christmas" if hk in ("holiday", "xmas") else hk
                         _LOGGER.warning("MUSIC DEBUG: Defensive holiday detection - set album='%s' from query keyword '%s'", album, hk)
                     break
-
-        # Detect smart album modifiers
-        album_modifier = None
-        album_ordinal = None  # For "second", "third", etc.
-        album_type_filter = None  # For "studio", "live", "compilation", etc.
-        album_year = None
-        query_lower = query.lower()
-        latest_keywords = ["latest", "last", "newest", "new", "most recent", "recent"]
-        first_keywords = ["first", "oldest", "debut", "earliest"]
-
-        if media_type == "album":
-            # Priority 1: Explicit ordinal parameter from LLM
-            if ordinal is not None:
-                try:
-                    ordinal = int(ordinal)
-                except (ValueError, TypeError):
-                    ordinal = None
-            if ordinal is not None:
-                if ordinal == -1:
-                    album_modifier = "latest"
-                    _LOGGER.info("Detected album modifier: 'latest' (ordinal param=%d)", ordinal)
-                elif ordinal == 1:
-                    album_modifier = "first"
-                    _LOGGER.info("Detected album modifier: 'first' (ordinal param)")
-                elif ordinal >= 2:
-                    album_ordinal = ordinal
-                    _LOGGER.info("Detected album ordinal: %d (ordinal param)", ordinal)
-
-            # Priority 2: Fallback - parse ordinals from query string
-            if not album_modifier and not album_ordinal:
-                for ordinal_word, ordinal_num in ORDINALS.items():
-                    if ordinal_word in query_lower:
-                        if ordinal_word in ("first", "1st"):
-                            album_modifier = "first"
-                            _LOGGER.info("Detected album modifier: 'first' (keyword: %s)", ordinal_word)
-                        else:
-                            album_ordinal = ordinal_num
-                            _LOGGER.info("Detected album ordinal: %d (keyword: %s)", ordinal_num, ordinal_word)
-                        break
-
-            # Check for latest/first keywords (if not already set)
-            if not album_modifier and not album_ordinal:
-                for kw in latest_keywords:
-                    if kw in query_lower:
-                        album_modifier = "latest"
-                        _LOGGER.info("Detected album modifier: 'latest' (keyword: %s)", kw)
-                        break
-                if not album_modifier:
-                    for kw in first_keywords:
-                        if kw in query_lower:
-                            album_modifier = "first"
-                            _LOGGER.info("Detected album modifier: 'first' (keyword: %s)", kw)
-                            break
-
-            # Check for album type keywords (studio, live, compilation, etc.)
-            for type_keyword, type_value in ALBUM_TYPE_KEYWORDS.items():
-                if type_keyword in query_lower:
-                    album_type_filter = type_value
-                    _LOGGER.info("Detected album type filter: '%s' (keyword: %s)", type_value, type_keyword)
-                    break
-
-            # Also check album param for type keywords (LLM may put "studio" in album)
-            if not album_type_filter and album:
-                album_lower_check = album.lower()
-                for type_keyword, type_value in ALBUM_TYPE_KEYWORDS.items():
-                    if type_keyword == album_lower_check:
-                        album_type_filter = type_value
-                        _LOGGER.info("Detected album type filter from album param: '%s'", type_value)
-                        break
-
-            # Check for year-based album requests (e.g., "2020 album", "album from 2019")
-            album_year = None
-            year_patterns = [
-                r'\b(19[5-9]\d|20[0-2]\d)\s*album',  # "2020 album"
-                r'album\s*(?:from|in|of)?\s*(19[5-9]\d|20[0-2]\d)',  # "album from 2020"
-                r'\b(19[5-9]\d|20[0-2]\d)\b',  # Just a year in the query
-            ]
-            for pattern in year_patterns:
-                match = re.search(pattern, query_lower)
-                if match:
-                    album_year = int(match.group(1))
-                    _LOGGER.info("Detected album year: %d", album_year)
-                    break
-
-            # Defensive: if ordinal/modifier is set but album looks like a hallucinated
-            # album name (>2 words), extract the genre tag from album or clear it
-            if (album_ordinal or album_modifier) and album and len(album.split()) > 2:
-                _LOGGER.warning("MUSIC DEBUG: album param '%s' looks hallucinated for ordinal request, clearing", album)
-                # Check if album contains a known tag we can extract
-                album_check = album.lower()
-                extracted_tag = None
-                for hk in _HOLIDAY_QUERY_KEYWORDS:
-                    if hk in album_check:
-                        extracted_tag = "christmas" if hk in ("holiday", "xmas") else hk
-                        break
-                if not extracted_tag:
-                    for type_kw in ALBUM_TYPE_KEYWORDS:
-                        if type_kw in album_check:
-                            extracted_tag = type_kw
-                            break
-                album = extracted_tag or ""
 
         try:
             # Get Music Assistant config entry
@@ -977,234 +622,7 @@ class MusicController:
 
                 return {"error": f"Could not find album containing '{song_on_album}'" + (f" by {artist}" if artist else "")}
 
-            # Handle ordinal album requests (second, third album) or type-filtered requests (studio, live)
-            # Also handles tag-based filtering (christmas, holiday albums) and year-based requests
-            # When album is a direct name (same as query), skip this path and use standard search
-            album_is_direct_name = album and query and _strip_accents(album.lower()) == _strip_accents(query.lower())
-            album_is_tag = album and not album_is_direct_name  # e.g., "christmas", "holiday"
-            if artist and (album_ordinal or album_modifier or album_type_filter or album_is_tag or album_year):
-                _LOGGER.warning("MUSIC DEBUG: Album search - ordinal=%s, type='%s', artist='%s', album_tag='%s', year=%s",
-                               album_ordinal, album_type_filter, artist, album, album_year)
-
-                discography = []
-
-                # If album tag is specified (e.g., "christmas"), use MusicBrainz tag-based search
-                # This properly finds albums like "Wrapped in Red" tagged as christmas
-                if album:
-                    discography = await _search_albums_by_tag_musicbrainz(artist, album)
-
-                # If no results from tag search (or no album tag), get full discography
-                if not discography:
-                    discography = await _get_artist_discography_musicbrainz(artist, album_type_filter)
-
-                    # If we have a discography but also an album filter, try name matching as fallback
-                    # For holiday tags, use expanded keyword list to catch albums like "Wrapped in Red"
-                    # that don't have the holiday word in their title
-                    if discography and album:
-                        album_lower = album.lower()
-                        # Get expanded keywords for holiday searches
-                        name_keywords = _HOLIDAY_NAME_KEYWORDS.get(album_lower, [album_lower])
-                        filtered_discog = [
-                            d for d in discography
-                            if any(kw in _strip_accents(d["name"].lower()) for kw in name_keywords)
-                        ]
-                        if filtered_discog:
-                            _LOGGER.warning("MUSIC DEBUG: Name-filtered discography from %d to %d albums matching '%s' (keywords: %s)",
-                                           len(discography), len(filtered_discog), album, name_keywords)
-                            discography = filtered_discog
-                        else:
-                            _LOGGER.warning("MUSIC DEBUG: No albums matched name keywords %s - using full discography of %d albums (TAG SEARCH SHOULD HAVE FOUND RESULTS)",
-                                           name_keywords, len(discography))
-
-                # Filter by year if specified
-                if discography and album_year:
-                    year_filtered = [d for d in discography if d["year"] == album_year]
-                    if year_filtered:
-                        _LOGGER.warning("MUSIC DEBUG: Year-filtered discography from %d to %d albums from %d",
-                                       len(discography), len(year_filtered), album_year)
-                        discography = year_filtered
-
-                if not discography:
-                    error_parts = []
-                    if album:
-                        error_parts.append(album)
-                    if album_type_filter:
-                        error_parts.append(album_type_filter)
-                    if album_year:
-                        error_parts.append(str(album_year))
-                    qualifier = ' '.join(error_parts) + ' ' if error_parts else ''
-                    return {"error": f"Could not find {qualifier}albums by {artist}"}
-
-                # Select album based on ordinal or modifier
-                target_album_name = None
-                target_year = 0
-                if album_ordinal:
-                    if album_ordinal <= len(discography):
-                        target_album_name = discography[album_ordinal - 1]["name"]
-                        target_year = discography[album_ordinal - 1]["year"]
-                        _LOGGER.warning("MUSIC DEBUG: Selected ordinal #%d album: '%s' (%d)", album_ordinal, target_album_name, target_year)
-                    else:
-                        return {"error": f"{artist} only has {len(discography)} {album + ' ' if album else ''}albums"}
-                elif album_modifier == "latest":
-                    target_album_name = discography[-1]["name"]
-                    target_year = discography[-1]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: Selected latest album: '%s' (%d)", target_album_name, target_year)
-                elif album_modifier == "first":
-                    target_album_name = discography[0]["name"]
-                    target_year = discography[0]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: Selected first album: '%s' (%d)", target_album_name, target_year)
-                elif album_year and discography:
-                    # Year was specified, use the (first) album from that year
-                    target_album_name = discography[0]["name"]
-                    target_year = discography[0]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: Selected album from %d: '%s'", album_year, target_album_name)
-                elif discography:
-                    # No modifier specified, just use the most recent from the tag/type search
-                    target_album_name = discography[-1]["name"]
-                    target_year = discography[-1]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: No modifier, using most recent: '%s' (%d)", target_album_name, target_year)
-
-                if target_album_name:
-                    # Strip Unicode and punctuation for cleaner MA search
-                    # e.g., "When Christmas Comes Around…" → "When Christmas Comes Around"
-                    search_album_name = re.sub(r'[^\w\s]', '', _strip_accents(target_album_name)).strip()
-                    # Search Music Assistant for this specific album
-                    search_result = await self._hass.services.async_call(
-                        "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": f"{search_album_name} {artist}", "media_type": ["album"], "limit": 5},
-                        blocking=True, return_response=True
-                    )
-
-                    albums = _parse_ma_results(search_result, "album")
-
-                    # If no results, retry search with just album name (no artist)
-                    if not albums:
-                        _LOGGER.warning("MUSIC DEBUG: No MA results for '%s %s', retrying with album name only", search_album_name, artist)
-                        search_result = await self._hass.services.async_call(
-                            "music_assistant", "search",
-                            {"config_entry_id": ma_config_entry_id, "name": search_album_name, "media_type": ["album"], "limit": 5},
-                            blocking=True, return_response=True
-                        )
-                        albums = _parse_ma_results(search_result, "album")
-
-                    if albums:
-                        # Find best match - strip punctuation for comparison to handle
-                        # variations like "When Christmas Comes Around…" vs "When Christmas Comes Around"
-                        target_lower = re.sub(r'[^\w\s]', '', _strip_accents(target_album_name.lower())).strip()
-                        best_album = None
-                        for alb in albums:
-                            alb_name = re.sub(r'[^\w\s]', '', _strip_accents((alb.get("name") or alb.get("title") or "").lower())).strip()
-                            if target_lower in alb_name or alb_name in target_lower:
-                                best_album = alb
-                                break
-                        if best_album:
-                            found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
-                            found_uri = best_album.get("uri") or best_album.get("media_id")
-                            await self._play_on_players(target_players, found_uri, "album")
-                            return {"status": "playing", "response_text": f"Playing {found_name} by {artist} in the {room}"}
-
-                        _LOGGER.warning("MUSIC DEBUG: MA returned %d albums but none matched '%s': %s",
-                                       len(albums), target_album_name,
-                                       [alb.get("name") or alb.get("title") for alb in albums[:5]])
-
-                    return {"error": f"Found '{target_album_name}' in MusicBrainz but not in your music library"}
-
-                return {"error": f"Could not find {album + ' ' if album else ''}albums by {artist}"}
-
-            # Handle smart album search (latest/first album by artist)
-            if album_modifier and artist:
-                _LOGGER.warning("MUSIC DEBUG: Smart album search - modifier='%s', artist='%s', album_filter='%s'", album_modifier, artist, album)
-
-                # Search for albums by artist only
-                search_result = await self._hass.services.async_call(
-                    "music_assistant", "search",
-                    {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["album"], "limit": 20},
-                    blocking=True, return_response=True
-                )
-
-                albums = _parse_ma_results(search_result, "album")
-
-                if albums:
-                    artist_lower = artist.lower()
-                    matching_albums = [a for a in albums if artist_lower in _extract_artist(a, lowercase=True) or _extract_artist(a, lowercase=True) in artist_lower]
-                    _LOGGER.warning("MUSIC DEBUG: Found %d albums, %d match artist '%s'", len(albums), len(matching_albums), artist)
-
-                    # Filter by album name if specified (e.g., "christmas" for christmas albums)
-                    if album and matching_albums:
-                        album_filter = album.lower()
-                        filtered_albums = [
-                            a for a in matching_albums
-                            if album_filter in (a.get("name") or a.get("title") or "").lower()
-                        ]
-                        if filtered_albums:
-                            _LOGGER.warning("MUSIC DEBUG: Filtered %d albums to %d matching '%s'",
-                                        len(matching_albums), len(filtered_albums), album)
-                            matching_albums = filtered_albums
-                        else:
-                            _LOGGER.warning("MUSIC DEBUG: No albums matched filter '%s', using all %d albums by artist",
-                                           album, len(matching_albums))
-
-                    if matching_albums:
-                        # Sort by year (try multiple fields that MA might return)
-                        def get_year(alb):
-                            # Try various fields Music Assistant might use
-                            year = alb.get("year") or alb.get("release_date") or alb.get("date") or alb.get("release_year") or ""
-
-                            # Also check in metadata dict if present
-                            if not year and alb.get("metadata"):
-                                meta = alb["metadata"]
-                                year = meta.get("year") or meta.get("release_date") or ""
-
-                            if isinstance(year, str) and len(year) >= 4:
-                                try:
-                                    return int(year[:4])
-                                except ValueError:
-                                    return 0
-                            elif isinstance(year, int):
-                                return year
-                            return 0
-
-                        # Log available albums for debugging
-                        for alb in matching_albums[:5]:
-                            alb_name = alb.get("name") or alb.get("title")
-                            alb_year = get_year(alb)
-                            _LOGGER.warning("MUSIC DEBUG: Album candidate: '%s' (year: %s, raw: %s)",
-                                        alb_name, alb_year,
-                                        alb.get("year") or alb.get("release_date") or "unknown")
-
-                        albums_with_year = [(get_year(a), a) for a in matching_albums]
-
-                        # Check if all years are 0 (missing) - if so, use MusicBrainz to look up years
-                        if all(y == 0 for y, _ in albums_with_year):
-                            _LOGGER.warning("MUSIC DEBUG: All years are 0, querying MusicBrainz for release dates...")
-                            updated_albums = []
-                            for _, alb in albums_with_year:
-                                alb_name = alb.get("name") or alb.get("title") or ""
-                                mb_year = await _lookup_album_year_musicbrainz(alb_name, artist)
-                                updated_albums.append((mb_year, alb))
-                                if mb_year > 0:
-                                    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found year %d for '%s'", mb_year, alb_name)
-                            albums_with_year = updated_albums
-
-                        # Sort: albums with year=0 go to end, then sort by year (desc for latest, asc for first)
-                        albums_with_year.sort(key=lambda x: (x[0] == 0, -x[0] if album_modifier == "latest" else x[0]))
-
-                        if albums_with_year:
-                            best_album = albums_with_year[0][1]
-                            found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
-                            found_uri = best_album.get("uri") or best_album.get("media_id")
-                            found_artist = artist
-                            found_type = "album"
-
-                            year = albums_with_year[0][0]
-                            _LOGGER.warning("MUSIC DEBUG: Selected %s album: '%s' (year: %d) by '%s'", album_modifier, found_name, year, found_artist)
-
-                            await self._play_on_players(target_players, found_uri, "album")
-                            return {"status": "playing", "response_text": f"Playing {found_name} by {found_artist} in the {room}"}
-
-                return {"error": f"Could not find albums by {artist}"}
-
-            # Standard search (non-modifier path)
+            # Standard search
             # For albums with artist, search by album name alone first (not concatenated)
             # to avoid confusing Music Assistant's search with combined strings.
             # Artist matching is handled by the scoring function below.
