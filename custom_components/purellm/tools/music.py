@@ -482,6 +482,7 @@ class MusicController:
         artist = arguments.get("artist", "")
         album = arguments.get("album", "")
         song_on_album = arguments.get("song_on_album", "")
+        ordinal = arguments.get("ordinal")  # 1=first, 2=second, -1=latest, etc.
 
         # DEBUG: Log raw arguments received from LLM
         _LOGGER.warning("MUSIC DEBUG: Raw arguments from LLM: %s", arguments)
@@ -539,7 +540,7 @@ class MusicController:
             target_players = self._find_target_players(room)
 
             if action == "play":
-                return await self._play(query, media_type, room, shuffle, target_players, artist, album, song_on_album)
+                return await self._play(query, media_type, room, shuffle, target_players, artist, album, song_on_album, ordinal)
             elif action == "pause":
                 return await self._pause(all_players, target_players if target_players else None)
             elif action == "resume":
@@ -730,7 +731,7 @@ class MusicController:
                 "media_player", service, {},
                 target={"entity_id": entity_id}, blocking=True)
 
-    async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "", song_on_album: str = "") -> dict:
+    async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "", song_on_album: str = "", ordinal: int | None = None) -> dict:
         """Play music via Music Assistant with search-first for accuracy.
 
         Searches Music Assistant first to find the exact track/album/artist,
@@ -794,18 +795,31 @@ class MusicController:
         first_keywords = ["first", "oldest", "debut", "earliest"]
 
         if media_type == "album":
-            # Check for ordinals (second, third, etc.)
-            for ordinal_word, ordinal_num in ORDINALS.items():
-                if ordinal_word in query_lower:
-                    if ordinal_word in ("first", "1st"):
-                        album_modifier = "first"
-                        _LOGGER.info("Detected album modifier: 'first' (ordinal)")
-                    else:
-                        album_ordinal = ordinal_num
-                        _LOGGER.info("Detected album ordinal: %d (keyword: %s)", ordinal_num, ordinal_word)
-                    break
+            # Priority 1: Explicit ordinal parameter from LLM (most reliable)
+            if ordinal is not None:
+                if ordinal == -1:
+                    album_modifier = "latest"
+                    _LOGGER.info("Detected album modifier: 'latest' (ordinal param=%d)", ordinal)
+                elif ordinal == 1:
+                    album_ordinal = 1
+                    _LOGGER.info("Detected album ordinal: 1 (ordinal param)")
+                elif ordinal >= 2:
+                    album_ordinal = ordinal
+                    _LOGGER.info("Detected album ordinal: %d (ordinal param)", ordinal)
 
-            # Check for latest/first keywords (if not already set by ordinal)
+            # Priority 2: Fallback - parse ordinals from query string
+            if not album_modifier and not album_ordinal:
+                for ordinal_word, ordinal_num in ORDINALS.items():
+                    if ordinal_word in query_lower:
+                        if ordinal_word in ("first", "1st"):
+                            album_ordinal = 1
+                            _LOGGER.info("Detected album ordinal: 1 (keyword: %s)", ordinal_word)
+                        else:
+                            album_ordinal = ordinal_num
+                            _LOGGER.info("Detected album ordinal: %d (keyword: %s)", ordinal_num, ordinal_word)
+                        break
+
+            # Check for latest/first keywords (if not already set)
             if not album_modifier and not album_ordinal:
                 for kw in latest_keywords:
                     if kw in query_lower:
@@ -826,6 +840,15 @@ class MusicController:
                     _LOGGER.info("Detected album type filter: '%s' (keyword: %s)", type_value, type_keyword)
                     break
 
+            # Also check album param for type keywords (LLM may put "studio" in album)
+            if not album_type_filter and album:
+                album_lower_check = album.lower()
+                for type_keyword, type_value in ALBUM_TYPE_KEYWORDS.items():
+                    if type_keyword == album_lower_check:
+                        album_type_filter = type_value
+                        _LOGGER.info("Detected album type filter from album param: '%s'", type_value)
+                        break
+
             # Check for year-based album requests (e.g., "2020 album", "album from 2019")
             album_year = None
             year_patterns = [
@@ -839,6 +862,24 @@ class MusicController:
                     album_year = int(match.group(1))
                     _LOGGER.info("Detected album year: %d", album_year)
                     break
+
+            # Defensive: if ordinal/modifier is set but album looks like a hallucinated
+            # album name (>2 words), extract the genre tag from album or clear it
+            if (album_ordinal or album_modifier) and album and len(album.split()) > 2:
+                _LOGGER.warning("MUSIC DEBUG: album param '%s' looks hallucinated for ordinal request, clearing", album)
+                # Check if album contains a known tag we can extract
+                album_check = album.lower()
+                extracted_tag = None
+                for hk in _HOLIDAY_QUERY_KEYWORDS:
+                    if hk in album_check:
+                        extracted_tag = "christmas" if hk in ("holiday", "xmas") else hk
+                        break
+                if not extracted_tag:
+                    for type_kw in ALBUM_TYPE_KEYWORDS:
+                        if type_kw in album_check:
+                            extracted_tag = type_kw
+                            break
+                album = extracted_tag or ""
 
         try:
             # Get Music Assistant config entry
@@ -936,7 +977,7 @@ class MusicController:
             # When album is a direct name (same as query), skip this path and use standard search
             album_is_direct_name = album and query and _strip_accents(album.lower()) == _strip_accents(query.lower())
             album_is_tag = album and not album_is_direct_name  # e.g., "christmas", "holiday"
-            if artist and (album_ordinal or album_type_filter or album_is_tag or album_year):
+            if artist and (album_ordinal or album_modifier or album_type_filter or album_is_tag or album_year):
                 _LOGGER.warning("MUSIC DEBUG: Album search - ordinal=%s, type='%s', artist='%s', album_tag='%s', year=%s",
                                album_ordinal, album_type_filter, artist, album, album_year)
 
