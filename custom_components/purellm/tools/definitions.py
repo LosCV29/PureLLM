@@ -1,4 +1,4 @@
-"""Tool definitions builder for PolyVoice.
+"""Tool definitions builder for PureLLM.
 
 This module provides a helper function to build tool definitions
 based on enabled features. Uses a cleaner factory pattern instead
