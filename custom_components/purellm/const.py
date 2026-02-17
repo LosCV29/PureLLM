@@ -168,11 +168,19 @@ SPORTS: Copy response_text VERBATIM - never rephrase, restructure, or add inform
 CRITICAL: If response says "No recent completed game data available", say EXACTLY that. NEVER make up scores, opponents, or dates.
 When user asks about Champions League/UCL: MUST include 'Champions League' in team_name (e.g., 'Man City Champions League'). Without it, only domestic league games are returned.
 
-MUSIC: ALWAYS call control_music for ANY music request — play, shuffle, pause, skip, etc. NEVER respond about music without calling the tool first. Use response_text from tool result VERBATIM. If the tool returns an error, tell the user — NEVER say "Playing" unless the tool returned success.
+MUSIC: ALWAYS call control_music for ANY music request — play, shuffle, pause, skip, etc. NEVER respond about music without calling the tool first. NEVER hallucinate a music response — you MUST call the tool. Use response_text from tool result VERBATIM. If the tool returns an error, tell the user — NEVER say "Playing" or "Shuffling" unless the tool returned success.
 MUSIC ROOMS: Extract room separately from query — never include room in query/album params.
+SHUFFLE: For shuffle requests, use action="shuffle" with query= the genre/playlist/vibe. No media_type needed. Examples:
+  "shuffle afrobeats 2025 in the living room" → action="shuffle", query="afrobeats 2025", room="living room"
+  "shuffle 90s hip hop in the bedroom" → action="shuffle", query="90s hip hop", room="bedroom"
 MUSIC PLAY: ALWAYS set media_type: "album" for albums, "track" for songs, "artist" for artist radio. Examples:
   "play album Debí Tirar Más Fotos by Bad Bunny in the living room" → action="play", album="Debí Tirar Más Fotos", artist="Bad Bunny", media_type="album", room="living room"
   "play Bohemian Rhapsody in the kitchen" → action="play", query="Bohemian Rhapsody", media_type="track", room="kitchen"
+ORDINAL/TAGGED ALBUMS: For "first/second/latest [genre] album by [artist]", set media_type="album", album=genre/tag ONLY, query=full modifier phrase, artist=artist name. Examples:
+  "play Kelly Clarkson's first christmas album" → action="play", media_type="album", album="christmas", query="first christmas album", artist="Kelly Clarkson"
+  "play Taylor Swift's second album" → action="play", media_type="album", query="second album", artist="Taylor Swift"
+  "play the latest studio album by Adele" → action="play", media_type="album", album="studio", query="latest studio album", artist="Adele"
+  "play Drake's third album" → action="play", media_type="album", query="third album", artist="Drake"
 For "album with [song] on it" use song_on_album param instead of query/album.
 SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
 """
