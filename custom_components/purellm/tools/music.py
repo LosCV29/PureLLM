@@ -322,34 +322,6 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
     return discography
 
 
-# Ordinal number mapping
-ORDINALS = {
-    "first": 1, "1st": 1,
-    "second": 2, "2nd": 2,
-    "third": 3, "3rd": 3,
-    "fourth": 4, "4th": 4,
-    "fifth": 5, "5th": 5,
-    "sixth": 6, "6th": 6,
-    "seventh": 7, "7th": 7,
-    "eighth": 8, "8th": 8,
-    "ninth": 9, "9th": 9,
-    "tenth": 10, "10th": 10,
-}
-
-# Album type keywords mapping
-ALBUM_TYPE_KEYWORDS = {
-    "studio": "studio",
-    "live": "live",
-    "concert": "live",
-    "compilation": "compilation",
-    "greatest hits": "compilation",
-    "best of": "compilation",
-    "hits": "compilation",
-    "soundtrack": "soundtrack",
-    "ost": "soundtrack",
-    "ep": "ep",
-}
-
 # Broadway cast recording keywords - used to EXCLUDE these from movie soundtrack searches
 BROADWAY_KEYWORDS = [
     "broadway cast",
@@ -863,6 +835,67 @@ class MusicController:
                                     return {"status": "playing", "response_text": f"Playing {found_album_name} by {found_artist} in the {room}"}
 
                 return {"error": f"Could not find album containing '{song_on_album}'" + (f" by {artist}" if artist else "")}
+
+            # Handle tagged album requests (e.g., "christmas album by Kelly Clarkson")
+            # When album is a tag like "christmas" (not a direct album name), use MusicBrainz
+            # to find the actual album name, then search MA for it
+            album_is_direct_name = album and query and _strip_accents(album.lower()) == _strip_accents(query.lower())
+            album_is_tag = album and not album_is_direct_name
+            if artist and album_is_tag and media_type == "album":
+                _LOGGER.warning("MUSIC DEBUG: Tag-based album search - artist='%s', tag='%s'", artist, album)
+
+                mb_albums = await _search_albums_by_tag_musicbrainz(artist, album)
+
+                if not mb_albums:
+                    # Fallback: try full discography + name filtering
+                    mb_albums = await _get_artist_discography_musicbrainz(artist)
+                    if mb_albums and album:
+                        album_lower = album.lower()
+                        name_keywords = _HOLIDAY_NAME_KEYWORDS.get(album_lower, [album_lower])
+                        filtered = [d for d in mb_albums if any(kw in _strip_accents(d["name"].lower()) for kw in name_keywords)]
+                        if filtered:
+                            mb_albums = filtered
+
+                if mb_albums:
+                    # Use the most recent tagged album
+                    target_album_name = mb_albums[-1]["name"]
+                    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found tagged album: '%s' by '%s'", target_album_name, artist)
+
+                    # Strip unicode/punctuation for cleaner MA search
+                    search_album_name = re.sub(r'[^\w\s]', '', _strip_accents(target_album_name)).strip()
+
+                    search_result = await self._hass.services.async_call(
+                        "music_assistant", "search",
+                        {"config_entry_id": ma_config_entry_id, "name": f"{search_album_name} {artist}", "media_type": ["album"], "limit": 5},
+                        blocking=True, return_response=True
+                    )
+                    ma_albums = _parse_ma_results(search_result, "album")
+
+                    if not ma_albums:
+                        # Retry with just album name
+                        search_result = await self._hass.services.async_call(
+                            "music_assistant", "search",
+                            {"config_entry_id": ma_config_entry_id, "name": search_album_name, "media_type": ["album"], "limit": 5},
+                            blocking=True, return_response=True
+                        )
+                        ma_albums = _parse_ma_results(search_result, "album")
+
+                    if ma_albums:
+                        target_lower = re.sub(r'[^\w\s]', '', _strip_accents(target_album_name.lower())).strip()
+                        best_album = None
+                        for alb in ma_albums:
+                            alb_name = re.sub(r'[^\w\s]', '', _strip_accents((alb.get("name") or alb.get("title") or "").lower())).strip()
+                            if target_lower in alb_name or alb_name in target_lower:
+                                best_album = alb
+                                break
+                        if best_album:
+                            found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
+                            found_uri = best_album.get("uri") or best_album.get("media_id")
+                            await self._play_on_players(target_players, found_uri, "album")
+                            return {"status": "playing", "response_text": f"Playing {found_name} by {artist} in the {room}"}
+
+                    # MusicBrainz found it but not in MA - fall through to standard search
+                    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found '%s' but not in MA, falling through to standard search", target_album_name)
 
             # Standard search
             # For albums with artist, search by album name alone first (not concatenated)
