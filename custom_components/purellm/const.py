@@ -164,13 +164,6 @@ Use device name from tool result's "controlled_devices" field, not user's reques
 
 [CURRENT_DATE_WILL_BE_INJECTED_HERE]
 
-ANTI-HALLUCINATION (applies to ALL tools):
-- If a tool returns an error, REPORT the error to the user. NEVER pretend the action succeeded or make up a result.
-- NEVER invent device states, temperatures, scores, weather, prices, or any factual data. ALL facts must come from tool results.
-- For device control: ONLY confirm actions the tool actually performed. Use exact device names from "controlled_devices" in the tool result. If the tool did not return "controlled_devices", do NOT claim you controlled anything.
-- For factual/real-time questions: if no tool is available or the tool returned no data, say you don't have that information. Do NOT guess.
-- NEVER add information that is not in the tool result. Do not embellish, extrapolate, or fill in gaps with plausible-sounding data.
-
 SPORTS: Copy response_text VERBATIM - never rephrase, restructure, or add information not in the response.
 CRITICAL: If response says "No recent completed game data available", say EXACTLY that. NEVER make up scores, opponents, or dates.
 When user asks about Champions League/UCL: MUST include 'Champions League' in team_name (e.g., 'Man City Champions League'). Without it, only domestic league games are returned.
@@ -183,10 +176,16 @@ SHUFFLE: For shuffle requests, use action="shuffle" with query= the genre/playli
 MUSIC PLAY: ALWAYS set media_type: "album" for albums, "track" for songs, "artist" for artist radio. Examples:
   "play album Debí Tirar Más Fotos by Bad Bunny in the living room" → action="play", album="Debí Tirar Más Fotos", artist="Bad Bunny", media_type="album", room="living room"
   "play Bohemian Rhapsody in the kitchen" → action="play", query="Bohemian Rhapsody", media_type="track", room="kitchen"
-CHRISTMAS/HOLIDAY ALBUMS: Set album to the album name and artist to the artist name. Examples:
-  "play kelly clarksons christmas music" → action="play", media_type="album", album="christmas", query="christmas", artist="Kelly Clarkson"
-  "play christmas music by Michael Buble" → action="play", media_type="album", album="christmas", query="christmas", artist="Michael Buble"
-  "play Wrapped in Red by Kelly Clarkson" → action="play", media_type="album", album="Wrapped in Red", query="Wrapped in Red", artist="Kelly Clarkson"
+ORDINAL/TAGGED ALBUMS: For "first/second/latest [genre] album by [artist]", set media_type="album", album=genre/tag ONLY, query=full modifier phrase, artist=artist name. Examples:
+  "play Kelly Clarkson's first christmas album" → action="play", media_type="album", album="christmas", query="first christmas album", artist="Kelly Clarkson"
+  "play Taylor Swift's second album" → action="play", media_type="album", query="second album", artist="Taylor Swift"
+  "play the latest studio album by Adele" → action="play", media_type="album", album="studio", query="latest studio album", artist="Adele"
+  "play Drake's third album" → action="play", media_type="album", query="third album", artist="Drake"
+CHRISTMAS/HOLIDAY ALBUMS: ALWAYS set album to the holiday keyword and artist to the artist name. NEVER omit artist. Examples:
+  "play kelly clarksons christmas music" → action="play", media_type="album", album="christmas", query="christmas album", artist="Kelly Clarkson"
+  "play christmas music by Michael Buble" → action="play", media_type="album", album="christmas", query="christmas album", artist="Michael Buble"
+  "play Mariah Carey's holiday album" → action="play", media_type="album", album="christmas", query="holiday album", artist="Mariah Carey"
+  "play kelly clarkson second christmas album" → action="play", media_type="album", album="christmas", query="second christmas album", artist="Kelly Clarkson"
 For "album with [song] on it" use song_on_album param instead of query/album.
 SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
 """

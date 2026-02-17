@@ -949,12 +949,6 @@ class PureLLMConversationEntity(ConversationEntity):
                     else:
                         resp_content = json.dumps(result, ensure_ascii=False)
 
-                    # Anti-hallucination: inject system warnings based on tool outcome
-                    if isinstance(result, dict) and "error" in result:
-                        resp_content += "\n\n[SYSTEM: This tool returned an error. Report the error to the user. Do NOT pretend the action succeeded.]"
-                    else:
-                        resp_content += "\n\n[SYSTEM: Use ONLY the data above in your response. Do not add, invent, or embellish any facts not present in this result.]"
-
                     function_responses.append({
                         "functionResponse": {"name": fc["name"], "response": {"result": resp_content}}
                     })
@@ -1143,12 +1137,6 @@ class PureLLMConversationEntity(ConversationEntity):
                             content = result["response_text"]
                         else:
                             content = json.dumps(result, ensure_ascii=False)
-
-                        # Anti-hallucination: inject system warnings based on tool outcome
-                        if isinstance(result, dict) and "error" in result:
-                            content += "\n\n[SYSTEM: This tool returned an error. Report the error to the user. Do NOT pretend the action succeeded.]"
-                        else:
-                            content += "\n\n[SYSTEM: Use ONLY the data above in your response. Do not add, invent, or embellish any facts not present in this result.]"
 
                         _LOGGER.debug("Tool result for %s: %s", tool_call["function"]["name"], content[:200])
 
