@@ -1019,8 +1019,9 @@ class MusicController:
                     _LOGGER.warning("MUSIC DEBUG: No modifier, using most recent: '%s' (%d)", target_album_name, target_year)
 
                 if target_album_name:
-                    # Normalize the album name for searching (e.g., "…" → "...")
-                    search_album_name = _strip_accents(target_album_name)
+                    # Strip Unicode and punctuation for cleaner MA search
+                    # e.g., "When Christmas Comes Around…" → "When Christmas Comes Around"
+                    search_album_name = re.sub(r'[^\w\s]', '', _strip_accents(target_album_name)).strip()
                     # Search Music Assistant for this specific album
                     search_result = await self._hass.services.async_call(
                         "music_assistant", "search",
@@ -1029,6 +1030,17 @@ class MusicController:
                     )
 
                     albums = _parse_ma_results(search_result, "album")
+
+                    # If no results, retry search with just album name (no artist)
+                    if not albums:
+                        _LOGGER.warning("MUSIC DEBUG: No MA results for '%s %s', retrying with album name only", search_album_name, artist)
+                        search_result = await self._hass.services.async_call(
+                            "music_assistant", "search",
+                            {"config_entry_id": ma_config_entry_id, "name": search_album_name, "media_type": ["album"], "limit": 5},
+                            blocking=True, return_response=True
+                        )
+                        albums = _parse_ma_results(search_result, "album")
+
                     if albums:
                         # Find best match - strip punctuation for comparison to handle
                         # variations like "When Christmas Comes Around…" vs "When Christmas Comes Around"
@@ -1039,13 +1051,15 @@ class MusicController:
                             if target_lower in alb_name or alb_name in target_lower:
                                 best_album = alb
                                 break
-                        if not best_album:
-                            best_album = albums[0]
+                        if best_album:
+                            found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
+                            found_uri = best_album.get("uri") or best_album.get("media_id")
+                            await self._play_on_players(target_players, found_uri, "album")
+                            return {"status": "playing", "response_text": f"Playing {found_name} by {artist} in the {room}"}
 
-                        found_name = _normalize_unicode(best_album.get("name") or best_album.get("title"))
-                        found_uri = best_album.get("uri") or best_album.get("media_id")
-                        await self._play_on_players(target_players, found_uri, "album")
-                        return {"status": "playing", "response_text": f"Playing {found_name} by {artist} in the {room}"}
+                        _LOGGER.warning("MUSIC DEBUG: MA returned %d albums but none matched '%s': %s",
+                                       len(albums), target_album_name,
+                                       [alb.get("name") or alb.get("title") for alb in albums[:5]])
 
                     return {"error": f"Found '{target_album_name}' in MusicBrainz but not in your music library"}
 
