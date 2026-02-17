@@ -5,6 +5,7 @@ import asyncio
 import codecs
 import logging
 import re
+import time
 import unicodedata
 import aiohttp
 from datetime import datetime
@@ -20,27 +21,95 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Shared MusicBrainz constants
+# ---------------------------------------------------------------------------
+# MusicBrainz API infrastructure
+# ---------------------------------------------------------------------------
 _MB_HEADERS = {"User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"}
 _MB_BASE = "https://musicbrainz.org/ws/2"
 
+# Rate limiter: MusicBrainz enforces max 1 request/sec.  Exceeding this
+# causes ALL requests to be rejected (503) until the rate drops back.
+_mb_rate_lock = asyncio.Lock()
+_mb_last_request_time: float = 0.0
 
-async def _musicbrainz_get(endpoint: str, params: dict, timeout: float = 5) -> dict | None:
-    """Make a GET request to MusicBrainz API. Returns JSON data or None."""
-    try:
-        params["fmt"] = "json"
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{_MB_BASE}/{endpoint}", params=params,
-                headers=_MB_HEADERS, timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as response:
-                if response.status == 200:
-                    return await response.json()
-                _LOGGER.debug("MusicBrainz API returned status %d", response.status)
-    except asyncio.TimeoutError:
-        _LOGGER.debug("MusicBrainz request timed out: %s", endpoint)
-    except Exception as e:
-        _LOGGER.debug("MusicBrainz request failed: %s %s", endpoint, e)
+# Simple in-memory caches (cleared on HA restart)
+_mb_artist_id_cache: dict[str, str | None] = {}  # artist name -> MBID
+
+
+def _escape_lucene(value: str) -> str:
+    """Escape special characters for MusicBrainz Lucene queries.
+
+    MusicBrainz uses Lucene query syntax.  Characters like +, -, &&, ||,
+    !, (, ), {, }, [, ], ^, ", ~, *, ?, :, \\ and / have special meaning
+    and must be escaped with a backslash when used literally.
+    """
+    # Characters that need escaping in Lucene
+    specials = r'+-&&||!(){}[]^"~*?:\/'
+    out: list[str] = []
+    i = 0
+    while i < len(value):
+        ch = value[i]
+        # Two-char operators: && ||
+        if i + 1 < len(value) and value[i:i+2] in ("&&", "||"):
+            out.append(f"\\{value[i]}\\{value[i+1]}")
+            i += 2
+            continue
+        if ch in specials:
+            out.append(f"\\{ch}")
+        else:
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+async def _mb_rate_limit() -> None:
+    """Enforce MusicBrainz rate limit of 1 request per second."""
+    global _mb_last_request_time
+    async with _mb_rate_lock:
+        now = time.monotonic()
+        elapsed = now - _mb_last_request_time
+        if elapsed < 1.1:
+            wait = 1.1 - elapsed
+            _LOGGER.debug("MusicBrainz rate limit: waiting %.2fs", wait)
+            await asyncio.sleep(wait)
+        _mb_last_request_time = time.monotonic()
+
+
+async def _musicbrainz_get(endpoint: str, params: dict, timeout: float = 8) -> dict | None:
+    """Make a rate-limited GET request to MusicBrainz with retry on 503.
+
+    - Enforces 1 req/sec via _mb_rate_limit()
+    - Retries up to 3 times on 503 (rate-limited) with exponential backoff
+    - Returns parsed JSON or None on failure
+    """
+    params["fmt"] = "json"
+    max_retries = 3
+
+    for attempt in range(max_retries + 1):
+        await _mb_rate_limit()
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{_MB_BASE}/{endpoint}", params=params,
+                    headers=_MB_HEADERS, timeout=aiohttp.ClientTimeout(total=timeout)
+                ) as response:
+                    if response.status == 200:
+                        return await response.json()
+                    if response.status == 503 and attempt < max_retries:
+                        wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                        _LOGGER.debug("MusicBrainz 503 (rate-limited), retry %d/%d in %ds",
+                                     attempt + 1, max_retries, wait)
+                        await asyncio.sleep(wait)
+                        continue
+                    _LOGGER.debug("MusicBrainz API returned status %d for %s", response.status, endpoint)
+        except asyncio.TimeoutError:
+            _LOGGER.debug("MusicBrainz request timed out: %s (attempt %d)", endpoint, attempt + 1)
+            if attempt < max_retries:
+                await asyncio.sleep(2 ** attempt)
+                continue
+        except Exception as e:
+            _LOGGER.debug("MusicBrainz request failed: %s %s", endpoint, e)
+            break
     return None
 
 
@@ -139,7 +208,7 @@ async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> i
     clean_album = re.sub(r'\s*[-–].*?(edition|version|deluxe|remaster).*$', '', clean_album, flags=re.IGNORECASE).strip()
 
     data = await _musicbrainz_get("release-group", {
-        "query": f'releasegroup:"{clean_album}" AND artist:"{artist_name}"',
+        "query": f'releasegroup:"{_escape_lucene(clean_album)}" AND artist:"{_escape_lucene(artist_name)}"',
         "limit": 5,
     })
     if not data:
@@ -243,24 +312,20 @@ async def _search_albums_by_tag_musicbrainz(artist_name: str, tag: str) -> list[
     tag_variations = _HOLIDAY_TAG_VARIATIONS.get(tag.lower(), [tag])
     for tag_variant in tag_variations:
         data = await _musicbrainz_get("release-group", {
-            "query": f'artist:"{artist_name}" AND tag:"{tag_variant}"',
+            "query": f'artist:"{_escape_lucene(artist_name)}" AND tag:"{_escape_lucene(tag_variant)}"',
             "limit": 25,
         }, timeout=10)
         if data:
             for rg in data.get("release-groups", []):
                 _add_album(rg)
-        # MusicBrainz rate limit - brief pause between queries
-        if tag_variant != tag_variations[-1]:
-            await asyncio.sleep(0.5)
 
     # Strategy 2: Name-based search - find albums with holiday keywords in the title
     # This catches albums like "Merry Christmas" or "Christmas Isn't Canceled"
     name_keywords = _HOLIDAY_NAME_KEYWORDS.get(tag.lower(), [tag])
     # Only use the primary keyword for name search to avoid too many API calls
     primary_keyword = name_keywords[0] if name_keywords else tag
-    await asyncio.sleep(0.5)
     name_data = await _musicbrainz_get("release-group", {
-        "query": f'artist:"{artist_name}" AND releasegroup:"{primary_keyword}"',
+        "query": f'artist:"{_escape_lucene(artist_name)}" AND releasegroup:"{_escape_lucene(primary_keyword)}"',
         "limit": 25,
     }, timeout=10)
     if name_data:
@@ -268,28 +333,35 @@ async def _search_albums_by_tag_musicbrainz(artist_name: str, tag: str) -> list[
             _add_album(rg)
 
     albums.sort(key=lambda x: (x["year"] == 0, x["year"]))
-    _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag search for '%s' + tag:'%s' found %d albums (tags: %s)",
+    _LOGGER.debug("MUSIC: MusicBrainz tag search for '%s' + tag:'%s' found %d albums (tags: %s)",
                    artist_name, tag, len(albums), tag_variations)
     for i, alb in enumerate(albums[:10]):
-        _LOGGER.warning("MUSIC DEBUG: MusicBrainz tag [%d] '%s' (%d)", i+1, alb["name"], alb["year"])
+        _LOGGER.debug("MUSIC: MusicBrainz tag [%d] '%s' (%d)", i+1, alb["name"], alb["year"])
     return albums
 
 
 async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str = None) -> list[dict]:
     """Get artist's discography from MusicBrainz with album types and years."""
-    # First, find the artist ID
-    artist_data = await _musicbrainz_get("artist", {
-        "query": f'artist:"{artist_name}"', "limit": 1,
-    })
-    if not artist_data:
-        return []
-    artists = artist_data.get("artists", [])
-    if not artists or not artists[0].get("id"):
-        return []
-    artist_id = artists[0]["id"]
-
-    # MusicBrainz rate limit
-    await asyncio.sleep(1)
+    # First, find the artist ID (with cache)
+    cache_key = artist_name.lower().strip()
+    if cache_key in _mb_artist_id_cache:
+        artist_id = _mb_artist_id_cache[cache_key]
+        if artist_id is None:
+            return []
+        _LOGGER.debug("MusicBrainz artist ID cache hit: '%s' -> %s", artist_name, artist_id)
+    else:
+        artist_data = await _musicbrainz_get("artist", {
+            "query": f'artist:"{_escape_lucene(artist_name)}"', "limit": 1,
+        })
+        if not artist_data:
+            _mb_artist_id_cache[cache_key] = None
+            return []
+        artists = artist_data.get("artists", [])
+        if not artists or not artists[0].get("id"):
+            _mb_artist_id_cache[cache_key] = None
+            return []
+        artist_id = artists[0]["id"]
+        _mb_artist_id_cache[cache_key] = artist_id
 
     # Get artist's release groups
     data = await _musicbrainz_get("release-group", {
@@ -338,11 +410,11 @@ async def _get_artist_discography_musicbrainz(artist_name: str, album_type: str 
         })
 
     discography.sort(key=lambda x: (x["year"] == 0, x["year"]))
-    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found %d albums for '%s'%s",
+    _LOGGER.debug("MUSIC: MusicBrainz found %d albums for '%s'%s",
                 len(discography), artist_name,
                 f" (filtered by {album_type})" if album_type else "")
     for i, alb in enumerate(discography[:10]):
-        _LOGGER.warning("MUSIC DEBUG: MusicBrainz [%d] '%s' (%d) - type: %s%s",
+        _LOGGER.debug("MUSIC: MusicBrainz [%d] '%s' (%d) - type: %s%s",
                        i+1, alb["name"], alb["year"], alb["primary_type"],
                        f" + {alb['secondary_types']}" if alb["secondary_types"] else "")
     return discography
@@ -506,8 +578,8 @@ class MusicController:
         song_on_album = arguments.get("song_on_album", "")
 
         # DEBUG: Log raw arguments received from LLM
-        _LOGGER.warning("MUSIC DEBUG: Raw arguments from LLM: %s", arguments)
-        _LOGGER.warning("MUSIC DEBUG: Extracted - action='%s', query='%s', room='%s'", action, query, room)
+        _LOGGER.debug("MUSIC: Raw arguments from LLM: %s", arguments)
+        _LOGGER.debug("MUSIC: Extracted - action='%s', query='%s', room='%s'", action, query, room)
 
         # DEFENSIVE: ALWAYS strip room phrases from query - LLM often includes them
         # This handles cases like query="Young Dolph in the living room"
@@ -517,23 +589,23 @@ class MusicController:
             # Use word boundary matching for multi-word rooms
             room_strip_pattern = r'\s+in\s+the\s+(.+?)\s*$'
             match = re.search(room_strip_pattern, query, flags=re.IGNORECASE)
-            _LOGGER.warning("MUSIC DEBUG: Regex match on query='%s': %s", query, match)
+            _LOGGER.debug("MUSIC: Regex match on query='%s': %s", query, match)
             if match:
                 potential_room = match.group(1).lower().strip()
-                _LOGGER.warning("MUSIC DEBUG: Potential room extracted: '%s'", potential_room)
+                _LOGGER.debug("MUSIC: Potential room extracted: '%s'", potential_room)
                 configured_rooms = {r.lower() for r in self._players.keys()}
                 all_known_rooms = COMMON_ROOM_NAMES | configured_rooms
-                _LOGGER.warning("MUSIC DEBUG: Configured rooms: %s", configured_rooms)
-                _LOGGER.warning("MUSIC DEBUG: Is '%s' in known rooms? %s", potential_room, potential_room in all_known_rooms)
+                _LOGGER.debug("MUSIC: Configured rooms: %s", configured_rooms)
+                _LOGGER.debug("MUSIC: Is '%s' in known rooms? %s", potential_room, potential_room in all_known_rooms)
 
                 if potential_room in all_known_rooms or any(potential_room in r or r in potential_room for r in all_known_rooms):
                     original_query = query
                     query = re.sub(room_strip_pattern, '', query, flags=re.IGNORECASE).strip()
                     if not room:
                         room = potential_room
-                    _LOGGER.warning("MUSIC DEBUG: Stripped room - query='%s' → '%s', room='%s'", original_query, query, room)
+                    _LOGGER.debug("MUSIC: Stripped room - query='%s' → '%s', room='%s'", original_query, query, room)
 
-        _LOGGER.warning("MUSIC DEBUG: Final - action='%s', query='%s', room='%s'", action, query, room)
+        _LOGGER.debug("MUSIC: Final - action='%s', query='%s', room='%s'", action, query, room)
 
         all_players = list(self._players.values())
 
@@ -803,7 +875,7 @@ class MusicController:
                         # album is empty or album==query (meaning LLM didn't separate the tag)
                         # Map "holiday" → "christmas" since that's the MusicBrainz tag
                         album = "christmas" if hk in ("holiday", "xmas") else hk
-                        _LOGGER.warning("MUSIC DEBUG: Defensive holiday detection - set album='%s' from query keyword '%s'", album, hk)
+                        _LOGGER.debug("MUSIC: Defensive holiday detection - set album='%s' from query keyword '%s'", album, hk)
                     break
 
         # Detect smart album modifiers
@@ -959,7 +1031,7 @@ class MusicController:
             album_is_direct_name = album and query and _strip_accents(album.lower()) == _strip_accents(query.lower())
             album_is_tag = album and not album_is_direct_name  # e.g., "christmas", "holiday"
             if artist and (album_ordinal or album_type_filter or album_is_tag or album_year):
-                _LOGGER.warning("MUSIC DEBUG: Album search - ordinal=%s, type='%s', artist='%s', album_tag='%s', year=%s",
+                _LOGGER.debug("MUSIC: Album search - ordinal=%s, type='%s', artist='%s', album_tag='%s', year=%s",
                                album_ordinal, album_type_filter, artist, album, album_year)
 
                 discography = []
@@ -985,18 +1057,18 @@ class MusicController:
                             if any(kw in _strip_accents(d["name"].lower()) for kw in name_keywords)
                         ]
                         if filtered_discog:
-                            _LOGGER.warning("MUSIC DEBUG: Name-filtered discography from %d to %d albums matching '%s' (keywords: %s)",
+                            _LOGGER.debug("MUSIC: Name-filtered discography from %d to %d albums matching '%s' (keywords: %s)",
                                            len(discography), len(filtered_discog), album, name_keywords)
                             discography = filtered_discog
                         else:
-                            _LOGGER.warning("MUSIC DEBUG: No albums matched name keywords %s - using full discography of %d albums (TAG SEARCH SHOULD HAVE FOUND RESULTS)",
+                            _LOGGER.debug("MUSIC: No albums matched name keywords %s - using full discography of %d albums (TAG SEARCH SHOULD HAVE FOUND RESULTS)",
                                            name_keywords, len(discography))
 
                 # Filter by year if specified
                 if discography and album_year:
                     year_filtered = [d for d in discography if d["year"] == album_year]
                     if year_filtered:
-                        _LOGGER.warning("MUSIC DEBUG: Year-filtered discography from %d to %d albums from %d",
+                        _LOGGER.debug("MUSIC: Year-filtered discography from %d to %d albums from %d",
                                        len(discography), len(year_filtered), album_year)
                         discography = year_filtered
 
@@ -1018,27 +1090,27 @@ class MusicController:
                     if album_ordinal <= len(discography):
                         target_album_name = discography[album_ordinal - 1]["name"]
                         target_year = discography[album_ordinal - 1]["year"]
-                        _LOGGER.warning("MUSIC DEBUG: Selected ordinal #%d album: '%s' (%d)", album_ordinal, target_album_name, target_year)
+                        _LOGGER.debug("MUSIC: Selected ordinal #%d album: '%s' (%d)", album_ordinal, target_album_name, target_year)
                     else:
                         return {"error": f"{artist} only has {len(discography)} {album + ' ' if album else ''}albums"}
                 elif album_modifier == "latest":
                     target_album_name = discography[-1]["name"]
                     target_year = discography[-1]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: Selected latest album: '%s' (%d)", target_album_name, target_year)
+                    _LOGGER.debug("MUSIC: Selected latest album: '%s' (%d)", target_album_name, target_year)
                 elif album_modifier == "first":
                     target_album_name = discography[0]["name"]
                     target_year = discography[0]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: Selected first album: '%s' (%d)", target_album_name, target_year)
+                    _LOGGER.debug("MUSIC: Selected first album: '%s' (%d)", target_album_name, target_year)
                 elif album_year and discography:
                     # Year was specified, use the (first) album from that year
                     target_album_name = discography[0]["name"]
                     target_year = discography[0]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: Selected album from %d: '%s'", album_year, target_album_name)
+                    _LOGGER.debug("MUSIC: Selected album from %d: '%s'", album_year, target_album_name)
                 elif discography:
                     # No modifier specified, just use the most recent from the tag/type search
                     target_album_name = discography[-1]["name"]
                     target_year = discography[-1]["year"]
-                    _LOGGER.warning("MUSIC DEBUG: No modifier, using most recent: '%s' (%d)", target_album_name, target_year)
+                    _LOGGER.debug("MUSIC: No modifier, using most recent: '%s' (%d)", target_album_name, target_year)
 
                 if target_album_name:
                     # Search Music Assistant for this specific album
@@ -1081,7 +1153,7 @@ class MusicController:
 
             # Handle smart album search (latest/first album by artist)
             if album_modifier and artist:
-                _LOGGER.warning("MUSIC DEBUG: Smart album search - modifier='%s', artist='%s', album_filter='%s'", album_modifier, artist, album)
+                _LOGGER.debug("MUSIC: Smart album search - modifier='%s', artist='%s', album_filter='%s'", album_modifier, artist, album)
 
                 # Search for albums by artist only
                 search_result = await self._hass.services.async_call(
@@ -1095,7 +1167,7 @@ class MusicController:
                 if albums:
                     artist_lower = artist.lower()
                     matching_albums = [a for a in albums if artist_lower in _extract_artist(a, lowercase=True) or _extract_artist(a, lowercase=True) in artist_lower]
-                    _LOGGER.warning("MUSIC DEBUG: Found %d albums, %d match artist '%s'", len(albums), len(matching_albums), artist)
+                    _LOGGER.debug("MUSIC: Found %d albums, %d match artist '%s'", len(albums), len(matching_albums), artist)
 
                     # Filter by album name if specified (e.g., "christmas" for christmas albums)
                     if album and matching_albums:
@@ -1105,11 +1177,11 @@ class MusicController:
                             if album_filter in (a.get("name") or a.get("title") or "").lower()
                         ]
                         if filtered_albums:
-                            _LOGGER.warning("MUSIC DEBUG: Filtered %d albums to %d matching '%s'",
+                            _LOGGER.debug("MUSIC: Filtered %d albums to %d matching '%s'",
                                         len(matching_albums), len(filtered_albums), album)
                             matching_albums = filtered_albums
                         else:
-                            _LOGGER.warning("MUSIC DEBUG: No albums matched filter '%s', using all %d albums by artist",
+                            _LOGGER.debug("MUSIC: No albums matched filter '%s', using all %d albums by artist",
                                            album, len(matching_albums))
 
                     if matching_albums:
@@ -1136,7 +1208,7 @@ class MusicController:
                         for alb in matching_albums[:5]:
                             alb_name = alb.get("name") or alb.get("title")
                             alb_year = get_year(alb)
-                            _LOGGER.warning("MUSIC DEBUG: Album candidate: '%s' (year: %s, raw: %s)",
+                            _LOGGER.debug("MUSIC: Album candidate: '%s' (year: %s, raw: %s)",
                                         alb_name, alb_year,
                                         alb.get("year") or alb.get("release_date") or "unknown")
 
@@ -1144,14 +1216,14 @@ class MusicController:
 
                         # Check if all years are 0 (missing) - if so, use MusicBrainz to look up years
                         if all(y == 0 for y, _ in albums_with_year):
-                            _LOGGER.warning("MUSIC DEBUG: All years are 0, querying MusicBrainz for release dates...")
+                            _LOGGER.debug("MUSIC: All years are 0, querying MusicBrainz for release dates...")
                             updated_albums = []
                             for _, alb in albums_with_year:
                                 alb_name = alb.get("name") or alb.get("title") or ""
                                 mb_year = await _lookup_album_year_musicbrainz(alb_name, artist)
                                 updated_albums.append((mb_year, alb))
                                 if mb_year > 0:
-                                    _LOGGER.warning("MUSIC DEBUG: MusicBrainz found year %d for '%s'", mb_year, alb_name)
+                                    _LOGGER.debug("MUSIC: MusicBrainz found year %d for '%s'", mb_year, alb_name)
                             albums_with_year = updated_albums
 
                         # Sort: albums with year=0 go to end, then sort by year (desc for latest, asc for first)
@@ -1165,7 +1237,7 @@ class MusicController:
                             found_type = "album"
 
                             year = albums_with_year[0][0]
-                            _LOGGER.warning("MUSIC DEBUG: Selected %s album: '%s' (year: %d) by '%s'", album_modifier, found_name, year, found_artist)
+                            _LOGGER.debug("MUSIC: Selected %s album: '%s' (year: %d) by '%s'", album_modifier, found_name, year, found_artist)
 
                             await self._play_on_players(target_players, found_uri, "album")
                             return {"status": "playing", "response_text": f"Playing {found_name} by {found_artist} in the {room}"}
