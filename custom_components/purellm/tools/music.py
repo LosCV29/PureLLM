@@ -4,9 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import time
 import unicodedata
-import aiohttp
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -19,94 +17,6 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# MusicBrainz API infrastructure
-# ---------------------------------------------------------------------------
-_MB_HEADERS = {"User-Agent": "PureLLM-HomeAssistant/1.0 (https://github.com/LosCV29/purellm)"}
-_MB_BASE = "https://musicbrainz.org/ws/2"
-
-# Rate limiter: MusicBrainz enforces max 1 request/sec.  Exceeding this
-# causes ALL requests to be rejected (503) until the rate drops back.
-_mb_rate_lock = asyncio.Lock()
-_mb_last_request_time: float = 0.0
-
-
-def _escape_lucene(value: str) -> str:
-    """Escape special characters for MusicBrainz Lucene queries.
-
-    MusicBrainz uses Lucene query syntax.  Characters like +, -, &&, ||,
-    !, (, ), {, }, [, ], ^, ", ~, *, ?, :, \\ and / have special meaning
-    and must be escaped with a backslash when used literally.
-    """
-    # Characters that need escaping in Lucene
-    specials = r'+-&&||!(){}[]^"~*?:\/'
-    out: list[str] = []
-    i = 0
-    while i < len(value):
-        ch = value[i]
-        # Two-char operators: && ||
-        if i + 1 < len(value) and value[i:i+2] in ("&&", "||"):
-            out.append(f"\\{value[i]}\\{value[i+1]}")
-            i += 2
-            continue
-        if ch in specials:
-            out.append(f"\\{ch}")
-        else:
-            out.append(ch)
-        i += 1
-    return "".join(out)
-
-
-async def _mb_rate_limit() -> None:
-    """Enforce MusicBrainz rate limit of 1 request per second."""
-    global _mb_last_request_time
-    async with _mb_rate_lock:
-        now = time.monotonic()
-        elapsed = now - _mb_last_request_time
-        if elapsed < 1.1:
-            wait = 1.1 - elapsed
-            _LOGGER.debug("MusicBrainz rate limit: waiting %.2fs", wait)
-            await asyncio.sleep(wait)
-        _mb_last_request_time = time.monotonic()
-
-
-async def _musicbrainz_get(endpoint: str, params: dict, timeout: float = 8) -> dict | None:
-    """Make a rate-limited GET request to MusicBrainz with retry on 503.
-
-    - Enforces 1 req/sec via _mb_rate_limit()
-    - Retries up to 3 times on 503 (rate-limited) with exponential backoff
-    - Returns parsed JSON or None on failure
-    """
-    params["fmt"] = "json"
-    max_retries = 3
-
-    for attempt in range(max_retries + 1):
-        await _mb_rate_limit()
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    f"{_MB_BASE}/{endpoint}", params=params,
-                    headers=_MB_HEADERS, timeout=aiohttp.ClientTimeout(total=timeout)
-                ) as response:
-                    if response.status == 200:
-                        return await response.json()
-                    if response.status == 503 and attempt < max_retries:
-                        wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
-                        _LOGGER.debug("MusicBrainz 503 (rate-limited), retry %d/%d in %ds",
-                                     attempt + 1, max_retries, wait)
-                        await asyncio.sleep(wait)
-                        continue
-                    _LOGGER.debug("MusicBrainz API returned status %d for %s", response.status, endpoint)
-        except asyncio.TimeoutError:
-            _LOGGER.debug("MusicBrainz request timed out: %s (attempt %d)", endpoint, attempt + 1)
-            if attempt < max_retries:
-                await asyncio.sleep(2 ** attempt)
-                continue
-        except Exception as e:
-            _LOGGER.debug("MusicBrainz request failed: %s %s", endpoint, e)
-            break
-    return None
 
 
 def _parse_ma_results(search_result: Any, media_type: str) -> list:
@@ -196,42 +106,6 @@ def _strip_accents(text: str) -> str:
         return ""
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
-
-
-async def _lookup_album_year_musicbrainz(album_name: str, artist_name: str) -> int:
-    """Look up album release year from MusicBrainz API."""
-    clean_album = re.sub(r'\s*[\(\[].*?[\)\]]', '', album_name).strip()
-    clean_album = re.sub(r'\s*[-–].*?(edition|version|deluxe|remaster).*$', '', clean_album, flags=re.IGNORECASE).strip()
-
-    data = await _musicbrainz_get("release-group", {
-        "query": f'releasegroup:"{_escape_lucene(clean_album)}" AND artist:"{_escape_lucene(artist_name)}"',
-        "limit": 5,
-    })
-    if not data:
-        return 0
-
-    release_groups = data.get("release-groups", [])
-    if not release_groups:
-        return 0
-
-    # Find best match - prefer exact title match
-    for rg in release_groups:
-        rg_title = rg.get("title", "").lower()
-        if clean_album.lower() in rg_title or rg_title in clean_album.lower():
-            first_release = rg.get("first-release-date", "")
-            if first_release and len(first_release) >= 4:
-                year = int(first_release[:4])
-                _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s'", year, album_name, artist_name)
-                return year
-
-    # Fallback to first result
-    first_release = release_groups[0].get("first-release-date", "")
-    if first_release and len(first_release) >= 4:
-        year = int(first_release[:4])
-        _LOGGER.info("MusicBrainz: Found year %d for '%s' by '%s' (fallback)", year, album_name, artist_name)
-        return year
-
-    return 0
 
 
 # Holiday keywords for shuffle playlist search
