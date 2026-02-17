@@ -1541,16 +1541,16 @@ class MusicController:
             if not playlist_uri:
                 return {"error": f"Could not find an Apple Music playlist matching '{query}'. Try a different artist or genre."}
 
-            player = target_players[0]
-            _LOGGER.info("Playing playlist '%s' shuffled on %s", playlist_name, player)
+            _LOGGER.info("Playing playlist '%s' shuffled on %s", playlist_name, target_players)
 
-            await self._play_media(player, playlist_uri, "playlist")
-
-            await self._hass.services.async_call(
-                "media_player", "shuffle_set",
-                {"entity_id": player, "shuffle": True},
-                blocking=True
-            )
+            for player in target_players:
+                # Set shuffle BEFORE playing so the playlist starts in random order
+                await self._hass.services.async_call(
+                    "media_player", "shuffle_set",
+                    {"entity_id": player, "shuffle": True},
+                    blocking=True
+                )
+                await self._play_media(player, playlist_uri, "playlist")
 
             # Return the EXACT playlist title for verbatim announcement
             # Include room name and confirm it's an official Apple Music playlist
