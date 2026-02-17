@@ -5,8 +5,7 @@ import asyncio
 import hashlib
 import logging
 import time
-from functools import wraps
-from typing import Any, Callable, TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
 
@@ -56,18 +55,6 @@ async def _set_cached(cache_key: str, data: Any, ttl: float) -> None:
             expired = [k for k, (_, exp) in _api_cache.items() if now >= exp]
             for k in expired:
                 del _api_cache[k]
-
-
-def tool_error(message: str) -> dict[str, str]:
-    """Create a standardized error response dict.
-
-    Args:
-        message: Error message to include
-
-    Returns:
-        Dict with "error" key
-    """
-    return {"error": message}
 
 
 def log_and_error(message: str, err: Exception | None = None, exc_info: bool = True) -> dict[str, str]:
