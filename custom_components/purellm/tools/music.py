@@ -1514,13 +1514,24 @@ class MusicController:
                         chosen_playlist = non_radio_playlists[0]
                         _LOGGER.info("Using first available holiday playlist")
                 else:
-                    # Standard playlist selection (strict official-only)
+                    # Standard playlist selection — HUGELY prefer official Essentials/Best Of playlists,
+                    # but fall back to best matching playlist if none exist
                     if official_playlists:
                         # Among official, prefer ones with query in name
                         official_with_name = [p for p in official_playlists if name_matches_query(p.get("name") or p.get("title") or "")]
                         chosen_playlist = official_with_name[0] if official_with_name else official_playlists[0]
                         is_official = True
                         _LOGGER.info("Found official Apple Music playlist")
+                    elif matching_name_playlists:
+                        # Fallback: best playlist with query/artist in the name
+                        chosen_playlist = matching_name_playlists[0]
+                        _LOGGER.info("No official playlist; falling back to name-matched: '%s'",
+                                   chosen_playlist.get("name") or chosen_playlist.get("title"))
+                    elif non_radio_playlists:
+                        # Last resort: first non-radio playlist from search results
+                        chosen_playlist = non_radio_playlists[0]
+                        _LOGGER.info("No official or name-matched playlist; using first available: '%s'",
+                                   chosen_playlist.get("name") or chosen_playlist.get("title"))
 
                 # If no playlist found
                 if not chosen_playlist:
