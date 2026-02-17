@@ -787,6 +787,8 @@ class MusicController:
                                     score += 100
                                 elif artist_lower in track_artist or track_artist in artist_lower:
                                     score += 50
+                                else:
+                                    score -= 80
 
                             return score
 
@@ -998,6 +1000,9 @@ class MusicController:
                             score += 100
                         elif artist_lower in item_artist or item_artist in artist_lower:
                             score += 50
+                        else:
+                            # Wrong artist — heavy penalty so we don't play the wrong person's album
+                            score -= 80
 
                     return score
 
