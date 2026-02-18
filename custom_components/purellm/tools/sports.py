@@ -399,7 +399,8 @@ async def get_sports_info(
 
                     for sb_event in sb_data.get("events", []):
                         sb_comp = sb_event.get("competitions", [{}])[0]
-                        sb_status = sb_comp.get("status", {}).get("type", {})
+                        sb_status_full = sb_comp.get("status", {})
+                        sb_status = sb_status_full.get("type", {})
                         sb_state = sb_status.get("state", "")
 
                         sb_competitors = sb_comp.get("competitors", [])
@@ -423,13 +424,24 @@ async def get_sports_info(
                                 away_score = away_score.get("displayValue", "0")
 
                             status_detail = sb_status.get("detail", "In Progress")
+                            display_clock = sb_status_full.get("displayClock", "")
+                            period = sb_status_full.get("period", 0)
+
+                            # Build a rich status with clock if available
+                            if display_clock and display_clock != "0:00":
+                                clock_status = f"{display_clock} remaining in {status_detail}"
+                            else:
+                                clock_status = status_detail
+
                             result["live_game"] = {
                                 "home_team": home_name,
                                 "away_team": away_name,
                                 "home_score": home_score,
                                 "away_score": away_score,
                                 "status": status_detail,
-                                "summary": f"LIVE: {away_name} {away_score} @ {home_name} {home_score} ({status_detail})"
+                                "clock": display_clock,
+                                "period": period,
+                                "summary": f"LIVE: {away_name} {away_score} @ {home_name} {home_score} ({clock_status})"
                             }
                             live_game_from_scoreboard = True
 
@@ -921,7 +933,8 @@ async def list_league_games(
         for event in events:
             comp = event.get("competitions", [{}])[0]
             competitors = comp.get("competitors", [])
-            status_info = comp.get("status", {}).get("type", {})
+            status_full = comp.get("status", {})
+            status_info = status_full.get("type", {})
             state = status_info.get("state", "")
 
             home_team = next((c for c in competitors if c.get("homeAway") == "home"), {})
@@ -935,7 +948,12 @@ async def list_league_games(
                 home_score = home_team.get("score", "0")
                 away_score = away_team.get("score", "0")
                 status_detail = status_info.get("detail", "Live")
-                summary = f"{away_name} {away_score} @ {home_name} {home_score} - {status_detail}"
+                display_clock = status_full.get("displayClock", "")
+                if display_clock and display_clock != "0:00":
+                    clock_status = f"{display_clock} remaining in {status_detail}"
+                else:
+                    clock_status = status_detail
+                summary = f"{away_name} {away_score} @ {home_name} {home_score} - {clock_status}"
             elif state == "post":
                 home_score = home_team.get("score", "0")
                 away_score = away_team.get("score", "0")
