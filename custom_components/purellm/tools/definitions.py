@@ -124,14 +124,14 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         tools.append(_tool(
             "check_league_games",
             "Check if league has games (count only). For specific teams use get_sports_info.",
-            {"league": {"type": "string", "description": "NFL, NBA, MLB, NHL, MLS, etc."}, "date": {"type": "string", "enum": ["today", "tomorrow"], "description": "Day (default: today)"}},
+            {"league": {"type": "string", "description": "NFL, NBA, MLB, NHL, MLS, college basketball, college football, etc."}, "date": {"type": "string", "enum": ["today", "tomorrow"], "description": "Day (default: today)"}},
             ["league"]
         ))
 
         tools.append(_tool(
             "list_league_games",
             "List all games in league with matchups/times.",
-            {"league": {"type": "string", "description": "NFL, NBA, MLB, NHL, MLS, etc."}, "date": {"type": "string", "enum": ["today", "tomorrow"], "description": "Day (default: today)"}},
+            {"league": {"type": "string", "description": "NFL, NBA, MLB, NHL, MLS, college basketball, college football, etc."}, "date": {"type": "string", "enum": ["today", "tomorrow"], "description": "Day (default: today)"}},
             ["league"]
         ))
 

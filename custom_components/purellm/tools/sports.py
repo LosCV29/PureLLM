@@ -91,6 +91,13 @@ def _pick_best_match(matches: list[dict], month: int) -> dict:
     return matches[0]
 
 
+# ESPN college league scoreboard requires limit and groups params to return all games.
+# Without these, the API only returns a subset of featured/top-25 games.
+_COLLEGE_SCOREBOARD_PARAMS = {
+    "mens-college-basketball": "limit=200&groups=50",   # groups=50 = all D1
+    "college-football": "limit=200&groups=80",           # groups=80 = FBS
+}
+
 # Cache TTL for team lists (teams don't change often)
 TEAMS_CACHE_TTL = 3600  # 1 hour
 
@@ -382,6 +389,9 @@ async def get_sports_info(
                     break
 
                 scoreboard_url = f"https://site.api.espn.com/apis/site/v2/sports/{sb_sport}/{sb_league}/scoreboard"
+                college_params = _COLLEGE_SCOREBOARD_PARAMS.get(sb_league, "")
+                if college_params:
+                    scoreboard_url += f"?{college_params}"
                 async with session.get(scoreboard_url, headers=ESPN_HEADERS) as sb_resp:
                     if sb_resp.status != 200:
                         continue
@@ -763,6 +773,13 @@ LEAGUE_CODES = {
     "mlb": ("baseball", "mlb"),
     "nhl": ("hockey", "nhl"),
     "mls": ("soccer", "usa.1"),
+    # College sports
+    "ncaa basketball": ("basketball", "mens-college-basketball"),
+    "college basketball": ("basketball", "mens-college-basketball"),
+    "ncaab": ("basketball", "mens-college-basketball"),
+    "ncaa football": ("football", "college-football"),
+    "college football": ("football", "college-football"),
+    "ncaaf": ("football", "college-football"),
     # Soccer/Football
     "premier league": ("soccer", "eng.1"),
     "epl": ("soccer", "eng.1"),
@@ -834,6 +851,9 @@ async def check_league_games(
     try:
         track_api_call("sports")
         url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league_code}/scoreboard?dates={date_str}"
+        college_params = _COLLEGE_SCOREBOARD_PARAMS.get(league_code, "")
+        if college_params:
+            url += f"&{college_params}"
 
         data, status = await fetch_json(session, url, headers=ESPN_HEADERS)
         if data is None:
@@ -877,6 +897,9 @@ async def list_league_games(
     try:
         track_api_call("sports")
         url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league_code}/scoreboard?dates={date_str}"
+        college_params = _COLLEGE_SCOREBOARD_PARAMS.get(league_code, "")
+        if college_params:
+            url += f"&{college_params}"
 
         data, status = await fetch_json(session, url, headers=ESPN_HEADERS)
         if data is None:
