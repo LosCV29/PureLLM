@@ -245,6 +245,12 @@ CONF_SOFABATON_ACTIVITIES: Final = "sofabaton_activities"
 DEFAULT_SOFABATON_ACTIVITIES: Final = "[]"
 
 # =============================================================================
+# BILINGUAL TTS - Route Spanish responses to a dedicated TTS engine
+# =============================================================================
+CONF_SPANISH_TTS_ENTITY: Final = "spanish_tts_entity"
+DEFAULT_SPANISH_TTS_ENTITY: Final = ""
+
+# =============================================================================
 # API TIMEOUT - Shared timeout for external API calls
 # =============================================================================
 API_TIMEOUT: Final = 15  # seconds
