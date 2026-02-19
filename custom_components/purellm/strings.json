@@ -35,7 +35,6 @@
           "sofabaton": "SofaBaton Activities",
           "music_rooms": "Music Room Mapping",
           "notifications": "Notification Settings",
-          "bilingual_tts": "Bilingual TTS (Spanish)",
           "api_keys": "External API Keys",
           "location": "Location Settings",
           "advanced": "System Prompt"
@@ -141,13 +140,6 @@
           "notify_on_places": "Send notification when Places/Directions are used",
           "notify_on_restaurants": "Send notification when Restaurant recommendations are used",
           "notify_on_search": "Send search result link to phone"
-        }
-      },
-      "bilingual_tts": {
-        "title": "Bilingual TTS (Spanish)",
-        "description": "Route Spanish responses to a dedicated Piper TTS voice. When configured, PureLLM will detect when the LLM responds in Spanish and speak it through the selected TTS entity instead of the pipeline's default English TTS. Leave empty to disable bilingual routing.",
-        "data": {
-          "spanish_tts_entity": "Spanish TTS Entity (e.g. Piper Wyoming)"
         }
       },
       "api_keys": {
