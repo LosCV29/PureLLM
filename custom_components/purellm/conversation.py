@@ -637,6 +637,28 @@ class PureLLMConversationEntity(ConversationEntity):
         This is the main entry point called by Home Assistant's conversation
         framework, including voice pipelines and assist_satellite services.
         """
+        # Check if user input matches any HA automation conversation triggers
+        # (e.g., trigger: conversation with command: ["Goodnight"]).
+        # This must happen before LLM processing so automations can intercept.
+        try:
+            trigger_response = await conversation.async_handle_sentence_triggers(
+                self.hass, user_input
+            )
+        except Exception:  # noqa: BLE001
+            trigger_response = None
+
+        if trigger_response is not None:
+            _LOGGER.info(
+                "Sentence trigger matched for '%s', returning automation response",
+                user_input.text.strip(),
+            )
+            response = intent.IntentResponse(language=user_input.language)
+            response.async_set_speech(trigger_response)
+            return conversation.ConversationResult(
+                response=response,
+                conversation_id=user_input.conversation_id or str(uuid.uuid4()),
+            )
+
         return await self._async_handle_message(user_input, None)
 
     async def _try_ask_and_act_match(
