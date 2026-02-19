@@ -117,9 +117,6 @@ from .const import (
     # SofaBaton Activities
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
-    # Bilingual TTS
-    CONF_SPANISH_TTS_ENTITY,
-    DEFAULT_SPANISH_TTS_ENTITY,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -392,7 +389,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "sofabaton": "SofaBaton Activities",
                 "music_rooms": "Music Room Mapping",
                 "notifications": "Notification Settings",
-                "bilingual_tts": "Bilingual TTS (Spanish)",
                 "api_keys": "API Keys",
                 "location": "Location Settings",
                 "advanced": "System Prompt",
@@ -1322,33 +1318,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_NOTIFY_ON_SEARCH,
                         default=current.get(CONF_NOTIFY_ON_SEARCH, DEFAULT_NOTIFY_ON_SEARCH),
                     ): cv.boolean,
-                }
-            ),
-        )
-
-    async def async_step_bilingual_tts(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Handle bilingual TTS configuration (Spanish Piper routing)."""
-        if user_input is not None:
-            new_options = {**self._entry.options, **user_input}
-            return self.async_create_entry(title="", data=new_options)
-
-        current = {**self._entry.data, **self._entry.options}
-
-        return self.async_show_form(
-            step_id="bilingual_tts",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_SPANISH_TTS_ENTITY,
-                        description={"suggested_value": current.get(CONF_SPANISH_TTS_ENTITY, DEFAULT_SPANISH_TTS_ENTITY)},
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(
-                            domain="tts",
-                            multiple=False,
-                        )
-                    ),
                 }
             ),
         )
