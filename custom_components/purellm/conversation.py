@@ -90,6 +90,8 @@ from .const import (
     DEFAULT_CAMERA_RTSP_URLS,
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
+    CONF_SPANISH_TTS_ENTITY,
+    DEFAULT_SPANISH_TTS_ENTITY,
     DEFAULT_API_KEY,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
@@ -329,6 +331,9 @@ class PureLLMConversationEntity(ConversationEntity):
         rtsp_urls_str = config.get(CONF_CAMERA_RTSP_URLS, DEFAULT_CAMERA_RTSP_URLS)
         self.camera_rtsp_urls = parse_entity_config(rtsp_urls_str) if rtsp_urls_str else {}
 
+        # Bilingual TTS: optional Spanish TTS entity for language-based routing
+        self.spanish_tts_entity = config.get(CONF_SPANISH_TTS_ENTITY, DEFAULT_SPANISH_TTS_ENTITY)
+
         # SofaBaton activities configuration
         self.sofabaton_activities = _parse_json_list(CONF_SOFABATON_ACTIVITIES, DEFAULT_SOFABATON_ACTIVITIES)
 
@@ -499,12 +504,23 @@ class PureLLMConversationEntity(ConversationEntity):
             self._api_calls[api_name] += 1
 
     def _get_effective_system_prompt(self) -> str:
-        """Get system prompt with current date."""
+        """Get system prompt with current date and optional bilingual instruction."""
         today = datetime.now().strftime("%Y-%m-%d")
         if self._cached_system_prompt and self._cached_system_prompt_date == today:
             return self._cached_system_prompt
 
         prompt = self.system_prompt.replace("{current_date}", today)
+
+        # Inject bilingual TTS instruction when Spanish TTS is configured
+        if self.spanish_tts_entity:
+            prompt += (
+                "\n\nBILINGUAL: If the user speaks Spanish, respond entirely in Spanish "
+                "and prefix your response with [ES] (e.g. \"[ES] Son las tres de la tarde.\"). "
+                "If the user speaks English, respond in English with NO prefix. "
+                "Mixed language — respond in whichever language dominates. "
+                "The [ES] prefix is for TTS routing only — never mention it to the user."
+            )
+
         self._cached_system_prompt = prompt
         self._cached_system_prompt_date = today
         return prompt
@@ -748,6 +764,81 @@ class PureLLMConversationEntity(ConversationEntity):
         # Must end with '?' and be longer than a trivial response
         return stripped.endswith("?") and len(stripped) > 10
 
+    @staticmethod
+    def _is_likely_spanish(text: str) -> bool:
+        """Lightweight heuristic to detect Spanish text.
+
+        Used as a fallback when the LLM forgets the [ES] prefix so that
+        Spanish responses still get routed to the Spanish TTS voice.
+        """
+        if not text or len(text) < 5:
+            return False
+
+        # Strong signals — characters that essentially never appear in English
+        if "ñ" in text or "Ñ" in text or "¿" in text or "¡" in text:
+            return True
+
+        # Check frequency of common Spanish function words
+        # (only words that are rare/absent in normal English sentences)
+        words = text.lower().split()
+        if not words:
+            return False
+
+        spanish_only = {
+            "el", "las", "los", "del", "es", "está", "están", "una",
+            "por", "para", "pero", "como", "esta", "ese", "esa",
+            "son", "ser", "muy", "más", "también", "aquí", "bien",
+            "hay", "fue", "tiene", "puede", "hace", "quiero", "donde",
+            "cuando", "todo", "esto", "eso", "algo", "otro", "otra",
+            "entre", "desde", "hasta", "sobre", "después", "antes",
+            "ahora", "entonces", "porque", "aunque", "según", "cada",
+            "tanto", "poco", "mucho", "nada", "ya", "así", "sí",
+            "hola", "gracias", "bueno", "buena", "buenos", "buenas",
+        }
+
+        hits = sum(1 for w in words if w in spanish_only)
+        # If ≥25 % of words are distinctly-Spanish function words, it's Spanish
+        return len(words) >= 3 and (hits / len(words)) >= 0.25
+
+    async def _speak_spanish_tts(
+        self,
+        message: str,
+        user_input: conversation.ConversationInput,
+    ) -> bool:
+        """Speak a Spanish message via Piper TTS directly to the satellite.
+
+        Returns True if TTS was successfully dispatched, False otherwise.
+        """
+        from .tools.timer import get_player_for_device
+
+        target_player = get_player_for_device(
+            self.hass,
+            user_input.device_id if user_input else None,
+            self.room_player_mapping,
+        )
+
+        if not target_player:
+            _LOGGER.warning("Spanish TTS: no target media player found for device_id=%s",
+                            user_input.device_id if user_input else None)
+            return False
+
+        try:
+            await self.hass.services.async_call(
+                "tts", "speak",
+                {
+                    "entity_id": self.spanish_tts_entity,
+                    "media_player_entity_id": target_player,
+                    "message": message,
+                },
+                blocking=True,
+            )
+            _LOGGER.info("Spanish TTS: spoke via %s to %s (%d chars)",
+                         self.spanish_tts_entity, target_player, len(message))
+            return True
+        except Exception as err:
+            _LOGGER.error("Spanish TTS failed: %s", err)
+            return False
+
     async def _async_handle_message(
         self,
         user_input: conversation.ConversationInput,
@@ -850,6 +941,35 @@ class PureLLMConversationEntity(ConversationEntity):
                 conversation_id, user_text, final_response or "", extra_system_prompt,
                 keep_only_last=keep_listening,
             )
+
+        # --- Bilingual TTS routing ---
+        # Route Spanish responses to the dedicated Piper Spanish TTS entity.
+        # Primary signal: LLM prefixes response with [ES].
+        # Fallback: heuristic language detection catches Spanish even when the
+        # LLM forgets the tag (which happens often enough to matter).
+        spanish_routed = False
+        if self.spanish_tts_entity and final_response:
+            has_es_tag = final_response.lstrip().startswith("[ES]")
+            if has_es_tag:
+                clean_response = final_response.lstrip()[4:].strip()
+            else:
+                clean_response = final_response.strip()
+
+            if has_es_tag or self._is_likely_spanish(clean_response):
+                _LOGGER.info(
+                    "Bilingual TTS: detected Spanish response (%s), routing to %s",
+                    "[ES] tag" if has_es_tag else "heuristic",
+                    self.spanish_tts_entity,
+                )
+                spanish_routed = await self._speak_spanish_tts(clean_response, user_input)
+                if spanish_routed:
+                    # Pipeline TTS will get a single space — effectively silent.
+                    # The real audio was already sent via tts.speak above.
+                    final_response = " "
+                else:
+                    # Fallback: let pipeline TTS speak it (English voice, but better than silence)
+                    _LOGGER.warning("Bilingual TTS: Spanish routing failed, falling back to pipeline TTS")
+                    final_response = clean_response
 
         response = intent.IntentResponse(language=user_input.language)
         response.async_set_speech(final_response or "No response.")
