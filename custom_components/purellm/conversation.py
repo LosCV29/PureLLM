@@ -628,6 +628,37 @@ class PureLLMConversationEntity(ConversationEntity):
 
         return None
 
+    async def _check_sentence_triggers(
+        self,
+        user_input: conversation.ConversationInput,
+    ) -> str | None:
+        """Check if user input matches any HA automation conversation triggers.
+
+        Handles both old HA API (2025.3–2025.6, two args) and new API
+        (2025.7+, three args with required ChatLog parameter).
+        """
+        try:
+            # HA 2025.7+ added a required chat_log parameter
+            chat_log = ChatLog(
+                hass=self.hass,
+                conversation_id=user_input.conversation_id or str(uuid.uuid4()),
+            )
+            return await conversation.async_handle_sentence_triggers(
+                self.hass, user_input, chat_log
+            )
+        except TypeError:
+            # Older HA (2025.3–2025.6) uses two-argument signature
+            try:
+                return await conversation.async_handle_sentence_triggers(
+                    self.hass, user_input
+                )
+            except Exception:  # noqa: BLE001
+                _LOGGER.warning("Sentence trigger check failed (legacy API)", exc_info=True)
+                return None
+        except Exception:  # noqa: BLE001
+            _LOGGER.warning("Sentence trigger check failed", exc_info=True)
+            return None
+
     async def async_process(
         self,
         user_input: conversation.ConversationInput,
@@ -640,12 +671,7 @@ class PureLLMConversationEntity(ConversationEntity):
         # Check if user input matches any HA automation conversation triggers
         # (e.g., trigger: conversation with command: ["Goodnight"]).
         # This must happen before LLM processing so automations can intercept.
-        try:
-            trigger_response = await conversation.async_handle_sentence_triggers(
-                self.hass, user_input
-            )
-        except Exception:  # noqa: BLE001
-            trigger_response = None
+        trigger_response = await self._check_sentence_triggers(user_input)
 
         if trigger_response is not None:
             _LOGGER.info(
