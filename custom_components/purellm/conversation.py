@@ -764,6 +764,42 @@ class PureLLMConversationEntity(ConversationEntity):
         # Must end with '?' and be longer than a trivial response
         return stripped.endswith("?") and len(stripped) > 10
 
+    @staticmethod
+    def _is_likely_spanish(text: str) -> bool:
+        """Lightweight heuristic to detect Spanish text.
+
+        Used as a fallback when the LLM forgets the [ES] prefix so that
+        Spanish responses still get routed to the Spanish TTS voice.
+        """
+        if not text or len(text) < 5:
+            return False
+
+        # Strong signals — characters that essentially never appear in English
+        if "ñ" in text or "Ñ" in text or "¿" in text or "¡" in text:
+            return True
+
+        # Check frequency of common Spanish function words
+        # (only words that are rare/absent in normal English sentences)
+        words = text.lower().split()
+        if not words:
+            return False
+
+        spanish_only = {
+            "el", "las", "los", "del", "es", "está", "están", "una",
+            "por", "para", "pero", "como", "esta", "ese", "esa",
+            "son", "ser", "muy", "más", "también", "aquí", "bien",
+            "hay", "fue", "tiene", "puede", "hace", "quiero", "donde",
+            "cuando", "todo", "esto", "eso", "algo", "otro", "otra",
+            "entre", "desde", "hasta", "sobre", "después", "antes",
+            "ahora", "entonces", "porque", "aunque", "según", "cada",
+            "tanto", "poco", "mucho", "nada", "ya", "así", "sí",
+            "hola", "gracias", "bueno", "buena", "buenos", "buenas",
+        }
+
+        hits = sum(1 for w in words if w in spanish_only)
+        # If ≥25 % of words are distinctly-Spanish function words, it's Spanish
+        return len(words) >= 3 and (hits / len(words)) >= 0.25
+
     async def _speak_spanish_tts(
         self,
         message: str,
@@ -907,27 +943,33 @@ class PureLLMConversationEntity(ConversationEntity):
             )
 
         # --- Bilingual TTS routing ---
-        # If Spanish TTS is configured and the LLM prefixed its response with
-        # [ES], strip the tag, speak via Piper Spanish directly to the
-        # satellite, and suppress the pipeline's default (English) TTS.
+        # Route Spanish responses to the dedicated Piper Spanish TTS entity.
+        # Primary signal: LLM prefixes response with [ES].
+        # Fallback: heuristic language detection catches Spanish even when the
+        # LLM forgets the tag (which happens often enough to matter).
         spanish_routed = False
-        if (
-            self.spanish_tts_entity
-            and final_response
-            and final_response.lstrip().startswith("[ES]")
-        ):
-            clean_response = final_response.lstrip()[4:].strip()
-            _LOGGER.info("Bilingual TTS: detected Spanish response, routing to %s",
-                         self.spanish_tts_entity)
-            spanish_routed = await self._speak_spanish_tts(clean_response, user_input)
-            if spanish_routed:
-                # Pipeline TTS will get a single space — effectively silent.
-                # The real audio was already sent via tts.speak above.
-                final_response = " "
+        if self.spanish_tts_entity and final_response:
+            has_es_tag = final_response.lstrip().startswith("[ES]")
+            if has_es_tag:
+                clean_response = final_response.lstrip()[4:].strip()
             else:
-                # Fallback: let pipeline TTS speak it (English voice, but better than silence)
-                _LOGGER.warning("Bilingual TTS: Spanish routing failed, falling back to pipeline TTS")
-                final_response = clean_response
+                clean_response = final_response.strip()
+
+            if has_es_tag or self._is_likely_spanish(clean_response):
+                _LOGGER.info(
+                    "Bilingual TTS: detected Spanish response (%s), routing to %s",
+                    "[ES] tag" if has_es_tag else "heuristic",
+                    self.spanish_tts_entity,
+                )
+                spanish_routed = await self._speak_spanish_tts(clean_response, user_input)
+                if spanish_routed:
+                    # Pipeline TTS will get a single space — effectively silent.
+                    # The real audio was already sent via tts.speak above.
+                    final_response = " "
+                else:
+                    # Fallback: let pipeline TTS speak it (English voice, but better than silence)
+                    _LOGGER.warning("Bilingual TTS: Spanish routing failed, falling back to pipeline TTS")
+                    final_response = clean_response
 
         response = intent.IntentResponse(language=user_input.language)
         response.async_set_speech(final_response or "No response.")
