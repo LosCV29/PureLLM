@@ -855,6 +855,27 @@ class PureLLMConversationEntity(ConversationEntity):
         if ask_act_result is not None:
             return ask_act_result
 
+        # --- Short-circuit dismissals in follow-up conversations ---
+        # When the LLM asked a follow-up ("Want me to adjust it?") and the
+        # user says "no", "done", "stop", etc., skip the LLM call entirely.
+        # Without this, bare words like "no" get misinterpreted by the LLM
+        # as substantive input, causing tool calls or confusing responses.
+        _user_clean = _clean_for_match(user_text)
+        if history and _user_clean in _DISMISSALS:
+            _LOGGER.info(
+                "Dismissal '%s' in follow-up conversation — ending without LLM call",
+                user_text,
+            )
+            # Clear conversation history so the session ends cleanly
+            if conversation_id in self._conversation_history:
+                del self._conversation_history[conversation_id]
+            response = intent.IntentResponse(language=user_input.language)
+            response.async_set_speech("OK.")
+            return conversation.ConversationResult(
+                response=response,
+                conversation_id=conversation_id,
+            )
+
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
 
