@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from collections.abc import AsyncGenerator
@@ -30,6 +31,20 @@ _GREETINGS = frozenset({
     "howdy", "hola", "good morning", "good afternoon",
     "good evening", "good night", "what up", "wassup", "whaddup",
 })
+
+# Regex that strips everything except word chars, spaces, and apostrophes.
+# This normalizes STT punctuation like "No, thank you." → "no thank you"
+# while preserving apostrophes needed for "that's all", "i'm good", etc.
+_PUNCT_RE = re.compile(r"[^\w\s']")
+
+
+def _clean_for_match(text: str) -> str:
+    """Normalize user text for dismissal/greeting matching.
+
+    Strips all punctuation except apostrophes, lowercases, and collapses whitespace.
+    """
+    return " ".join(_PUNCT_RE.sub("", text.lower()).split())
+
 
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ChatLog, ConversationEntity
@@ -941,7 +956,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Detect dismissals and greetings for follow-up tool forcing
         is_followup = bool(history)
-        _user_clean = user_text.lower().strip().rstrip(".!,?")
+        _user_clean = _clean_for_match(user_text)
         is_dismissal = _user_clean in _DISMISSALS
         is_greeting = _user_clean in _GREETINGS
 
@@ -1033,7 +1048,7 @@ class PureLLMConversationEntity(ConversationEntity):
         # Add conversation history if present
         # Detect dismissals and greetings — these don't need tool calls
         is_followup = bool(history)
-        _user_clean = user_text.lower().strip().rstrip(".!,?")
+        _user_clean = _clean_for_match(user_text)
         is_dismissal = _user_clean in _DISMISSALS
         is_greeting = _user_clean in _GREETINGS
 
