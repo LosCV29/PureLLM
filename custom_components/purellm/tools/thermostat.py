@@ -69,7 +69,7 @@ async def control_thermostat(
                 f"{format_temp_func(current_target)}. The current temperature in the home is "
                 f"{format_temp_func(current_temp)}."
             )
-            return {"response_text": response_text}
+            return {"response_text": response_text, "instruction": "After stating the status, ALWAYS end with a short follow-up question like 'Want me to adjust it?' so the user can request a change."}
 
         # Handle set_mode action
         if action == "set_mode":
