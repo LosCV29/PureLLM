@@ -224,6 +224,12 @@ class PureLLMConversationEntity(ConversationEntity):
         # Conversation history storage: {conversation_id: {"messages": [...], "last_access": timestamp}}
         self._conversation_history: dict[str, dict[str, Any]] = {}
 
+        # Followup context cache — lightweight, entity-level cache that survives
+        # HA's ChatSession conversation_id replacement between turns.
+        # Stores ONLY the follow-up question (no data/tool results) so the LLM
+        # knows what it just asked without poisoning future status lookups.
+        self._pending_followup: dict[str, Any] | None = None
+
         # Initialize config
         self._update_from_config({**config_entry.data, **config_entry.options})
 
@@ -839,10 +845,30 @@ class PureLLMConversationEntity(ConversationEntity):
         # The FRESH DATA system prompt rule prevents stale status data from being reused.
         history = self._get_conversation_history(user_input.conversation_id)
 
+        # If conversation_id-based history lookup missed (HA replaces ULIDs
+        # between turns), fall back to the entity-level followup cache.
+        # This injects ONLY the follow-up question — no data/tool results —
+        # so the LLM knows what it asked without reusing stale status data.
+        is_followup_response = False
+        if (
+            not history
+            and self._pending_followup
+            and time.time() - self._pending_followup["timestamp"] < CONVERSATION_TIMEOUT_SECONDS
+        ):
+            history = [
+                {"role": "user", "content": self._pending_followup["user_query"]},
+                {"role": "assistant", "content": self._pending_followup["assistant_question"]},
+            ]
+            is_followup_response = True
+            _LOGGER.info(
+                "Using cached followup context (question='%s')",
+                self._pending_followup["assistant_question"][:60],
+            )
+
         _LOGGER.info(
-            "PureLLM processing: '%s' provider=%s conversation_id=%s history_turns=%d extra_prompt=%s",
+            "PureLLM processing: '%s' provider=%s conversation_id=%s history_turns=%d extra_prompt=%s followup=%s",
             user_text, self.provider, conversation_id[:8] if conversation_id else "new",
-            len(history) // 2, bool(extra_system_prompt)
+            len(history) // 2, bool(extra_system_prompt), is_followup_response
         )
 
         if extra_system_prompt:
@@ -873,9 +899,10 @@ class PureLLMConversationEntity(ConversationEntity):
                 "Dismissal '%s' detected — ending without LLM call",
                 user_text,
             )
-            # Clear conversation history so the session ends cleanly
+            # Clear conversation history and followup cache so the session ends cleanly
             if conversation_id in self._conversation_history:
                 del self._conversation_history[conversation_id]
+            self._pending_followup = None
             response = intent.IntentResponse(language=user_input.language)
             response.async_set_speech("OK.")
             return conversation.ConversationResult(
@@ -898,7 +925,8 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Use streaming for local models - faster first-token response
                 _LOGGER.debug("Using streaming for local provider: %s", self.provider)
                 stream = self._stream_openai_compatible(
-                    user_text, tools, system_prompt, max_tokens, history
+                    user_text, tools, system_prompt, max_tokens, history,
+                    is_followup_response=is_followup_response,
                 )
 
                 # Collect streaming response
@@ -909,7 +937,8 @@ class PureLLMConversationEntity(ConversationEntity):
 
             elif self.provider == PROVIDER_GOOGLE:
                 final_response = await self._call_google(
-                    user_text, tools, system_prompt, max_tokens, history
+                    user_text, tools, system_prompt, max_tokens, history,
+                    is_followup_response=is_followup_response,
                 )
             else:
                 final_response = "Unknown provider."
@@ -931,6 +960,33 @@ class PureLLMConversationEntity(ConversationEntity):
         )
         if keep_listening:
             _LOGGER.info("Continuing conversation: response ends with follow-up question")
+
+            # Cache lightweight followup context on the entity itself.
+            # HA's ChatSession replaces conversation_ids between turns, so the
+            # dict-based _conversation_history lookup will miss on the next turn.
+            # This cache stores ONLY the follow-up question (no data/tool results)
+            # so the LLM knows what it just asked without poisoning status lookups.
+            followup_question = final_response or ""
+            stripped = followup_question.rstrip()
+            if stripped.endswith("?"):
+                for sep in [". ", "! ", "\n"]:
+                    if sep in stripped:
+                        last_part = stripped.rsplit(sep, 1)[-1].strip()
+                        if last_part.endswith("?"):
+                            followup_question = last_part
+                            break
+            self._pending_followup = {
+                "user_query": user_text,
+                "assistant_question": followup_question,
+                "timestamp": time.time(),
+            }
+            _LOGGER.debug(
+                "Cached followup context: user='%s' question='%s'",
+                user_text, followup_question,
+            )
+        else:
+            # Not a continuing conversation — clear any stale followup cache
+            self._pending_followup = None
 
         # Save conversation history ONLY when:
         # - Continuing conversation (keep_listening) — shopping list loop needs context
@@ -959,6 +1015,7 @@ class PureLLMConversationEntity(ConversationEntity):
         system_prompt: str,
         max_tokens: int,
         history: list[dict] | None = None,
+        is_followup_response: bool = False,
     ) -> str:
         """Simple non-streaming Google Gemini call with conversation history support."""
         function_declarations = []
@@ -996,8 +1053,10 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             if function_declarations:
                 payload["tools"] = [{"functionDeclarations": function_declarations}]
-                # Force tool calling on first iteration (Gemini hallucinates without it)
-                if not is_dismissal and not is_greeting and iteration == 0:
+                # Force tool calling on first iteration (Gemini hallucinates without it).
+                # Skip forcing when user is responding to a follow-up question —
+                # the LLM already has context and just needs to respond naturally.
+                if not is_dismissal and not is_greeting and not is_followup_response and iteration == 0:
                     payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
                 else:
                     payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
@@ -1068,6 +1127,7 @@ class PureLLMConversationEntity(ConversationEntity):
         system_prompt: str,
         max_tokens: int,
         history: list[dict] | None = None,
+        is_followup_response: bool = False,
     ) -> AsyncGenerator[ContentDelta, None]:
         """Stream from OpenAI-compatible API with tool support and conversation history."""
         messages = [
@@ -1103,9 +1163,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Force tool calling on the first iteration.
                 # Local LLMs fabricate answers without calling tools.
                 # "required" forces at least one tool call before responding.
-                # Skip for dismissals ("done", "no") and greetings ("yo", "hey")
-                # which need no tool.
-                if not is_dismissal and not is_greeting and iteration == 0:
+                # Skip for dismissals ("done", "no"), greetings ("yo", "hey"),
+                # and followup responses (user answering a question we just asked).
+                if not is_dismissal and not is_greeting and not is_followup_response and iteration == 0:
                     kwargs["tool_choice"] = "required"
                 else:
                     kwargs["tool_choice"] = "auto"
