@@ -855,15 +855,22 @@ class PureLLMConversationEntity(ConversationEntity):
         if ask_act_result is not None:
             return ask_act_result
 
-        # --- Short-circuit dismissals in follow-up conversations ---
-        # When the LLM asked a follow-up ("Want me to adjust it?") and the
-        # user says "no", "done", "stop", etc., skip the LLM call entirely.
-        # Without this, bare words like "no" get misinterpreted by the LLM
-        # as substantive input, causing tool calls or confusing responses.
+        # --- Short-circuit dismissals ---
+        # When the user says "no", "done", "stop", etc. as a bare utterance,
+        # skip the LLM call entirely. Without this, the LLM misinterprets
+        # bare words — it either force-calls a tool (repeating old status)
+        # or asks a clarifying question that ends with "?" which triggers
+        # continue_conversation=True, creating an infinite listen loop.
+        #
+        # We intentionally do NOT require conversation history here because
+        # HA's ChatSession conversation_id tracking may not align with our
+        # internal history dict (PureLLM overrides async_process, bypassing
+        # the base ConversationEntity's ChatSession context manager).
+        # A bare "no" or "stop" is never a meaningful standalone voice query.
         _user_clean = _clean_for_match(user_text)
-        if history and _user_clean in _DISMISSALS:
+        if _user_clean in _DISMISSALS:
             _LOGGER.info(
-                "Dismissal '%s' in follow-up conversation — ending without LLM call",
+                "Dismissal '%s' detected — ending without LLM call",
                 user_text,
             )
             # Clear conversation history so the session ends cleanly
@@ -874,6 +881,7 @@ class PureLLMConversationEntity(ConversationEntity):
             return conversation.ConversationResult(
                 response=response,
                 conversation_id=conversation_id,
+                continue_conversation=False,
             )
 
         tools = self._build_tools()
