@@ -238,12 +238,12 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== LISTS (always enabled) =====
     tools.append(_tool(
         "manage_list",
-        "Manage shopping/to-do lists.",
+        "Manage shopping/to-do lists. clear/show/sort REQUIRE status param: 'active' for unchecked items, 'completed' for checked/done items.",
         {
             "action": {"type": "string", "enum": ["add", "complete", "remove", "remove_all", "show", "clear", "sort", "list_all"], "description": "Action"},
             "item": {"type": "string", "description": "Item name"},
             "list_name": {"type": "string", "description": "List name (optional)"},
-            "status": {"type": "string", "enum": ["active", "completed"], "description": "For show/sort/clear: active or completed"}
+            "status": {"type": "string", "enum": ["active", "completed"], "description": "REQUIRED for clear/show/sort. 'active'=unchecked items, 'completed'=checked/done items"}
         },
         ["action"]
     ))
