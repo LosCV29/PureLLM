@@ -25,9 +25,6 @@ _DISMISSALS = frozenset({
     "no thanks", "no thank you", "thats all", "that's all",
     "thats it", "that's it", "nothing", "all done", "im good",
     "i'm good", "not right now", "cancel",
-    # Spanish dismissals
-    "no gracias", "listo", "eso es todo", "nada", "ya", "ya estuvo",
-    "estoy bien", "no por ahora", "cancelar",
 })
 
 
@@ -36,7 +33,6 @@ _DISMISSALS = frozenset({
 # the model to produce the wrong language.
 _LANG_CODE_TO_NAME: dict[str, str] = {
     "en": "English",
-    "es": "Spanish",
     "fr": "French",
     "de": "German",
     "it": "Italian",
