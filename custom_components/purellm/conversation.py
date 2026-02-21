@@ -989,7 +989,7 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             _LOGGER.debug(
                 "Cached followup context: user='%s' question='%s'",
-                user_text, followup_question,
+                user_text, final_response,
             )
         else:
             # Not a continuing conversation — clear any stale followup cache
