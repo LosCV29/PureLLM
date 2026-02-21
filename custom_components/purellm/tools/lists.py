@@ -2,12 +2,19 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
+
+# Time-based dedup for add operations.  Prevents the same item from being
+# added twice when the LLM re-calls manage_list across iterations or turns
+# within a short window (e.g. forced tool_choice on follow-up turns).
+_RECENT_ADDS: dict[str, float] = {}  # "entity_id:item_lower" -> timestamp
+_DEDUP_WINDOW_SECS = 30
 
 
 async def _get_items(hass: "HomeAssistant", entity_id: str, status: str) -> list[dict]:
@@ -94,11 +101,32 @@ async def manage_list(
             if not item:
                 return {"error": "Please specify an item to add"}
 
+            # Dedup guard: skip if the same item was just added to this list.
+            # This prevents duplicates when forced tool_choice causes the LLM
+            # to re-call manage_list(add) across iterations or follow-up turns.
+            now = time.time()
+            dedup_key = f"{target_list}:{item.lower()}"
+            if dedup_key in _RECENT_ADDS and now - _RECENT_ADDS[dedup_key] < _DEDUP_WINDOW_SECS:
+                _LOGGER.info("Dedup: skipping duplicate add of '%s' (added %.1fs ago)", item, now - _RECENT_ADDS[dedup_key])
+                list_friendly = hass.states.get(target_list).attributes.get("friendly_name", "list")
+                return {
+                    "success": True,
+                    "action": "added",
+                    "item": item,
+                    "list": list_friendly,
+                    "message": f"Added '{item}' to {list_friendly}"
+                }
+
             await hass.services.async_call(
                 "todo", "add_item",
                 {"entity_id": target_list, "item": item},
                 blocking=True
             )
+
+            # Record this add for dedup, and clean old entries
+            _RECENT_ADDS[dedup_key] = now
+            for k in [k for k, t in _RECENT_ADDS.items() if now - t > 60]:
+                del _RECENT_ADDS[k]
 
             list_friendly = hass.states.get(target_list).attributes.get("friendly_name", "list")
             return {

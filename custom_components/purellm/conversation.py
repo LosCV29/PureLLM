@@ -1066,9 +1066,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Force tool calling on first iteration (Gemini hallucinates without it).
                 # Skip forcing when user is responding to a follow-up question —
                 # the LLM already has context and just needs to respond naturally.
-                # Also skip when history exists from _conversation_history (HA
-                # preserved the conversation_id) — same situation, different source.
-                if not is_dismissal and not is_followup_response and not is_followup and iteration == 0:
+                if not is_dismissal and not is_followup_response and iteration == 0:
                     payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
                 else:
                     payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
@@ -1195,10 +1193,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Force tool calling on the first iteration.
                 # Local LLMs fabricate answers without calling tools.
                 # "required" forces at least one tool call before responding.
-                # Skip for dismissals ("done", "no"), followup responses
-                # (user answering a question we just asked), and any turn
-                # with conversation history (prevents re-adding last item).
-                if not is_dismissal and not is_followup_response and not is_followup and iteration == 0:
+                # Skip for dismissals ("done", "no") and followup responses
+                # (user answering a question we just asked).
+                if not is_dismissal and not is_followup_response and iteration == 0:
                     kwargs["tool_choice"] = "required"
                 else:
                     kwargs["tool_choice"] = "auto"
