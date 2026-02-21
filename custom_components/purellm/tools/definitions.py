@@ -243,7 +243,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             "action": {"type": "string", "enum": ["add", "complete", "remove", "remove_all", "show", "clear", "sort", "list_all"], "description": "Action"},
             "item": {"type": "string", "description": "Item name"},
             "list_name": {"type": "string", "description": "List name (optional)"},
-            "status": {"type": "string", "enum": ["active", "completed"], "description": "For show/sort: active or completed"}
+            "status": {"type": "string", "enum": ["active", "completed"], "description": "For show/sort/clear: active or completed"}
         },
         ["action"]
     ))
