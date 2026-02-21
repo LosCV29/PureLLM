@@ -25,12 +25,43 @@ _DISMISSALS = frozenset({
     "no thanks", "no thank you", "thats all", "that's all",
     "thats it", "that's it", "nothing", "all done", "im good",
     "i'm good", "not right now", "cancel",
+    # Spanish dismissals
+    "no gracias", "listo", "eso es todo", "nada", "ya", "ya estuvo",
+    "estoy bien", "no por ahora", "cancelar",
 })
 _GREETINGS = frozenset({
     "hi", "hey", "hello", "yo", "sup", "whats up", "what's up",
     "howdy", "hola", "good morning", "good afternoon",
     "good evening", "good night", "what up", "wassup", "whaddup",
+    # Spanish greetings
+    "buenos dias", "buenos días", "buenas tardes", "buenas noches",
+    "que tal", "qué tal", "que onda", "qué onda",
 })
+
+# Map HA language codes to language names for system prompt injection.
+# Only the target language is mentioned — never list alternatives, which primes
+# the model to produce the wrong language.
+_LANG_CODE_TO_NAME: dict[str, str] = {
+    "en": "English",
+    "es": "Spanish",
+    "fr": "French",
+    "de": "German",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+    "ru": "Russian",
+    "ar": "Arabic",
+    "hi": "Hindi",
+    "pl": "Polish",
+    "sv": "Swedish",
+    "da": "Danish",
+    "no": "Norwegian",
+    "fi": "Finnish",
+    "he": "Hebrew",
+}
 
 # Regex that strips everything except word chars, spaces, and apostrophes.
 # This normalizes STT punctuation like "No, thank you." → "no thank you"
@@ -913,6 +944,13 @@ class PureLLMConversationEntity(ConversationEntity):
 
         tools = self._build_tools()
         system_prompt = self._get_effective_system_prompt()
+
+        # Inject language enforcement at the top of the system prompt.
+        # Uses only the target language name — never mentions other languages,
+        # which would prime the model to produce them.
+        lang_code = (user_input.language or "en").split("-")[0].lower()
+        lang_name = _LANG_CODE_TO_NAME.get(lang_code, "English")
+        system_prompt = f"LANGUAGE: You MUST respond in {lang_name}. All replies in {lang_name} only.\n\n{system_prompt}"
 
         # Append extra_system_prompt if provided (from start_conversation)
         if extra_system_prompt:
