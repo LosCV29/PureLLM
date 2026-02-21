@@ -1072,6 +1072,8 @@ class PureLLMConversationEntity(ConversationEntity):
         _user_clean = _clean_for_match(user_text)
         is_dismissal = _user_clean in _DISMISSALS
 
+        called_tools: set[str] = set()  # Dedup tool calls across iterations
+
         for iteration in range(5):
             payload = {
                 "contents": contents,
@@ -1116,10 +1118,27 @@ class PureLLMConversationEntity(ConversationEntity):
                     function_calls.append(part["functionCall"])
 
             if function_calls:
+                # Deduplicate tool calls — prevent the same tool+args from
+                # executing twice across iterations (e.g. manage_list add).
+                unique_calls = []
+                for fc in function_calls:
+                    tool_key = f"{fc['name']}:{json.dumps(fc.get('args', {}), sort_keys=True)}"
+                    if tool_key not in called_tools:
+                        called_tools.add(tool_key)
+                        unique_calls.append(fc)
+                    else:
+                        _LOGGER.debug("Google: deduped repeated tool call: %s", fc["name"])
+
+                if not unique_calls:
+                    # All calls were duplicates — treat as if no tool calls
+                    if text_response:
+                        return text_response
+                    continue
+
                 contents.append({"role": "model", "parts": parts})
                 function_responses = []
 
-                for fc in function_calls:
+                for fc in unique_calls:
                     result = await self._execute_tool(fc["name"], fc.get("args", {}))
                     if isinstance(result, dict) and "response_text" in result:
                         resp_content = result["response_text"]
