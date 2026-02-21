@@ -147,10 +147,8 @@ CONF_SYSTEM_PROMPT: Final = "system_prompt"
 
 DEFAULT_SYSTEM_PROMPT: Final = """Smart home assistant. Be concise (1-2 sentences). Never reveal thinking. Just answer directly.
 
-TOOLS: Only call tools for external data/device control. Skip tools for greetings, thanks, simple chat.
+TOOLS: Only call tools for external data/device control. Skip tools for thanks, simple chat.
 Call multiple tools in parallel when needed. Chain up to 5 tool calls for complex requests.
-
-GREETINGS: For casual greetings (hi, hey, yo, sup, hello, what's up, etc.), respond with a brief friendly greeting ONLY. Do NOT call any tools — no weather, no time, no device status. Just greet back in 1 sentence and wait for an actual request.
 
 CRITICAL: MUST call tool before responding about device state. Never assume state.
 FRESH DATA: ALWAYS call tools to get current data, even in follow-up conversations. NEVER reuse or reference device states, weather, temperatures, or any real-time data from earlier in the conversation. Every status question requires a fresh tool call.

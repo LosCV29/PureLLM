@@ -29,14 +29,7 @@ _DISMISSALS = frozenset({
     "no gracias", "listo", "eso es todo", "nada", "ya", "ya estuvo",
     "estoy bien", "no por ahora", "cancelar",
 })
-_GREETINGS = frozenset({
-    "hi", "hey", "hello", "yo", "sup", "whats up", "what's up",
-    "howdy", "hola", "good morning", "good afternoon",
-    "good evening", "good night", "what up", "wassup", "whaddup",
-    # Spanish greetings
-    "buenos dias", "buenos días", "buenas tardes", "buenas noches",
-    "que tal", "qué tal", "que onda", "qué onda",
-})
+
 
 # Map HA language codes to language names for system prompt injection.
 # Only the target language is mentioned — never list alternatives, which primes
@@ -70,7 +63,7 @@ _PUNCT_RE = re.compile(r"[^\w\s']")
 
 
 def _clean_for_match(text: str) -> str:
-    """Normalize user text for dismissal/greeting matching.
+    """Normalize user text for dismissal matching.
 
     Strips all punctuation except apostrophes, lowercases, and collapses whitespace.
     """
@@ -1078,11 +1071,10 @@ class PureLLMConversationEntity(ConversationEntity):
         # Add current user message
         contents.append({"role": "user", "parts": [{"text": user_text}]})
 
-        # Detect dismissals and greetings for follow-up tool forcing
+        # Detect dismissals for follow-up tool forcing
         is_followup = bool(history)
         _user_clean = _clean_for_match(user_text)
         is_dismissal = _user_clean in _DISMISSALS
-        is_greeting = _user_clean in _GREETINGS
 
         for iteration in range(5):
             payload = {
@@ -1094,7 +1086,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Force tool calling on first iteration (Gemini hallucinates without it).
                 # Skip forcing when user is responding to a follow-up question —
                 # the LLM already has context and just needs to respond naturally.
-                if not is_dismissal and not is_greeting and not is_followup_response and iteration == 0:
+                if not is_dismissal and not is_followup_response and iteration == 0:
                     payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
                 else:
                     payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
@@ -1173,11 +1165,10 @@ class PureLLMConversationEntity(ConversationEntity):
         ]
 
         # Add conversation history if present
-        # Detect dismissals and greetings — these don't need tool calls
+        # Detect dismissals — these don't need tool calls
         is_followup = bool(history)
         _user_clean = _clean_for_match(user_text)
         is_dismissal = _user_clean in _DISMISSALS
-        is_greeting = _user_clean in _GREETINGS
 
         if history:
             messages.extend(history)
@@ -1201,9 +1192,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Force tool calling on the first iteration.
                 # Local LLMs fabricate answers without calling tools.
                 # "required" forces at least one tool call before responding.
-                # Skip for dismissals ("done", "no"), greetings ("yo", "hey"),
-                # and followup responses (user answering a question we just asked).
-                if not is_dismissal and not is_greeting and not is_followup_response and iteration == 0:
+                # Skip for dismissals ("done", "no") and followup responses
+                # (user answering a question we just asked).
+                if not is_dismissal and not is_followup_response and iteration == 0:
                     kwargs["tool_choice"] = "required"
                 else:
                     kwargs["tool_choice"] = "auto"
