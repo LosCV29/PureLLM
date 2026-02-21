@@ -607,26 +607,14 @@ class PureLLMConversationEntity(ConversationEntity):
             data["extra_system_prompt"] = extra_system_prompt
 
         # For continuing conversations (shopping list, thermostat, etc.),
-        # keep only the last turn. Save the full user message (topic context)
-        # but strip the assistant's data — keep only the follow-up question.
-        # This prevents the LLM from pattern-matching confirmations while
-        # still knowing what "it" refers to from the user message.
+        # keep only the last turn. Preserve the full assistant response
+        # (e.g. "Added milk. Anything else?") so the LLM sees the confirmation
+        # pattern and knows the previous item was already handled — prevents
+        # missing confirmations and duplicate additions.
         if keep_only_last:
-            # Extract just the follow-up question from the assistant response
-            # e.g., "AC is at 72°F. Want me to adjust it?" → "Want me to adjust it?"
-            # e.g., "Got it. Anything else?" → "Anything else?"
-            saved_assistant = assistant_message
-            stripped = assistant_message.rstrip()
-            if stripped.endswith("?"):
-                for sep in [". ", "! ", "\n"]:
-                    if sep in stripped:
-                        last_part = stripped.rsplit(sep, 1)[-1].strip()
-                        if last_part.endswith("?"):
-                            saved_assistant = last_part
-                            break
             data["messages"] = [
                 {"role": "user", "content": user_message},
-                {"role": "assistant", "content": saved_assistant},
+                {"role": "assistant", "content": assistant_message},
             ]
         else:
             messages = data["messages"]
@@ -988,23 +976,15 @@ class PureLLMConversationEntity(ConversationEntity):
         if keep_listening:
             _LOGGER.info("Continuing conversation: response ends with follow-up question")
 
-            # Cache lightweight followup context on the entity itself.
+            # Cache followup context on the entity itself.
             # HA's ChatSession replaces conversation_ids between turns, so the
             # dict-based _conversation_history lookup will miss on the next turn.
-            # This cache stores ONLY the follow-up question (no data/tool results)
-            # so the LLM knows what it just asked without poisoning status lookups.
-            followup_question = final_response or ""
-            stripped = followup_question.rstrip()
-            if stripped.endswith("?"):
-                for sep in [". ", "! ", "\n"]:
-                    if sep in stripped:
-                        last_part = stripped.rsplit(sep, 1)[-1].strip()
-                        if last_part.endswith("?"):
-                            followup_question = last_part
-                            break
+            # Keep the FULL assistant response (e.g. "Added milk. Anything else?")
+            # so the LLM sees the confirmation pattern and knows the item was
+            # already added — prevents missing confirmations and duplicate adds.
             self._pending_followup = {
                 "user_query": user_text,
-                "assistant_question": followup_question,
+                "assistant_question": final_response or "",
                 "timestamp": time.time(),
             }
             _LOGGER.debug(
@@ -1291,7 +1271,12 @@ class PureLLMConversationEntity(ConversationEntity):
 
                 unique_tool_calls = []
                 for tc in valid_tool_calls:
-                    tool_key = f"{tc['function']['name']}:{tc['function']['arguments']}"
+                    # Normalize JSON for dedup (raw strings may differ in whitespace)
+                    try:
+                        _norm_args = json.dumps(json.loads(tc["function"]["arguments"]), sort_keys=True)
+                    except (json.JSONDecodeError, TypeError):
+                        _norm_args = tc["function"]["arguments"]
+                    tool_key = f"{tc['function']['name']}:{_norm_args}"
                     if tool_key not in called_tools:
                         called_tools.add(tool_key)
                         unique_tool_calls.append(tc)
