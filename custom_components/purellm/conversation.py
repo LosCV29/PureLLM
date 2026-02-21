@@ -24,7 +24,9 @@ _DISMISSALS = frozenset({
     "no", "nope", "done", "stop", "never mind", "nevermind",
     "no thanks", "no thank you", "thats all", "that's all",
     "thats it", "that's it", "nothing", "all done", "im good",
-    "i'm good", "not right now", "cancel",
+    "i'm good", "not right now", "cancel", "no more", "nothing else",
+    "all set", "im done", "i'm done", "enough", "thats enough",
+    "that's enough",
 })
 
 
@@ -1064,7 +1066,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Force tool calling on first iteration (Gemini hallucinates without it).
                 # Skip forcing when user is responding to a follow-up question —
                 # the LLM already has context and just needs to respond naturally.
-                if not is_dismissal and not is_followup_response and iteration == 0:
+                # Also skip when history exists from _conversation_history (HA
+                # preserved the conversation_id) — same situation, different source.
+                if not is_dismissal and not is_followup_response and not is_followup and iteration == 0:
                     payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
                 else:
                     payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
@@ -1102,7 +1106,11 @@ class PureLLMConversationEntity(ConversationEntity):
                 # executing twice across iterations (e.g. manage_list add).
                 unique_calls = []
                 for fc in function_calls:
-                    tool_key = f"{fc['name']}:{json.dumps(fc.get('args', {}), sort_keys=True)}"
+                    # Normalize args for dedup: strip empty/None values so
+                    # {"item":"x","list_name":""} and {"item":"x"} match.
+                    _raw = fc.get('args', {})
+                    _dedup = {k: v for k, v in _raw.items() if v is not None and v != ""}
+                    tool_key = f"{fc['name']}:{json.dumps(_dedup, sort_keys=True)}"
                     if tool_key not in called_tools:
                         called_tools.add(tool_key)
                         unique_calls.append(fc)
@@ -1187,9 +1195,10 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Force tool calling on the first iteration.
                 # Local LLMs fabricate answers without calling tools.
                 # "required" forces at least one tool call before responding.
-                # Skip for dismissals ("done", "no") and followup responses
-                # (user answering a question we just asked).
-                if not is_dismissal and not is_followup_response and iteration == 0:
+                # Skip for dismissals ("done", "no"), followup responses
+                # (user answering a question we just asked), and any turn
+                # with conversation history (prevents re-adding last item).
+                if not is_dismissal and not is_followup_response and not is_followup and iteration == 0:
                     kwargs["tool_choice"] = "required"
                 else:
                     kwargs["tool_choice"] = "auto"
@@ -1271,9 +1280,12 @@ class PureLLMConversationEntity(ConversationEntity):
 
                 unique_tool_calls = []
                 for tc in valid_tool_calls:
-                    # Normalize JSON for dedup (raw strings may differ in whitespace)
+                    # Normalize JSON for dedup: parse, strip empty/None values,
+                    # and sort keys so {"item":"x","list_name":""} matches {"item":"x"}.
                     try:
-                        _norm_args = json.dumps(json.loads(tc["function"]["arguments"]), sort_keys=True)
+                        _parsed = json.loads(tc["function"]["arguments"])
+                        _dedup = {k: v for k, v in _parsed.items() if v is not None and v != ""}
+                        _norm_args = json.dumps(_dedup, sort_keys=True)
                     except (json.JSONDecodeError, TypeError):
                         _norm_args = tc["function"]["arguments"]
                     tool_key = f"{tc['function']['name']}:{_norm_args}"
