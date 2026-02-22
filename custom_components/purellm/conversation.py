@@ -66,6 +66,29 @@ def _is_followup_dismissal(cleaned_text: str) -> bool:
     return False
 
 
+# Words that start a new standalone query rather than a follow-up response.
+# "what's the AC status" starts with "whats" → new query, not a follow-up.
+_NEW_QUERY_STARTERS = frozenset({
+    "what", "whats", "how", "hows", "check", "tell", "show", "get",
+    "give", "status", "play", "open", "close", "add", "remove",
+    "delete", "create", "list", "read", "who", "whos", "where",
+    "wheres", "when", "whens", "why",
+})
+
+
+def _looks_like_new_query(cleaned_text: str) -> bool:
+    """Check if user text looks like a fresh command/question, not a follow-up response.
+
+    Used to prevent stale _pending_followup from poisoning fresh queries.
+    Follow-up responses are short/referential: "yes", "no", "set it to 70".
+    New queries start with question/command words: "what's the AC status".
+    """
+    words = cleaned_text.split()
+    if not words:
+        return False
+    return words[0] in _NEW_QUERY_STARTERS
+
+
 # Map HA language codes to language names for system prompt injection.
 # Only the target language is mentioned — never list alternatives, which primes
 # the model to produce the wrong language.
@@ -897,21 +920,36 @@ class PureLLMConversationEntity(ConversationEntity):
         # so the LLM knows what it asked without reusing stale status data.
         is_followup_response = False
         if self._pending_followup and time.time() - self._pending_followup["timestamp"] < FOLLOWUP_TIMEOUT_SECONDS:
-            if not history:
-                history = [
-                    {"role": "user", "content": self._pending_followup["user_query"]},
-                    {"role": "assistant", "content": self._pending_followup["assistant_question"]},
-                ]
-            # Mark as follow-up regardless of whether history came from
-            # _get_conversation_history or the pending cache.  When HA reuses
-            # the conversation_id, history IS found via the dict lookup, but
-            # the user is still responding to our follow-up question.  Without
-            # this flag the broader dismissal check won't activate.
-            is_followup_response = True
-            _LOGGER.info(
-                "Using cached followup context (question='%s')",
-                self._pending_followup["assistant_question"][:60],
-            )
+            # Detect if this is a fresh query vs. a genuine follow-up response.
+            # "What's the AC status?" is a new query — don't treat it as a
+            # follow-up even if _pending_followup is still cached (e.g. from a
+            # voice pipeline timeout where the user never responded).
+            # Without this, is_followup_response=True causes tool forcing to be
+            # skipped (AUTO instead of ANY), so Gemini doesn't call the
+            # thermostat tool and can't report status or ask a follow-up.
+            _user_clean_for_followup = _clean_for_match(user_text)
+            if _looks_like_new_query(_user_clean_for_followup):
+                _LOGGER.info(
+                    "New query '%s' detected while pending followup exists — clearing stale followup",
+                    user_text,
+                )
+                self._pending_followup = None
+            else:
+                if not history:
+                    history = [
+                        {"role": "user", "content": self._pending_followup["user_query"]},
+                        {"role": "assistant", "content": self._pending_followup["assistant_question"]},
+                    ]
+                # Mark as follow-up regardless of whether history came from
+                # _get_conversation_history or the pending cache.  When HA reuses
+                # the conversation_id, history IS found via the dict lookup, but
+                # the user is still responding to our follow-up question.  Without
+                # this flag the broader dismissal check won't activate.
+                is_followup_response = True
+                _LOGGER.info(
+                    "Using cached followup context (question='%s')",
+                    self._pending_followup["assistant_question"][:60],
+                )
 
         _LOGGER.info(
             "PureLLM processing: '%s' provider=%s conversation_id=%s history_turns=%d extra_prompt=%s followup=%s",
