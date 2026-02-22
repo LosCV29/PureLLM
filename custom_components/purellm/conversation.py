@@ -17,6 +17,7 @@ from typing import Any, TYPE_CHECKING
 
 # Conversation history settings
 CONVERSATION_TIMEOUT_SECONDS = 300  # 5 minutes - conversations expire after this
+FOLLOWUP_TIMEOUT_SECONDS = 30  # 30 seconds - pending follow-ups expire quickly (voice pipeline keeps mic open only a few seconds)
 MAX_CONVERSATION_HISTORY = 4  # Max message pairs to keep per conversation (reduced for memory)
 
 # Phrases that should skip forced tool calling
@@ -895,7 +896,7 @@ class PureLLMConversationEntity(ConversationEntity):
         # This injects ONLY the follow-up question — no data/tool results —
         # so the LLM knows what it asked without reusing stale status data.
         is_followup_response = False
-        if self._pending_followup and time.time() - self._pending_followup["timestamp"] < CONVERSATION_TIMEOUT_SECONDS:
+        if self._pending_followup and time.time() - self._pending_followup["timestamp"] < FOLLOWUP_TIMEOUT_SECONDS:
             if not history:
                 history = [
                     {"role": "user", "content": self._pending_followup["user_query"]},
@@ -1017,15 +1018,19 @@ class PureLLMConversationEntity(ConversationEntity):
         # GUARDS:
         # - Never continue if this came from start_conversation/ask_and_act
         #   (has extra_system_prompt) to prevent infinite loops with those flows.
-        # - Never continue when the user is already responding to a follow-up
-        #   question (is_followup_response).  Without this, the LLM's response
-        #   to the follow-up (e.g. "Done! Anything else?") triggers ANOTHER
-        #   continue_conversation=True, forcing the user to speak a second
-        #   time just to dismiss.  Capping at depth 1 means: initial response
-        #   can ask a question, the user's answer closes the conversation.
+        # NOTE: We intentionally do NOT block keep_listening when
+        # is_followup_response is True.  Blocking it caused regressions:
+        # (1) stale _pending_followup (voice pipeline timeout without user
+        #     response) poisoned fresh AC status queries within the timeout
+        #     window, preventing the "Want me to adjust?" follow-up;
+        # (2) shopping-list multi-item chaining broke because adding a second
+        #     item IS a follow-up response that needs keep_listening=True.
+        # Double-confirmation is prevented instead by:
+        # - FOLLOWUP_TIMEOUT_SECONDS (30s) expiring stale pending followups
+        # - Code-level dismissal detection (_DISMISSALS + _is_followup_dismissal)
+        # - System prompt: "NEVER chain follow-ups"
         keep_listening = (
             not extra_system_prompt
-            and not is_followup_response
             and self._response_has_follow_up(final_response)
         )
         if keep_listening:
