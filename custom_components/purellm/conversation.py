@@ -21,13 +21,50 @@ MAX_CONVERSATION_HISTORY = 4  # Max message pairs to keep per conversation (redu
 
 # Phrases that should skip forced tool calling
 _DISMISSALS = frozenset({
-    "no", "nope", "done", "stop", "never mind", "nevermind",
+    "no", "nope", "nah", "done", "stop", "never mind", "nevermind",
     "no thanks", "no thank you", "thats all", "that's all",
     "thats it", "that's it", "nothing", "all done", "im good",
     "i'm good", "not right now", "cancel", "no more", "nothing else",
     "all set", "im done", "i'm done", "enough", "thats enough",
-    "that's enough",
+    "that's enough", "no i'm good", "no im good", "no i'm fine",
+    "no im fine", "nah i'm good", "nah im good", "no that's ok",
+    "no thats ok", "no that's fine", "no thats fine",
 })
+
+# Prefixes that signal a dismissal when responding to a follow-up offer.
+# Used for fuzzy matching when exact _DISMISSALS match misses.
+_DISMISSAL_PREFIXES = ("no", "nah", "nope", "not ", "don't", "dont")
+
+# Action words that indicate the user wants to DO something, not dismiss.
+# Prevents false-positive dismissal matching on e.g. "no, set it to 70".
+_ACTION_WORDS = frozenset({
+    "set", "raise", "lower", "change", "turn", "adjust", "make",
+    "increase", "decrease", "up", "down", "degrees", "mode",
+})
+
+
+def _is_followup_dismissal(cleaned_text: str) -> bool:
+    """Check if text is likely a dismissal in follow-up context.
+
+    More lenient than exact _DISMISSALS matching — catches phrases like
+    "no I'm fine", "nah that's alright", "not right now thanks", etc.
+    Only used when is_followup_response is True to avoid false positives.
+    """
+    # Already caught by exact match — shouldn't reach here, but be safe
+    if cleaned_text in _DISMISSALS:
+        return True
+
+    # Very short responses without numbers are almost certainly dismissals
+    words = cleaned_text.split()
+    if len(words) <= 2 and not any(c.isdigit() for c in cleaned_text):
+        return True
+
+    # Starts with a dismissal prefix and doesn't contain action words
+    if any(cleaned_text.startswith(p) for p in _DISMISSAL_PREFIXES):
+        if not any(w in _ACTION_WORDS for w in words):
+            return True
+
+    return False
 
 
 # Map HA language codes to language names for system prompt injection.
@@ -860,15 +897,17 @@ class PureLLMConversationEntity(ConversationEntity):
         # This injects ONLY the follow-up question — no data/tool results —
         # so the LLM knows what it asked without reusing stale status data.
         is_followup_response = False
-        if (
-            not history
-            and self._pending_followup
-            and time.time() - self._pending_followup["timestamp"] < CONVERSATION_TIMEOUT_SECONDS
-        ):
-            history = [
-                {"role": "user", "content": self._pending_followup["user_query"]},
-                {"role": "assistant", "content": self._pending_followup["assistant_question"]},
-            ]
+        if self._pending_followup and time.time() - self._pending_followup["timestamp"] < CONVERSATION_TIMEOUT_SECONDS:
+            if not history:
+                history = [
+                    {"role": "user", "content": self._pending_followup["user_query"]},
+                    {"role": "assistant", "content": self._pending_followup["assistant_question"]},
+                ]
+            # Mark as follow-up regardless of whether history came from
+            # _get_conversation_history or the pending cache.  When HA reuses
+            # the conversation_id, history IS found via the dict lookup, but
+            # the user is still responding to our follow-up question.  Without
+            # this flag the broader dismissal check won't activate.
             is_followup_response = True
             _LOGGER.info(
                 "Using cached followup context (question='%s')",
@@ -903,11 +942,19 @@ class PureLLMConversationEntity(ConversationEntity):
         # internal history dict (PureLLM overrides async_process, bypassing
         # the base ConversationEntity's ChatSession context manager).
         # A bare "no" or "stop" is never a meaningful standalone voice query.
+        #
+        # For follow-up responses (is_followup_response=True), we use a
+        # broader fuzzy check via _is_followup_dismissal() to catch STT
+        # variations like "no I'm fine", "nah that's ok", etc. that the
+        # exact-match set misses. Without this, those phrases reach the LLM
+        # which re-calls the thermostat tool and repeats the status.
         _user_clean = _clean_for_match(user_text)
-        if _user_clean in _DISMISSALS:
+        if _user_clean in _DISMISSALS or (
+            is_followup_response and _is_followup_dismissal(_user_clean)
+        ):
             _LOGGER.info(
-                "Dismissal '%s' detected — ending without LLM call",
-                user_text,
+                "Dismissal '%s' detected (followup=%s) — ending without LLM call",
+                user_text, is_followup_response,
             )
             # Clear conversation history and followup cache so the session ends cleanly
             if conversation_id in self._conversation_history:
