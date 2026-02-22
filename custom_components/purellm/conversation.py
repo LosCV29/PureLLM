@@ -1181,10 +1181,13 @@ class PureLLMConversationEntity(ConversationEntity):
 
                 for fc in unique_calls:
                     result = await self._execute_tool(fc["name"], fc.get("args", {}))
-                    if isinstance(result, dict) and "response_text" in result:
-                        resp_content = result["response_text"]
-                    else:
+                    # Serialize the full dict so extra fields like
+                    # "instruction" reach the LLM (e.g. thermostat check
+                    # includes an instruction to ask a follow-up).
+                    if isinstance(result, dict):
                         resp_content = json.dumps(result, ensure_ascii=False)
+                    else:
+                        resp_content = str(result)
 
                     function_responses.append({
                         "functionResponse": {"name": fc["name"], "response": {"result": resp_content}}
@@ -1382,11 +1385,14 @@ class PureLLMConversationEntity(ConversationEntity):
                             _LOGGER.error("Tool %s failed: %s", tool_call["function"]["name"], result)
                             result = {"error": str(result)}
 
-                        # Get content for the message
-                        if isinstance(result, dict) and "response_text" in result:
-                            content = result["response_text"]
-                        else:
+                        # Get content for the message.
+                        # Serialize the full dict so extra fields like
+                        # "instruction" reach the LLM (e.g. thermostat
+                        # check includes an instruction to ask a follow-up).
+                        if isinstance(result, dict):
                             content = json.dumps(result, ensure_ascii=False)
+                        else:
+                            content = str(result)
 
                         _LOGGER.debug("Tool result for %s: %s", tool_call["function"]["name"], content[:200])
 
