@@ -22,7 +22,8 @@ MAX_CONVERSATION_HISTORY = 4  # Max message pairs to keep per conversation (redu
 # Phrases that should skip forced tool calling
 _DISMISSALS = frozenset({
     "no", "nope", "nah", "done", "stop", "never mind", "nevermind",
-    "no thanks", "no thank you", "thats all", "that's all",
+    "no thanks", "no thank you", "thanks", "thank you",
+    "thats all", "that's all",
     "thats it", "that's it", "nothing", "all done", "im good",
     "i'm good", "not right now", "cancel", "no more", "nothing else",
     "all set", "im done", "i'm done", "enough", "thats enough",
@@ -54,12 +55,9 @@ def _is_followup_dismissal(cleaned_text: str) -> bool:
     if cleaned_text in _DISMISSALS:
         return True
 
-    # Very short responses without numbers are almost certainly dismissals
-    words = cleaned_text.split()
-    if len(words) <= 2 and not any(c.isdigit() for c in cleaned_text):
-        return True
-
     # Starts with a dismissal prefix and doesn't contain action words
+    # e.g. "no I'm fine" matches, but "no, set it to 70" does not.
+    words = cleaned_text.split()
     if any(cleaned_text.startswith(p) for p in _DISMISSAL_PREFIXES):
         if not any(w in _ACTION_WORDS for w in words):
             return True
@@ -1016,10 +1014,18 @@ class PureLLMConversationEntity(ConversationEntity):
         # --- Continuing conversation (HA 2025.4+ native support) ---
         # If the response ends with a question, tell the voice pipeline to
         # keep the satellite listening after TTS finishes — no wake word needed.
-        # GUARD: Never continue if this came from start_conversation/ask_and_act
-        # (has extra_system_prompt) to prevent infinite loops with those flows.
+        # GUARDS:
+        # - Never continue if this came from start_conversation/ask_and_act
+        #   (has extra_system_prompt) to prevent infinite loops with those flows.
+        # - Never continue when the user is already responding to a follow-up
+        #   question (is_followup_response).  Without this, the LLM's response
+        #   to the follow-up (e.g. "Done! Anything else?") triggers ANOTHER
+        #   continue_conversation=True, forcing the user to speak a second
+        #   time just to dismiss.  Capping at depth 1 means: initial response
+        #   can ask a question, the user's answer closes the conversation.
         keep_listening = (
             not extra_system_prompt
+            and not is_followup_response
             and self._response_has_follow_up(final_response)
         )
         if keep_listening:
