@@ -246,7 +246,7 @@ class MusicController:
             elif action == "resume":
                 return await self._resume(all_players)
             elif action == "stop":
-                return await self._stop(all_players)
+                return await self._stop(all_players, target_players if target_players else None)
             elif action == "skip_next":
                 return await self._skip_next(all_players)
             elif action == "skip_previous":
@@ -680,20 +680,47 @@ class MusicController:
 
         return {"error": "No paused music to resume"}
 
-    async def _stop(self, all_players: list[str]) -> dict:
-        """Stop music - uses area targeting like HA native intents."""
+    async def _stop(self, all_players: list[str], target_players: list[str] | None = None) -> dict:
+        """Stop music - uses area targeting like HA native intents.
+
+        Smart selection logic:
+        1. If target_players is specified (room was given), stop that specific player
+        2. Otherwise, find all playing/paused players and stop the most recently active one
+           (based on media_position_updated_at timestamp)
+        """
         _LOGGER.info("Looking for player in 'playing' or 'paused' state...")
 
-        for pid in all_players:
+        # If specific room was requested, only consider those players
+        players_to_check = target_players if target_players else all_players
+
+        # Find all playing/paused players with their last update time
+        active_players: list[tuple[str, datetime | None]] = []
+        for pid in players_to_check:
             state = self._hass.states.get(pid)
             if state and state.state in ("playing", "paused"):
-                _LOGGER.info("  %s → %s", pid, state.state)
+                last_updated = state.attributes.get("media_position_updated_at")
+                _LOGGER.info("  %s → %s (last_updated: %s)", pid, state.state, last_updated)
+                active_players.append((pid, last_updated))
 
-                await self._call_media_service(pid, "media_stop")
+        if not active_players:
+            if target_players:
+                return {"error": f"No music playing in {self._get_room_name(target_players[0])}"}
+            return {"error": "No music is currently playing"}
 
-                return {"status": "stopped", "response_text": f"Stopped in {self._get_room_name(pid)}"}
+        # Smart selection: pick the most recently active player
+        def sort_key(item: tuple[str, datetime | None]) -> tuple[int, datetime]:
+            pid, ts = item
+            if ts is None:
+                return (1, datetime.min)
+            return (0, ts)
 
-        return {"message": "No music is playing"}
+        active_players.sort(key=sort_key, reverse=True)
+        pid = active_players[0][0]
+        _LOGGER.info("Selected player to stop: %s (from %d active)", pid, len(active_players))
+
+        await self._call_media_service(pid, "media_stop")
+
+        return {"status": "stopped", "response_text": f"Stopped in {self._get_room_name(pid)}"}
 
     async def _skip_next(self, all_players: list[str]) -> dict:
         """Skip to next track."""
