@@ -718,9 +718,23 @@ class MusicController:
         pid = active_players[0][0]
         _LOGGER.info("Selected player to stop: %s (from %d active)", pid, len(active_players))
 
-        await self._call_media_service(pid, "media_stop")
+        room_name = self._get_room_name(pid)
+        try:
+            await self._call_media_service(pid, "media_stop")
+        except Exception as err:
+            # Chromecast (and some other players) may throw on media_stop
+            # even though the stop command was sent and worked. Give a
+            # moment for the state to settle, then check the actual outcome.
+            _LOGGER.warning("media_stop raised for %s: %s — checking actual state", pid, err)
+            await asyncio.sleep(1)
+            state = self._hass.states.get(pid)
+            if state and state.state not in ("playing", "paused"):
+                _LOGGER.info("Player %s is now %s — stop succeeded despite error", pid, state.state)
+                return {"status": "stopped", "response_text": f"Stopped in {room_name}"}
+            # Re-raise so the outer handler reports the real error
+            raise
 
-        return {"status": "stopped", "response_text": f"Stopped in {self._get_room_name(pid)}"}
+        return {"status": "stopped", "response_text": f"Stopped in {room_name}"}
 
     async def _skip_next(self, all_players: list[str]) -> dict:
         """Skip to next track."""
