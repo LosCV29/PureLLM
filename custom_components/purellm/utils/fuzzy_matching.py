@@ -49,13 +49,6 @@ STOPWORDS = frozenset([
     "the", "my", "a", "an", "in", "on", "at", "to", "for", "of",
     "please", "can", "you", "could", "would"
 ])
-
-# STT (speech-to-text) corrections for commonly misheard words
-# Maps misheard word -> intended word (tried as fallback when original query fails)
-STT_CORRECTIONS: dict[str, str] = {
-    "solar": "sala",
-}
-
 # Number word to digit mapping for voice command normalization
 NUMBER_WORDS = {
     "zero": "0",
@@ -156,16 +149,6 @@ def normalize_numbers(query: str) -> str:
     return " ".join(normalized)
 
 
-def _apply_stt_corrections(query: str) -> str:
-    """Apply STT corrections for commonly misheard words.
-
-    "solar light" -> "sala light"
-    """
-    words = query.lower().split()
-    corrected = [STT_CORRECTIONS.get(word, word) for word in words]
-    return " ".join(corrected)
-
-
 def normalize_cover_query(query: str) -> list[str]:
     """Generate query variations with device synonyms.
 
@@ -237,11 +220,6 @@ def find_entity_by_name(
     number_normalized = normalize_numbers(query)
     if number_normalized.lower() != query.lower():
         queries_to_try.append(number_normalized)
-
-    # Add STT-corrected version (e.g., "solar light" -> "sala light")
-    stt_corrected = _apply_stt_corrections(query)
-    if stt_corrected.lower() != query.lower():
-        queries_to_try.append(stt_corrected)
 
     # Try each query variation
     for q in queries_to_try:
