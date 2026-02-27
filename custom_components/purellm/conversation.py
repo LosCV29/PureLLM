@@ -113,7 +113,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
-from openai import AsyncOpenAI, BadRequestError as OpenAIBadRequestError
+from openai import AsyncOpenAI
 
 from .const import (
     DOMAIN,
@@ -1385,48 +1385,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 _LOGGER.debug("LLM iteration %d: no content and no tool calls, breaking", iteration)
                 break
 
-            except OpenAIBadRequestError as e:
-                # Handle context-length exceeded errors by reducing max_tokens
-                err_body = getattr(e, "body", None) or {}
-                err_msg = err_body.get("error", {}).get("message", "") if isinstance(err_body, dict) else str(e)
-                if "context length" in err_msg.lower():
-                    # Parse context_length and input_tokens from the error
-                    ctx_match = re.search(r"context length is (?:only )?(\d+)", err_msg)
-                    inp_match = re.search(r"(\d+) input tokens", err_msg) or re.search(r"input_tokens.*?(\d+)", err_msg)
-                    if ctx_match and inp_match:
-                        ctx_len = int(ctx_match.group(1))
-                        inp_tokens = int(inp_match.group(1))
-                        new_max = ctx_len - inp_tokens - 1  # -1 for safety margin
-                        if new_max >= 50:
-                            _LOGGER.warning(
-                                "Context length exceeded (ctx=%d, input=%d, requested=%d). "
-                                "Retrying with max_tokens=%d",
-                                ctx_len, inp_tokens, max_tokens, new_max,
-                            )
-                            kwargs["max_tokens"] = new_max
-                            try:
-                                stream = await self.client.chat.completions.create(**kwargs)
-                                async for chunk in stream:
-                                    if not chunk.choices:
-                                        continue
-                                    delta = chunk.choices[0].delta
-                                    if delta.content:
-                                        accumulated_content += delta.content
-                                if accumulated_content:
-                                    yield {"content": accumulated_content}
-                                    return
-                            except Exception as retry_err:
-                                _LOGGER.error("Retry after context-length reduction also failed: %s", retry_err)
-                        else:
-                            _LOGGER.error("Input tokens (%d) leave no room for output in context (%d)", inp_tokens, ctx_len)
-                    else:
-                        _LOGGER.error("Context length error but could not parse limits: %s", err_msg)
-                    yield {"content": "Sorry, the conversation is too long for the model. Please try a shorter request."}
-                    return
-
-                _LOGGER.error("OpenAI API error: %s", e, exc_info=True)
-                yield {"content": "Sorry, there was an error processing your request."}
-                return
             except Exception as e:
                 _LOGGER.error("OpenAI API error: %s", e, exc_info=True)
                 yield {"content": "Sorry, there was an error processing your request."}
