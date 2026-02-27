@@ -201,6 +201,7 @@ from .const import (
 from .utils.parsing import parse_entity_config, parse_list_config
 
 from .tools.definitions import build_tools, ToolConfig
+from .tools.intent_router import classify_intent, filter_tools_by_intent
 
 # Tool handlers
 from .tools import weather as weather_tool
@@ -965,7 +966,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 continue_conversation=False,
             )
 
-        tools = self._build_tools()
+        all_tools = self._build_tools()
+        intents = classify_intent(user_text)
+        tools = filter_tools_by_intent(all_tools, intents)
         system_prompt = self._get_effective_system_prompt()
 
         # Inject language enforcement at the top of the system prompt.
