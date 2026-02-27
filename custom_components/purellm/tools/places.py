@@ -1,16 +1,14 @@
 """Places and restaurant tool handlers."""
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import urllib.parse
 from datetime import datetime, time as dt_time
 from typing import Any, TYPE_CHECKING
 
-from ..const import API_TIMEOUT
 from ..utils.helpers import calculate_distance_miles, format_time_remaining
-from ..utils.http_client import post_json, fetch_json, log_and_error
+from ..utils.http_client import post_json, log_and_error
 
 if TYPE_CHECKING:
     import aiohttp

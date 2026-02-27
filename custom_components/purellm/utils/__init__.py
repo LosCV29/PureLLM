@@ -1,6 +1,5 @@
 """Utility modules for PureLLM."""
 from .fuzzy_matching import (
-    normalize_cover_query,
     find_entity_by_name,
     STOPWORDS,
     DEVICE_SYNONYMS,
@@ -18,7 +17,6 @@ from .helpers import (
 
 __all__ = [
     # Fuzzy matching
-    "normalize_cover_query",
     "find_entity_by_name",
     "STOPWORDS",
     "DEVICE_SYNONYMS",

@@ -6,7 +6,6 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 
-from ..const import API_TIMEOUT
 from ..utils.http_client import fetch_json, log_and_error, CACHE_TTL_SHORT
 
 if TYPE_CHECKING:
@@ -219,19 +218,14 @@ async def get_sports_info(
                 ("hockey", "nhl"),
             ]
         else:
-            # Default order - soccer first, then American sports
             leagues_to_try = [
                 ("soccer", "eng.1"),      # Premier League
-                ("soccer", "esp.1"),      # La Liga
-                ("soccer", "ger.1"),      # Bundesliga
-                ("soccer", "ita.1"),      # Serie A
-                ("soccer", "fra.1"),      # Ligue 1
                 ("basketball", "nba"),
                 ("football", "nfl"),
                 ("baseball", "mlb"),
                 ("hockey", "nhl"),
-                ("basketball", "mens-college-basketball"),  # NCAA Basketball
-                ("football", "college-football"),  # NCAA Football
+                ("basketball", "mens-college-basketball"),
+                ("football", "college-football"),
             ]
 
         url = None
@@ -468,7 +462,7 @@ async def get_sports_info(
 
             # For soccer: check upcoming dates if no next game found (ESPN soccer schedule API only shows completed games)
             # Fetch all 22 days in parallel for major performance improvement
-            major_soccer_leagues = ["eng.1", "esp.1", "fra.1", "ger.1", "ita.1", "uefa.champions"]
+            major_soccer_leagues = ["eng.1", "uefa.champions"]
             if found_sport == "soccer" and not next_game_from_scoreboard and found_league in major_soccer_leagues:
                 now_local = datetime.now(hass_timezone)
 
@@ -795,10 +789,6 @@ LEAGUE_CODES = {
     # Soccer/Football
     "premier league": ("soccer", "eng.1"),
     "epl": ("soccer", "eng.1"),
-    "la liga": ("soccer", "esp.1"),
-    "bundesliga": ("soccer", "ger.1"),
-    "serie a": ("soccer", "ita.1"),
-    "ligue 1": ("soccer", "fra.1"),
     "champions league": ("soccer", "uefa.champions"),
     "ucl": ("soccer", "uefa.champions"),
 }
