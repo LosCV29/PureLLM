@@ -264,24 +264,24 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== DEVICE CONTROL (always enabled - LLM fallback) =====
     tools.append(_tool(
         "control_device",
-        "Control devices (lights, switches, locks, fans, blinds, covers, media_player). Use device name for fuzzy matching. Blinds: open/close/stop. Media: pause/resume/play/mute/unmute. ALWAYS use this for specific device commands (e.g. 'resume the TV', 'pause the TV').",
+        "Control devices (lights, switches, locks, fans, blinds, covers, media_player). Use device name for fuzzy matching. Blinds: open/close/stop. Media: pause/resume/play/mute/unmute. ALWAYS use this for specific device commands (e.g. 'resume the TV', 'pause the TV'). Only include optional parameters the user explicitly requested — do NOT fill in defaults for brightness, color, volume, etc.",
         {
-            "device": {"type": "string", "description": "Device name (fuzzy matched)"},
-            "entity_id": {"type": "string", "description": "Exact entity ID (optional)"},
+            "device": {"type": "string", "description": "Device name from user request (fuzzy matched). REQUIRED — extract the device name the user mentioned."},
+            "entity_id": {"type": "string", "description": "Exact entity ID (optional, use device instead)"},
             "entity_ids": {"type": "array", "items": {"type": "string"}, "description": "Multiple entity IDs"},
-            "area": {"type": "string", "description": "Control all in area"},
+            "area": {"type": "string", "description": "Control all in area (use instead of device for area commands)"},
             "domain": {"type": "string", "enum": ["light", "switch", "lock", "cover", "fan", "media_player", "climate", "vacuum", "scene", "script", "all"], "description": "Device type filter"},
             "action": {"type": "string", "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "favorite", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "set_hvac_mode", "start", "dock", "locate", "return_home", "activate"], "description": "Action"},
-            "brightness": {"type": "integer", "description": "0-100"},
-            "color": {"type": "string", "description": "Color name"},
-            "color_temp": {"type": "integer", "description": "Kelvin (2700-6500)"},
-            "position": {"type": "integer", "description": "Cover 0-100"},
-            "volume": {"type": "integer", "description": "0-100"},
-            "temperature": {"type": "number", "description": "Target temp"},
+            "brightness": {"type": "integer", "description": "0-100 (only if user specified)"},
+            "color": {"type": "string", "description": "Color name (only if user specified)"},
+            "color_temp": {"type": "integer", "description": "Kelvin 2700-6500 (only if user specified)"},
+            "position": {"type": "integer", "description": "Cover 0-100 (only if user specified)"},
+            "volume": {"type": "integer", "description": "0-100 (only if user specified)"},
+            "temperature": {"type": "number", "description": "Target temp (only if user specified)"},
             "hvac_mode": {"type": "string", "enum": ["heat", "heating", "cool", "cooling", "heat_cool", "auto", "off"], "description": "HVAC mode"},
-            "fan_speed": {"type": "string", "enum": ["low", "medium", "high", "auto"], "description": "Fan speed"}
+            "fan_speed": {"type": "string", "enum": ["low", "medium", "high", "auto"], "description": "Fan speed (only if user specified)"}
         },
-        ["action"]
+        ["action", "device"]
     ))
 
     # ===== SOFABATON ACTIVITIES =====

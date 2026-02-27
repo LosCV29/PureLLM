@@ -150,15 +150,32 @@ async def create_reminder(
             return {"error": "No todo list or calendar found for reminders"}
 
         # Create todo item with due date
-        await hass.services.async_call(
-            "todo", "add_item",
-            {
-                "entity_id": target_list,
-                "item": f"Reminder: {reminder_text}",
-                "due_datetime": reminder_time.isoformat(),
-            },
-            blocking=True
-        )
+        # Try due_datetime first; fall back to due_date for entities that
+        # only support date-based due dates (e.g. local to-do lists).
+        try:
+            await hass.services.async_call(
+                "todo", "add_item",
+                {
+                    "entity_id": target_list,
+                    "item": f"Reminder: {reminder_text}",
+                    "due_datetime": reminder_time.isoformat(),
+                },
+                blocking=True
+            )
+        except Exception as dt_err:
+            _LOGGER.warning(
+                "due_datetime not supported for %s (%s), falling back to due_date",
+                target_list, dt_err,
+            )
+            await hass.services.async_call(
+                "todo", "add_item",
+                {
+                    "entity_id": target_list,
+                    "item": f"Reminder: {reminder_text}",
+                    "due_date": reminder_time.strftime("%Y-%m-%d"),
+                },
+                blocking=True
+            )
 
         return {
             "success": True,
