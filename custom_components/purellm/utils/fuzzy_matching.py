@@ -49,7 +49,6 @@ STOPWORDS = frozenset([
     "the", "my", "a", "an", "in", "on", "at", "to", "for", "of",
     "please", "can", "you", "could", "would"
 ])
-
 # Number word to digit mapping for voice command normalization
 NUMBER_WORDS = {
     "zero": "0",
