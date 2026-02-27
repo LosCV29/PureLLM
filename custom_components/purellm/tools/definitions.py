@@ -45,10 +45,9 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== WEATHER =====
     if config.enable_weather and config.openweathermap_api_key:
         tools.append(_tool(
-            "get_weather_forecast",
-            "Get weather. Omit location for local.",
+            "get_weather_forecast", "Get weather forecast.",
             {
-                "location": {"type": "string", "description": "City, State/Country"},
+                "location": {"type": "string"},
                 "forecast_type": {"type": "string", "enum": ["current", "tomorrow", "weekly", "sun_times"]}
             }
         ))
@@ -56,22 +55,19 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== PLACES =====
     if config.enable_places and config.google_places_api_key:
         tools.append(_tool(
-            "find_nearby_places",
-            "Find nearby places (NOT restaurants).",
+            "find_nearby_places", "Find nearby places.",
             {"query": {"type": "string"}, "max_results": {"type": "integer"}},
             ["query"]
         ))
 
     # ===== THERMOSTAT =====
     if config.enable_thermostat and config.thermostat_entity:
-        temp_unit = config.temp_unit
         step = config.thermostat_temp_step
         tools.append(_tool(
-            "control_thermostat",
-            f"Control thermostat. raise/lower=±{step}{temp_unit}, set=exact temp, set_mode, check=status.",
+            "control_thermostat", f"Control thermostat. raise/lower=±{step}.",
             {
                 "action": {"type": "string", "enum": ["raise", "lower", "set", "check", "set_mode"]},
-                "temperature": {"type": "number", "description": f"Temp in {temp_unit}"},
+                "temperature": {"type": "number"},
                 "hvac_mode": {"type": "string", "enum": ["heat", "cool", "heat_cool", "auto", "off"]}
             },
             ["action"]
@@ -85,7 +81,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             ["person_name"]
         ))
         tools.append(_tool(
-            "get_wikipedia_summary", "Get Wikipedia info.",
+            "get_wikipedia_summary", "Get Wikipedia summary.",
             {"topic": {"type": "string"}},
             ["topic"]
         ))
@@ -93,10 +89,9 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== SPORTS =====
     if config.enable_sports:
         tools.append(_tool(
-            "get_sports_info",
-            "Get team schedule/scores. Include sport for ambiguous names. Include 'Champions League' for European games.",
+            "get_sports_info", "Get team schedule/scores.",
             {
-                "team_name": {"type": "string", "description": "Team + sport/competition"},
+                "team_name": {"type": "string"},
                 "query_type": {"type": "string", "enum": ["last_game", "next_game", "standings", "schedule", "both"]}
             },
             ["team_name"]
@@ -106,12 +101,12 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             {"query_type": {"type": "string", "enum": ["next_event", "upcoming"]}}
         ))
         tools.append(_tool(
-            "check_league_games", "Count league games today/tomorrow.",
+            "check_league_games", "Count games today/tomorrow.",
             {"league": {"type": "string"}, "date": {"type": "string", "enum": ["today", "tomorrow"]}},
             ["league"]
         ))
         tools.append(_tool(
-            "list_league_games", "List league matchups/times.",
+            "list_league_games", "List game matchups/times.",
             {"league": {"type": "string"}, "date": {"type": "string", "enum": ["today", "tomorrow"]}},
             ["league"]
         ))
@@ -126,12 +121,11 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== RESTAURANTS =====
     if config.enable_restaurants and config.google_places_api_key:
         tools.append(_tool(
-            "get_restaurant_recommendations",
-            "Find restaurants.",
+            "get_restaurant_recommendations", "Find restaurants.",
             {
-                "query": {"type": "string", "description": "Food/cuisine type"},
+                "query": {"type": "string"},
                 "sort_by": {"type": "string", "enum": ["rating", "review_count", "distance"]},
-                "price": {"type": "string", "description": "1-4 (combine: '1,2')"},
+                "price": {"type": "string"},
                 "max_results": {"type": "integer"}
             },
             ["query"]
@@ -150,12 +144,12 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
     # ===== CAMERAS =====
     if config.enable_cameras:
-        camera_desc = "Check camera with AI vision."
+        camera_desc = "Check camera."
         if config.frigate_camera_names:
             camera_desc += f" Cameras: {', '.join(config.frigate_camera_names.keys())}."
         tools.append(_tool(
             "check_camera", camera_desc,
-            {"location": {"type": "string", "description": "Camera name"}, "query": {"type": "string", "description": "What to look for"}},
+            {"location": {"type": "string"}, "query": {"type": "string"}},
             ["location"]
         ))
 
@@ -167,7 +161,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             ["device"]
         ))
         tools.append(_tool(
-            "get_device_history", "Get device state history.",
+            "get_device_history", "Get device history.",
             {"device": {"type": "string"}, "days_back": {"type": "integer"}, "date": {"type": "string", "description": "YYYY-MM-DD"}},
             ["device"]
         ))
@@ -177,12 +171,12 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Room music (NOT specific devices like TVs). Rooms: {rooms_list}. Room required for play/shuffle. Stop/pause/skip auto-detects player. Play REQUIRES media_type.",
+            f"Music control. Rooms: {rooms_list}.",
             {
                 "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"]},
-                "media_type": {"type": "string", "enum": ["artist", "album", "track"], "description": "Required for play"},
-                "query": {"type": "string", "description": "Search query or modifier phrase"},
-                "album": {"type": "string", "description": "Album name or genre tag"},
+                "media_type": {"type": "string", "enum": ["artist", "album", "track"]},
+                "query": {"type": "string"},
+                "album": {"type": "string"},
                 "artist": {"type": "string"},
                 "song_on_album": {"type": "string", "description": "Find album containing this song"},
                 "room": {"type": "string"},
@@ -195,7 +189,7 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         "control_timer", "Control timers.",
         {
             "action": {"type": "string", "enum": ["start", "cancel", "pause", "resume", "status", "add", "restart", "finish"]},
-            "duration": {"type": "string", "description": "e.g. '10 minutes', 'half an hour'"},
+            "duration": {"type": "string"},
             "name": {"type": "string"},
             "add_time": {"type": "string"}
         },
@@ -204,13 +198,12 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
     # ===== LISTS (always enabled) =====
     tools.append(_tool(
-        "manage_list",
-        "Manage shopping/to-do lists. clear/show/sort REQUIRE status param.",
+        "manage_list", "Manage shopping/to-do lists.",
         {
             "action": {"type": "string", "enum": ["add", "complete", "remove", "remove_all", "show", "clear", "sort", "list_all"]},
             "item": {"type": "string"},
             "list_name": {"type": "string"},
-            "status": {"type": "string", "enum": ["active", "completed"], "description": "Required for clear/show/sort"}
+            "status": {"type": "string", "enum": ["active", "completed"]}
         },
         ["action"]
     ))
@@ -221,17 +214,16 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         {"reminder": {"type": "string"}, "time": {"type": "string"}},
         ["reminder"]
     ))
-    tools.append(_tool("get_reminders", "Get upcoming reminders."))
+    tools.append(_tool("get_reminders", "Get reminders."))
 
     # ===== DEVICE CONTROL (always enabled) =====
     tools.append(_tool(
-        "control_device",
-        "Control devices (lights, switches, locks, fans, blinds, covers, media_player). For specific device commands (TV pause, etc). Only include params user explicitly requested.",
+        "control_device", "Control HA devices.",
         {
-            "device": {"type": "string", "description": "Device name (fuzzy matched)"},
+            "device": {"type": "string"},
             "entity_id": {"type": "string"},
             "entity_ids": {"type": "array", "items": {"type": "string"}},
-            "area": {"type": "string", "description": "Area name (instead of device)"},
+            "area": {"type": "string"},
             "domain": {"type": "string", "enum": ["light", "switch", "lock", "cover", "fan", "media_player", "climate", "vacuum", "scene", "script", "all"]},
             "action": {"type": "string", "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "set_hvac_mode", "start", "dock", "locate", "return_home", "activate"]},
             "brightness": {"type": "integer"},
@@ -259,10 +251,10 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== WEB SEARCH =====
     if config.enable_search and config.tavily_api_key:
         tools.append(_tool(
-            "web_search", "Web search for news, reviews, current events.",
+            "web_search", "Search the web.",
             {
                 "query": {"type": "string"},
-                "days": {"type": "integer", "description": "Limit to last N days"},
+                "days": {"type": "integer"},
                 "include_domains": {"type": "array", "items": {"type": "string"}},
                 "exclude_domains": {"type": "array", "items": {"type": "string"}}
             },

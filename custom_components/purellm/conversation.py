@@ -104,6 +104,135 @@ def _clean_for_match(text: str) -> str:
     return " ".join(_PUNCT_RE.sub("", text.lower()).split())
 
 
+# ---------------------------------------------------------------------------
+# Dynamic tool selection — keyword → tool mapping
+# ---------------------------------------------------------------------------
+# For fresh queries (no conversation history), only tools matching detected
+# intent keywords are sent to the LLM.  This dramatically reduces token
+# usage (e.g. ~300 tokens for a device command vs ~2000+ for all tools).
+# Falls back to ALL tools when no keywords match or when history exists.
+_TOOL_INTENT_MAP: dict[str, tuple[list[str], list[str]]] = {
+    "device": (
+        ["turn on", "turn off", "toggle", "dim", "lock", "unlock",
+         "open", "close", "light", "switch", "fan",
+         "blind", "shade", "cover", "curtain", "garage",
+         "plug", "outlet", "vacuum", "scene", "brightness",
+         "pause", "resume", "volume", "mute", "stop the"],
+        ["control_device"],
+    ),
+    "music": (
+        ["play", "shuffle", "pause", "resume", "skip",
+         "next track", "next song", "previous", "what's playing",
+         "whats playing", "music", "song", "album", "artist",
+         "volume", "transfer to", "stop the music"],
+        ["control_music"],
+    ),
+    "weather": (
+        ["weather", "forecast", "rain", "sunrise", "sunset",
+         "sun times", "humid", "temperature", "how hot", "how cold"],
+        ["get_weather_forecast"],
+    ),
+    "thermostat": (
+        ["thermostat", "hvac", "degrees", "temperature",
+         "set it to", "turn up", "turn down", "the ac",
+         "the heat", "air condition"],
+        ["control_thermostat"],
+    ),
+    "timer": (
+        ["timer", "countdown", "stop the timer"],
+        ["control_timer"],
+    ),
+    "list": (
+        ["list", "shopping", "grocery", "to-do", "todo"],
+        ["manage_list"],
+    ),
+    "reminder": (
+        ["remind"],
+        ["create_reminder", "get_reminders"],
+    ),
+    "camera": (
+        ["camera", "anyone on", "someone on", "anyone outside",
+         "someone outside", "is there anyone", "check the porch",
+         "check the backyard", "check the driveway",
+         "check the front", "check the garage"],
+        ["check_camera"],
+    ),
+    "sports": (
+        ["game", "score", "standings", "schedule", "nfl", "nba",
+         "mlb", "nhl", "mls", "ufc", "premier league",
+         "champions league", "playoff", "games today",
+         "games tomorrow", "play next", "play last",
+         "play tonight", "play today", "next game", "last game",
+         "win", "won", "lost", "beat"],
+        ["get_sports_info", "get_ufc_info", "check_league_games",
+         "list_league_games"],
+    ),
+    "calendar": (
+        ["calendar", "event", "birthday", "appointment",
+         "schedule"],
+        ["get_calendar_events"],
+    ),
+    "wikipedia": (
+        ["who is", "what is", "who was", "what was",
+         "how old", "wikipedia", "tell me about"],
+        ["calculate_age", "get_wikipedia_summary"],
+    ),
+    "restaurant": (
+        ["restaurant", "reservation", "book a table",
+         "where to eat", "food near", "eat near"],
+        ["get_restaurant_recommendations", "book_restaurant"],
+    ),
+    "places": (
+        ["nearest", "closest", "find a ", "near me",
+         "nearby", "gas station", "pharmacy", "directions"],
+        ["find_nearby_places"],
+    ),
+    "device_status": (
+        ["is the front", "is the back", "is the side",
+         "is the garage", "is it locked", "door locked",
+         "mailbox"],
+        ["check_device_status", "get_device_history"],
+    ),
+    "sofabaton": (
+        ["sofabaton"],
+        ["control_sofabaton"],
+    ),
+    "search": (
+        ["search for", "look up", "news about", "latest news"],
+        ["web_search"],
+    ),
+    "datetime": (
+        ["what time", "what day", "what date", "current time",
+         "today's date"],
+        ["get_current_datetime"],
+    ),
+}
+
+_ALWAYS_INCLUDE_TOOLS = frozenset({"get_current_datetime"})
+
+
+def _select_tools_for_query(all_tools: list[dict], user_text: str) -> list[dict]:
+    """Select only the tools relevant to the user's query.
+
+    Uses keyword matching to detect intent, then returns only the
+    matching tool definitions.  Falls back to all tools if no intent
+    is detected (ambiguous / non-English queries).
+    """
+    text_lower = user_text.lower()
+    matched: set[str] = set(_ALWAYS_INCLUDE_TOOLS)
+    intent_found = False
+
+    for _cat, (keywords, tool_names) in _TOOL_INTENT_MAP.items():
+        if any(kw in text_lower for kw in keywords):
+            matched.update(tool_names)
+            intent_found = True
+
+    if not intent_found:
+        return all_tools
+
+    return [t for t in all_tools if t["function"]["name"] in matched]
+
+
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ChatLog, ConversationEntity
 from homeassistant.config_entries import ConfigEntry
@@ -965,7 +1094,20 @@ class PureLLMConversationEntity(ConversationEntity):
                 continue_conversation=False,
             )
 
-        tools = self._build_tools()
+        all_tools = self._build_tools()
+        # Dynamic tool selection: for fresh queries (no conversation history),
+        # only send tools matching detected intent keywords.  This can reduce
+        # token usage from ~2000 to ~300 for simple device commands.
+        if not history:
+            tools = _select_tools_for_query(all_tools, user_text)
+        else:
+            tools = all_tools
+        if len(tools) < len(all_tools):
+            tool_names = [t["function"]["name"] for t in tools]
+            _LOGGER.info(
+                "Tool filter: %d/%d tools %s",
+                len(tools), len(all_tools), tool_names,
+            )
         system_prompt = self._get_effective_system_prompt()
 
         # Inject language enforcement at the top of the system prompt.
