@@ -161,8 +161,12 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
     # ===== DEVICE STATUS =====
     if config.enable_device_status:
+        status_desc = "Check device status."
+        if config.device_aliases:
+            alias_names = ", ".join(config.device_aliases.keys())
+            status_desc += f" Known devices: {alias_names}."
         tools.append(_tool(
-            "check_device_status", "Check device status.",
+            "check_device_status", status_desc,
             {"device": {"type": "string"}},
             ["device"]
         ))
@@ -224,9 +228,13 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     tools.append(_tool("get_reminders", "Get upcoming reminders."))
 
     # ===== DEVICE CONTROL (always enabled) =====
+    device_desc = "Control devices (lights, switches, locks, fans, blinds, covers, media_player). For specific device commands (TV pause, etc). Only include params user explicitly requested."
+    if config.device_aliases:
+        alias_names = ", ".join(config.device_aliases.keys())
+        device_desc += f" Known devices: {alias_names}."
     tools.append(_tool(
         "control_device",
-        "Control devices (lights, switches, locks, fans, blinds, covers, media_player). For specific device commands (TV pause, etc). Only include params user explicitly requested.",
+        device_desc,
         {
             "device": {"type": "string", "description": "Device name (fuzzy matched)"},
             "entity_id": {"type": "string"},
@@ -305,3 +313,4 @@ class ToolConfig:
         self.room_player_mapping = entity.room_player_mapping
         self.sofabaton_activities = getattr(entity, 'sofabaton_activities', [])
         self.frigate_camera_names = getattr(entity, 'frigate_camera_names', {})
+        self.device_aliases = getattr(entity, 'device_aliases', {})
