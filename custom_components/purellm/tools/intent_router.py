@@ -73,17 +73,9 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         " list", "shopping", "grocery", "to-do", "todo",
         "add to my", "add it to",
     ],
-    "reminder": [
-        "remind", "reminder", "don't forget", "dont forget",
-    ],
     "calendar": [
         "calendar", " events", "schedule", "appointment", "birthday",
         "what's on my", "whats on my", "what do i have",
-    ],
-    "restaurant": [
-        "restaurant", "reservation", "book a table", "opentable",
-        "where to eat", "where should we eat",
-        "good food near", "best food near",
     ],
     "places": [
         "nearest ", "closest ", "find a ",
@@ -142,14 +134,12 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
     ],
     "timer": ["control_timer"],
     "list": ["manage_list"],
-    "reminder": ["create_reminder", "get_reminders"],
     "calendar": ["get_calendar_events"],
-    "restaurant": ["get_restaurant_recommendations", "book_restaurant"],
     "places": ["find_nearby_places"],
     "knowledge": ["calculate_age", "get_wikipedia_summary"],
     "datetime": ["get_current_datetime"],
     "device": ["control_device"],
-    "device_status": ["check_device_status", "get_device_history"],
+    "device_status": ["check_device_status"],
     "search": ["web_search"],
     "sofabaton": ["control_sofabaton"],
 }
