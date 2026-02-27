@@ -123,31 +123,6 @@ def build_tools(config: "ToolConfig") -> list[dict]:
             {"days_ahead": {"type": "integer"}}
         ))
 
-    # ===== RESTAURANTS =====
-    if config.enable_restaurants and config.google_places_api_key:
-        tools.append(_tool(
-            "get_restaurant_recommendations",
-            "Find restaurants.",
-            {
-                "query": {"type": "string", "description": "Food/cuisine type"},
-                "sort_by": {"type": "string", "enum": ["rating", "review_count", "distance"]},
-                "price": {"type": "string", "description": "1-4 (combine: '1,2')"},
-                "max_results": {"type": "integer"}
-            },
-            ["query"]
-        ))
-        tools.append(_tool(
-            "book_restaurant", "Get reservation link.",
-            {
-                "restaurant_name": {"type": "string"},
-                "location": {"type": "string"},
-                "party_size": {"type": "integer"},
-                "date": {"type": "string", "description": "YYYY-MM-DD"},
-                "time": {"type": "string"}
-            },
-            ["restaurant_name"]
-        ))
-
     # ===== CAMERAS =====
     if config.enable_cameras:
         camera_desc = "Check camera with AI vision."
@@ -168,11 +143,6 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         tools.append(_tool(
             "check_device_status", status_desc,
             {"device": {"type": "string"}},
-            ["device"]
-        ))
-        tools.append(_tool(
-            "get_device_history", "Get device state history.",
-            {"device": {"type": "string"}, "days_back": {"type": "integer"}, "date": {"type": "string", "description": "YYYY-MM-DD"}},
             ["device"]
         ))
 
@@ -218,14 +188,6 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         },
         ["action"]
     ))
-
-    # ===== REMINDERS (always enabled) =====
-    tools.append(_tool(
-        "create_reminder", "Create reminder.",
-        {"reminder": {"type": "string"}, "time": {"type": "string"}},
-        ["reminder"]
-    ))
-    tools.append(_tool("get_reminders", "Get upcoming reminders."))
 
     # ===== DEVICE CONTROL (always enabled) =====
     device_desc = "Control devices (lights, switches, locks, fans, blinds, covers, media_player). For specific device commands (TV pause, etc). Only include params user explicitly requested."
@@ -294,7 +256,6 @@ class ToolConfig:
         self.enable_cameras = entity.enable_cameras
         self.enable_sports = entity.enable_sports
         self.enable_places = entity.enable_places
-        self.enable_restaurants = entity.enable_restaurants
         self.enable_thermostat = entity.enable_thermostat
         self.enable_device_status = entity.enable_device_status
         self.enable_wikipedia = entity.enable_wikipedia

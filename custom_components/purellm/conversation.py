@@ -216,7 +216,6 @@ from .tools.music import MusicController
 from .tools import timer as timer_tool
 from .tools import lists as lists_tool
 from .tools import sofabaton as sofabaton_tool
-from .tools import reminders as reminders_tool
 from .tools import search as search_tool
 
 if TYPE_CHECKING:
@@ -1498,109 +1497,6 @@ class PureLLMConversationEntity(ConversationEntity):
         except Exception as err:
             _LOGGER.error("Error sending places notification: %s", err, exc_info=True)
 
-    async def _send_restaurant_notification(self, restaurant_result: dict[str, Any]) -> None:
-        """Send notification with restaurant info to configured devices."""
-        try:
-            restaurants = restaurant_result.get("restaurants", [])
-            query = restaurant_result.get("query", "restaurant")
-
-            _LOGGER.info("Sending restaurant notification for query: %s, count: %d", query, len(restaurants))
-
-            if not restaurants:
-                return
-
-            top_restaurants = restaurants[:3]
-
-            title = f"🍽️ Top {len(top_restaurants)} for '{query}'"
-            message_lines = []
-
-            for i, restaurant in enumerate(top_restaurants, 1):
-                name = restaurant.get("name", "Unknown")
-                rating = restaurant.get("rating")
-                review_count = restaurant.get("review_count", 0)
-                price = restaurant.get("price", "")
-                distance = restaurant.get("distance", "")
-
-                line_parts = [f"{i}. {name}"]
-                if rating:
-                    line_parts.append(f"★{rating}")
-                if review_count:
-                    line_parts.append(f"({review_count:,})")
-                if price:
-                    line_parts.append(price)
-                if distance:
-                    line_parts.append(distance)
-                message_lines.append(" ".join(line_parts))
-
-            message = "\n".join(message_lines)
-
-            top_pick = top_restaurants[0]
-            maps_url = top_pick.get("directions_url", "")
-            coordinates = top_pick.get("coordinates", {})
-
-            if not maps_url and coordinates and coordinates.get("lat") and coordinates.get("lng"):
-                lat, lng = coordinates["lat"], coordinates["lng"]
-                maps_url = f"https://www.google.com/maps/dir/?api=1&destination={lat},{lng}"
-
-            actions = []
-            if maps_url:
-                actions.append({"action": "URI", "title": "🗺️ #1 Directions", "uri": maps_url})
-            if len(top_restaurants) > 1 and top_restaurants[1].get("directions_url"):
-                actions.append({"action": "URI", "title": "🗺️ #2 Directions", "uri": top_restaurants[1]["directions_url"]})
-            if len(top_restaurants) > 2 and top_restaurants[2].get("directions_url"):
-                actions.append({"action": "URI", "title": "🗺️ #3 Directions", "uri": top_restaurants[2]["directions_url"]})
-
-            notification_data = self._build_notification_data(
-                title, message, actions, maps_url
-            )
-            await self._send_notification(notification_data, "restaurant")
-
-        except Exception as err:
-            _LOGGER.error("Error sending restaurant notification: %s", err, exc_info=True)
-
-    async def _send_reservation_notification(self, reservation_result: dict[str, Any]) -> None:
-        """Send notification with reservation link to configured devices."""
-        try:
-            restaurant_name = reservation_result.get("restaurant_name", "Restaurant")
-            reservation_url = reservation_result.get("reservation_url", "")
-            party_size = reservation_result.get("party_size", 2)
-            date = reservation_result.get("date", "")
-            time = reservation_result.get("time", "")
-            phone = reservation_result.get("phone", "")
-            address = reservation_result.get("address", "")
-
-            _LOGGER.info("Sending reservation notification for: %s", restaurant_name)
-
-            title = f"🍽️ Book {restaurant_name}"
-
-            message_parts = []
-            if date and time:
-                message_parts.append(f"📅 {date} at {time}")
-            elif date:
-                message_parts.append(f"📅 {date}")
-            elif time:
-                message_parts.append(f"🕐 {time}")
-            if party_size:
-                message_parts.append(f"👥 Party of {party_size}")
-            if address:
-                message_parts.append(f"📍 {address}")
-            if phone:
-                message_parts.append(f"📞 {phone}")
-            message = "\n".join(message_parts) if message_parts else f"Book a table at {restaurant_name}"
-
-            actions = []
-            if reservation_url:
-                actions.append({"action": "URI", "title": "🔍 Search Reservations", "uri": reservation_url})
-            if phone:
-                clean_phone = "".join(c for c in phone if c.isdigit() or c == "+")
-                actions.append({"action": "URI", "title": "📞 Call", "uri": f"tel:{clean_phone}"})
-
-            notification_data = self._build_notification_data(title, message, actions, reservation_url)
-            await self._send_notification(notification_data, "reservation")
-
-        except Exception as err:
-            _LOGGER.error("Error sending reservation notification: %s", err, exc_info=True)
-
     async def _send_camera_notification(self, camera_result: dict[str, Any]) -> None:
         """Send camera snapshot notification using the SgtBatten blueprint approach.
 
@@ -1742,11 +1638,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 handler = getattr(wikipedia_tool, tool_name)
                 return await handler(arguments, self._session, self._track_api_call)
 
-            # Reminder tools
-            if tool_name in ("create_reminder", "get_reminders"):
-                handler = getattr(reminders_tool, tool_name)
-                return await handler(arguments, self.hass, hass_tz)
-
             # Tool handlers - maps tool name to async callable
             tool_handlers = {
                 # Weather & Info
@@ -1767,10 +1658,6 @@ class PureLLMConversationEntity(ConversationEntity):
                     arguments, self.hass, self.device_aliases,
                     self._current_user_query, self.format_temp
                 ),
-                "get_device_history": lambda: device_tool.get_device_history(
-                    arguments, self.hass, self.device_aliases,
-                    hass_tz, self._current_user_query
-                ),
                 "control_device": lambda: device_tool.control_device(
                     arguments, self.hass, self.device_aliases, self.voice_scripts
                 ),
@@ -1782,14 +1669,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 "manage_list": lambda: lists_tool.manage_list(arguments, self.hass),
                 # Places (with notification post-processing)
                 "find_nearby_places": lambda: places_tool.find_nearby_places(
-                    arguments, self._session, self.google_places_api_key,
-                    latitude, longitude, self._track_api_call
-                ),
-                "get_restaurant_recommendations": lambda: places_tool.get_restaurant_recommendations(
-                    arguments, self._session, self.google_places_api_key,
-                    latitude, longitude, self._track_api_call
-                ),
-                "book_restaurant": lambda: places_tool.book_restaurant(
                     arguments, self._session, self.google_places_api_key,
                     latitude, longitude, self._track_api_call
                 ),
@@ -1816,10 +1695,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 if self.notification_entities:
                     if tool_name == "find_nearby_places" and self.notify_on_places and result.get("places"):
                         await self._send_places_notification(result)
-                    elif tool_name == "get_restaurant_recommendations" and self.notify_on_restaurants and result.get("restaurants"):
-                        await self._send_restaurant_notification(result)
-                    elif tool_name == "book_restaurant" and result.get("reservation_url"):
-                        await self._send_reservation_notification(result)
                     elif tool_name == "check_camera" and self.notify_on_camera and result.get("status") == "checked":
                         await self._send_camera_notification(result)
                     elif tool_name == "web_search" and self.notify_on_search and result.get("source_url"):
