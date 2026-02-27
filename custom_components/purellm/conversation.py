@@ -548,8 +548,6 @@ class PureLLMConversationEntity(ConversationEntity):
         from Frigate so the LLM tool description lists them correctly.
         This is best-effort; if Frigate is unreachable the dict stays empty.
         """
-        from .tools import camera as camera_tool
-
         try:
             if not self._session:
                 return
@@ -981,17 +979,15 @@ class PureLLMConversationEntity(ConversationEntity):
         if extra_system_prompt:
             system_prompt = f"{system_prompt}\n\nAdditional context:\n{extra_system_prompt}"
 
-        max_tokens = self._calculate_max_tokens(user_text)
+        is_dismissal = _user_clean in _DISMISSALS
 
         try:
             if self.provider == PROVIDER_LM_STUDIO:
-                # Use streaming for local models - faster first-token response
-                _LOGGER.debug("Using streaming for local provider: %s", self.provider)
                 stream = self._stream_openai_compatible(
-                    user_text, tools, system_prompt, max_tokens, history,
+                    user_text, tools, system_prompt, self.max_tokens, history,
+                    is_dismissal=is_dismissal,
                 )
 
-                # Collect streaming response
                 final_response = ""
                 async for delta in stream:
                     if "content" in delta:
@@ -999,7 +995,8 @@ class PureLLMConversationEntity(ConversationEntity):
 
             elif self.provider == PROVIDER_GOOGLE:
                 final_response = await self._call_google(
-                    user_text, tools, system_prompt, max_tokens, history,
+                    user_text, tools, system_prompt, self.max_tokens, history,
+                    is_dismissal=is_dismissal,
                 )
             else:
                 final_response = "Unknown provider."
@@ -1080,6 +1077,7 @@ class PureLLMConversationEntity(ConversationEntity):
         system_prompt: str,
         max_tokens: int,
         history: list[dict] | None = None,
+        is_dismissal: bool = False,
     ) -> str:
         """Simple non-streaming Google Gemini call with conversation history support."""
         function_declarations = []
@@ -1096,20 +1094,13 @@ class PureLLMConversationEntity(ConversationEntity):
             {"role": "model", "parts": [{"text": "Understood."}]},
         ]
 
-        # Add conversation history if present
         if history:
             for msg in history:
                 role = "model" if msg["role"] == "assistant" else "user"
                 contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-        # Add current user message
         contents.append({"role": "user", "parts": [{"text": user_text}]})
 
-        # Detect dismissals for follow-up tool forcing
-        is_followup = bool(history)
-        _user_clean = _clean_for_match(user_text)
-        is_dismissal = _user_clean in _DISMISSALS
-
-        called_tools: set[str] = set()  # Dedup tool calls across iterations
+        called_tools: set[str] = set()
 
         for iteration in range(5):
             payload = {
@@ -1118,9 +1109,7 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             if function_declarations:
                 payload["tools"] = [{"functionDeclarations": function_declarations}]
-                # Force tool calling on first iteration (Gemini hallucinates without it).
-                # NOTE: We force tools even for follow-up responses — see
-                # comment in _stream_openai_compatible for rationale.
+                # Force tool calling on first iteration to prevent hallucination.
                 if not is_dismissal and iteration == 0:
                     payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
                 else:
@@ -1201,10 +1190,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
         return "Could not get response."
 
-    def _calculate_max_tokens(self, user_text: str) -> int:
-        """Return configured max_tokens - no caps for local GPU."""
-        return self.max_tokens
-
     # =========================================================================
     # Streaming LLM Provider Methods
     # =========================================================================
@@ -1216,22 +1201,15 @@ class PureLLMConversationEntity(ConversationEntity):
         system_prompt: str,
         max_tokens: int,
         history: list[dict] | None = None,
+        is_dismissal: bool = False,
     ) -> AsyncGenerator[ContentDelta, None]:
         """Stream from OpenAI-compatible API with tool support and conversation history."""
         messages = [
             {"role": "system", "content": system_prompt},
         ]
 
-        # Add conversation history if present
-        # Detect dismissals — these don't need tool calls
-        is_followup = bool(history)
-        _user_clean = _clean_for_match(user_text)
-        is_dismissal = _user_clean in _DISMISSALS
-
         if history:
             messages.extend(history)
-
-        # Add current user message
         messages.append({"role": "user", "content": user_text})
 
         called_tools: set[str] = set()
@@ -1247,17 +1225,8 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             if tools:
                 kwargs["tools"] = tools
-                # Force tool calling on the first iteration.
-                # Local LLMs fabricate answers without calling tools.
-                # "required" forces at least one tool call before responding.
-                # Skip only for dismissals ("done", "no").
-                # NOTE: We intentionally force tools even for follow-up
-                # responses.  Previously we skipped forcing for follow-ups,
-                # but that caused stale _pending_followup to set tool_choice
-                # to "auto", letting the LLM fabricate data instead of
-                # calling tools.  Forcing tools on follow-ups is safe:
-                # dismissals are already short-circuited, and action
-                # responses ("set to 70") genuinely need tool calls.
+                # Force tool calling on first iteration to prevent hallucination.
+                # Dismissals are already short-circuited before reaching here.
                 if not is_dismissal and iteration == 0:
                     kwargs["tool_choice"] = "required"
                 else:
@@ -1379,7 +1348,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
                     tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
 
-                    # Yield tool calls and results as deltas
                     for tool_call, result in zip(unique_tool_calls, tool_results):
                         if isinstance(result, Exception):
                             _LOGGER.error("Tool %s failed: %s", tool_call["function"]["name"], result)
