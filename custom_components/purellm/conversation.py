@@ -18,7 +18,7 @@ from typing import Any, TYPE_CHECKING
 # Conversation history settings
 CONVERSATION_TIMEOUT_SECONDS = 300  # 5 minutes - conversations expire after this
 FOLLOWUP_TIMEOUT_SECONDS = 30  # 30 seconds - pending follow-ups expire quickly (voice pipeline keeps mic open only a few seconds)
-MAX_CONVERSATION_HISTORY = 4  # Max message pairs to keep per conversation (reduced for memory)
+MAX_CONVERSATION_HISTORY = 2  # Max message pairs to keep per conversation (reduced for token budget)
 
 # Phrases that should skip forced tool calling
 _DISMISSALS = frozenset({
@@ -975,7 +975,7 @@ class PureLLMConversationEntity(ConversationEntity):
         # which would prime the model to produce them.
         lang_code = (user_input.language or "en").split("-")[0].lower()
         lang_name = _LANG_CODE_TO_NAME.get(lang_code, "English")
-        system_prompt = f"LANGUAGE: You MUST respond in {lang_name}. All replies in {lang_name} only.\n\n{system_prompt}"
+        system_prompt = f"Respond in {lang_name} only.\n\n{system_prompt}"
 
         # Append extra_system_prompt if provided (from start_conversation)
         if extra_system_prompt:
