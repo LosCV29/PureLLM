@@ -1235,6 +1235,7 @@ class PureLLMConversationEntity(ConversationEntity):
         messages.append({"role": "user", "content": user_text})
 
         called_tools: set[str] = set()
+        _context_retried = False
 
         for iteration in range(5):  # Max 5 tool iterations
             kwargs = {
@@ -1258,8 +1259,10 @@ class PureLLMConversationEntity(ConversationEntity):
                 # calling tools.  Forcing tools on follow-ups is safe:
                 # dismissals are already short-circuited, and action
                 # responses ("set to 70") genuinely need tool calls.
-                if not is_dismissal and iteration == 0:
+                if not is_dismissal and (iteration == 0 or _context_retried):
                     kwargs["tool_choice"] = "required"
+                    if _context_retried:
+                        _context_retried = False
                 else:
                     kwargs["tool_choice"] = "auto"
 
@@ -1415,6 +1418,23 @@ class PureLLMConversationEntity(ConversationEntity):
                 break
 
             except Exception as e:
+                # Context overflow: drop conversation history and retry once
+                err_msg = str(e).lower()
+                if (
+                    ("context length" in err_msg or "input_tokens" in err_msg)
+                    and history
+                ):
+                    _LOGGER.warning(
+                        "Context overflow — dropping conversation history and retrying"
+                    )
+                    messages = [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_text},
+                    ]
+                    history = None
+                    _context_retried = True
+                    continue
+
                 _LOGGER.error("OpenAI API error: %s", e, exc_info=True)
                 yield {"content": "Sorry, there was an error processing your request."}
                 return
