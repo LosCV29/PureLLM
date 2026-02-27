@@ -20,6 +20,14 @@ CONVERSATION_TIMEOUT_SECONDS = 300  # 5 minutes - conversations expire after thi
 FOLLOWUP_TIMEOUT_SECONDS = 30  # 30 seconds - pending follow-ups expire quickly (voice pipeline keeps mic open only a few seconds)
 MAX_CONVERSATION_HISTORY = 2  # Max message pairs to keep per conversation (reduced for token budget)
 
+# Compact system prompt for simple intents (device status, datetime, etc.)
+# Saves ~400 tokens vs the full prompt on small-context models.
+_COMPACT_SYSTEM_PROMPT = (
+    "Smart home assistant. 1-2 sentences max. "
+    "Call tool for device state — never assume. "
+    "Respond with brief confirmation. No follow-up questions."
+)
+
 # Phrases that should skip forced tool calling
 _DISMISSALS = frozenset({
     "no", "nope", "nah", "done", "stop", "never mind", "nevermind",
@@ -201,7 +209,7 @@ from .const import (
 from .utils.parsing import parse_entity_config, parse_list_config
 
 from .tools.definitions import build_tools, ToolConfig
-from .tools.intent_router import classify_intent, filter_tools_by_intent
+from .tools.intent_router import classify_intent, filter_tools_by_intent, is_simple_intent
 
 # Tool handlers
 from .tools import weather as weather_tool
@@ -969,7 +977,14 @@ class PureLLMConversationEntity(ConversationEntity):
         all_tools = self._build_tools()
         intents = classify_intent(user_text)
         tools = filter_tools_by_intent(all_tools, intents)
-        system_prompt = self._get_effective_system_prompt()
+
+        # Use compact system prompt for simple intents (status checks, datetime, etc.)
+        # to stay within small model context limits.
+        if is_simple_intent(intents):
+            system_prompt = _COMPACT_SYSTEM_PROMPT
+            _LOGGER.debug("Using compact system prompt for simple intents: %s", intents)
+        else:
+            system_prompt = self._get_effective_system_prompt()
 
         # Inject language enforcement at the top of the system prompt.
         # Uses only the target language name — never mentions other languages,

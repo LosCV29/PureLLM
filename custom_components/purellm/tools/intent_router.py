@@ -157,6 +157,14 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
 # Tiny tools that are cheap to always include (~30 tokens each)
 _ALWAYS_INCLUDE = {"get_current_datetime"}
 
+# Intents that can use a compact system prompt to save tokens on small models
+_SIMPLE_INTENTS = {"device_status", "device", "datetime", "timer"}
+
+
+def is_simple_intent(intents: set[str]) -> bool:
+    """Check if all matched intents are simple (eligible for compact prompt)."""
+    return bool(intents) and intents.issubset(_SIMPLE_INTENTS)
+
 
 def classify_intent(user_text: str) -> set[str]:
     """Classify user text into intent categories using keyword matching.
