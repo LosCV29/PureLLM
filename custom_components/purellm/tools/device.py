@@ -393,7 +393,7 @@ async def control_device(
     service_map = {
         "light": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle", "dim": "turn_on"},
         "switch": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"},
-        "fan": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle", "set_speed": "set_percentage", "stop": "turn_off", "pause": "turn_off"},
+        "fan": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle", "set_speed": "set_percentage", "stop": "turn_off", "pause": "turn_off", "start": "turn_on", "resume": "turn_on"},
         "lock": {"lock": "lock", "unlock": "unlock", "turn_on": "lock", "turn_off": "unlock"},
         "cover": {
             "open": "open_cover", "close": "close_cover", "toggle": "toggle",
