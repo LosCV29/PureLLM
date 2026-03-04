@@ -421,10 +421,10 @@ class PureLLMConversationEntity(ConversationEntity):
         return "°C" if self.thermostat_use_celsius else "°F"
 
     def format_temp(self, temp: float | int | None) -> str:
-        """Format temperature with unit."""
+        """Format temperature as degrees only (no unit suffix for TTS clarity)."""
         if temp is None:
             return "unknown"
-        return f"{int(temp)}{self.temp_unit}"
+        return f"{int(temp)} degrees"
 
     def _parse_device_aliases(self, config_value: str) -> dict[str, str]:
         """Parse device aliases from config - supports both old text and new JSON format.
