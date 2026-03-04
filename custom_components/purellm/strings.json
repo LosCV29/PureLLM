@@ -30,7 +30,6 @@
           "model": "Model Settings",
           "features": "Enable/Disable Features",
           "entities": "PureLLM Default Entities",
-          "device_aliases": "Device Aliases",
           "voice_scripts": "Voice Scripts",
           "sofabaton": "SofaBaton Activities",
           "music_rooms": "Music Room Mapping",
@@ -88,16 +87,6 @@
           "thermostat_min_temp": "Thermostat Minimum Temperature",
           "thermostat_max_temp": "Thermostat Maximum Temperature",
           "thermostat_temp_step": "Temperature Adjustment Step"
-        }
-      },
-      "device_aliases": {
-        "title": "Device Aliases",
-        "description": "{aliases_info}",
-        "data": {
-          "select_alias": "Select Existing Alias",
-          "alias_name": "Alias Name (what you say, e.g., 'receiver', 'front door')",
-          "entity_id": "Entity",
-          "action": "Action"
         }
       },
       "voice_scripts": {

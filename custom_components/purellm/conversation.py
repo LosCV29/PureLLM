@@ -123,7 +123,6 @@ from .const import (
     CONF_CAMERA_ENTITIES,
     CONF_CUSTOM_LATITUDE,
     CONF_CUSTOM_LONGITUDE,
-    CONF_DEVICE_ALIASES,
     CONF_ENABLE_CALENDAR,
     CONF_ENABLE_CAMERAS,
     CONF_ENABLE_DEVICE_STATUS,
@@ -360,7 +359,6 @@ class PureLLMConversationEntity(ConversationEntity):
         self.thermostat_entity = config.get(CONF_THERMOSTAT_ENTITY, "")
         self.calendar_entities = parse_list_config(config.get(CONF_CALENDAR_ENTITIES, ""))
         self.camera_entities = parse_list_config(config.get(CONF_CAMERA_ENTITIES, ""))
-        self.device_aliases = self._parse_device_aliases(config.get(CONF_DEVICE_ALIASES, ""))
 
         # Thermostat settings
         self.thermostat_use_celsius = config.get(CONF_THERMOSTAT_USE_CELSIUS, DEFAULT_THERMOSTAT_USE_CELSIUS)
@@ -425,41 +423,6 @@ class PureLLMConversationEntity(ConversationEntity):
         if temp is None:
             return "unknown"
         return f"{int(temp)} degrees"
-
-    def _parse_device_aliases(self, config_value: str) -> dict[str, str]:
-        """Parse device aliases from config - supports both old text and new JSON format.
-
-        Old format (text): "alias:entity_id" per line
-        New format (JSON): [{"alias": "name", "entity": "entity_id"}, ...]
-
-        Returns: dict mapping alias -> entity_id
-        """
-        result: dict[str, str] = {}
-        if not config_value:
-            return result
-
-        # Try JSON format first (new format)
-        try:
-            aliases_list = json.loads(config_value)
-            if isinstance(aliases_list, list):
-                for item in aliases_list:
-                    if isinstance(item, dict):
-                        alias = item.get("alias", "").lower().strip()
-                        entity = item.get("entity", "").strip()
-                        if alias and entity:
-                            result[alias] = entity
-                return result
-        except (json.JSONDecodeError, TypeError):
-            pass
-
-        # Fall back to old text format: "alias:entity_id" per line
-        for line in config_value.strip().split("\n"):
-            line = line.strip()
-            if ":" in line:
-                alias, entity_id = line.split(":", 1)
-                result[alias.strip().lower()] = entity_id.strip()
-
-        return result
 
     def _create_openai_client(self):
         """Create OpenAI client (runs in executor to avoid blocking SSL)."""
@@ -591,7 +554,7 @@ class PureLLMConversationEntity(ConversationEntity):
         if self._tools is not None:
             return self._tools
 
-        self._tools = build_tools(ToolConfig(self))
+        self._tools = build_tools(ToolConfig(self), hass=self.hass)
         return self._tools
 
     def _cleanup_expired_conversations(self) -> None:
@@ -1655,11 +1618,11 @@ class PureLLMConversationEntity(ConversationEntity):
                     self.thermostat_max_temp, self.format_temp
                 ),
                 "check_device_status": lambda: device_tool.check_device_status(
-                    arguments, self.hass, self.device_aliases,
+                    arguments, self.hass,
                     self._current_user_query, self.format_temp
                 ),
                 "control_device": lambda: device_tool.control_device(
-                    arguments, self.hass, self.device_aliases, self.voice_scripts
+                    arguments, self.hass, self.voice_scripts
                 ),
                 "control_timer": lambda: timer_tool.control_timer(
                     arguments, self.hass,

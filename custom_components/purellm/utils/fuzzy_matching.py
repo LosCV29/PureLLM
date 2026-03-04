@@ -1,6 +1,8 @@
 """Fuzzy matching utilities for PureLLM.
 
 This module handles device name matching with:
+- Exposed entity prioritization (HA's Voice Assistant exposed entities)
+- Entity registry alias support
 - Synonym expansion (blind/shade/curtain/cover are interchangeable)
 - Stopword removal
 - Direct entity matching (NO room fuzzy logic - causes cross-room confusion)
@@ -204,12 +206,64 @@ def _words_match(query: str, target: str) -> bool:
     return query_words_normalized <= expanded_target
 
 
+def _is_exposed(hass: "HomeAssistant", entity_id: str) -> bool:
+    """Check if an entity is exposed to the conversation assistant."""
+    try:
+        from homeassistant.components.homeassistant.exposed_entities import async_should_expose
+        return async_should_expose(hass, "conversation", entity_id)
+    except (ImportError, Exception):
+        # If the API isn't available, treat all entities as exposed (backward compat)
+        return True
+
+
+def get_exposed_entity_names(hass: "HomeAssistant") -> list[str]:
+    """Get friendly names and aliases of all entities exposed to the conversation assistant.
+
+    Returns a list of display names suitable for injection into tool descriptions,
+    so the LLM knows what devices are available.
+    """
+    ent_reg = er.async_get(hass)
+    names: list[str] = []
+
+    for entity_entry in ent_reg.entities.values():
+        if not _is_exposed(hass, entity_entry.entity_id):
+            continue
+
+        # Skip non-controllable domains
+        domain = entity_entry.entity_id.split(".")[0] if "." in entity_entry.entity_id else ""
+        if domain in ("sensor", "binary_sensor", "weather", "person", "zone", "sun",
+                       "device_tracker", "update", "button", "calendar", "tts", "stt",
+                       "conversation", "number", "input_number", "input_text", "select",
+                       "input_select"):
+            continue
+
+        # Get the best display name
+        state = hass.states.get(entity_entry.entity_id)
+        friendly_name = state.attributes.get("friendly_name", "") if state else ""
+
+        # Prefer aliases (user-defined voice names) over friendly names
+        if entity_entry.aliases:
+            for alias in entity_entry.aliases:
+                alias = alias.strip()
+                if alias:
+                    names.append(alias)
+        elif friendly_name:
+            names.append(friendly_name)
+
+    return sorted(set(names))
+
+
 def find_entity_by_name(
-    hass: HomeAssistant,
+    hass: "HomeAssistant",
     query: str,
-    device_aliases: dict[str, str]
 ) -> tuple[str | None, str | None]:
     """Search for entity by name.
+
+    Priority order:
+    1-2: Exposed entities - exact/partial match on aliases
+    3-4: Exposed entities - exact/partial match on friendly name
+    5-6: All entities (fallback) - exact/partial match on aliases
+    7-8: All entities (fallback) - exact/partial match on friendly name
 
     Returns (entity_id, friendly_name) or (None, None) if not found.
     """
@@ -224,7 +278,7 @@ def find_entity_by_name(
     # Try each query variation
     for q in queries_to_try:
         # Try direct query first
-        result = _find_entity_by_query(hass, q, device_aliases)
+        result = _find_entity_by_query(hass, q)
         if result[0] is not None:
             return result
 
@@ -232,7 +286,7 @@ def find_entity_by_name(
         for query_var in normalize_cover_query(q):
             if query_var.lower() == q.lower():
                 continue
-            result = _find_entity_by_query(hass, query_var, device_aliases)
+            result = _find_entity_by_query(hass, query_var)
             if result[0] is not None:
                 return result
 
@@ -240,27 +294,11 @@ def find_entity_by_name(
 
 
 def _find_entity_by_query(
-    hass: HomeAssistant,
+    hass: "HomeAssistant",
     query: str,
-    device_aliases: dict[str, str]
 ) -> tuple[str | None, str | None]:
-    """Internal entity search - direct matching only, no fuzzy logic."""
+    """Internal entity search - prioritizes exposed entities, falls back to all."""
     query_lower = query.lower().strip()
-
-    # PRIORITY 1: Exact match in configured device aliases
-    if query_lower in device_aliases:
-        entity_id = device_aliases[query_lower]
-        state = hass.states.get(entity_id)
-        friendly_name = state.attributes.get("friendly_name", query) if state else query
-        return (entity_id, friendly_name)
-
-    # PRIORITY 2: Partial match in device aliases (all words present)
-    for alias, entity_id in device_aliases.items():
-        if _words_match(query_lower, alias) or _words_match(alias, query_lower):
-            state = hass.states.get(entity_id)
-            friendly_name = state.attributes.get("friendly_name", alias) if state else alias
-            _LOGGER.info("Found via partial alias: %s -> %s", alias, entity_id)
-            return (entity_id, friendly_name)
 
     # Single pass through entity registry
     ent_reg = er.async_get(hass)
@@ -278,37 +316,42 @@ def _find_entity_by_query(
         state = all_states.get(entity_entry.entity_id)
         friendly_name = state.attributes.get("friendly_name", "") if state else ""
         domain_pri = get_domain_priority(entity_entry.entity_id)
+        exposed = _is_exposed(hass, entity_entry.entity_id)
 
-        # PRIORITY 3: Exact match on entity registry alias
+        # Priority offset: exposed entities get 0, non-exposed get +10
+        pri_offset = 0 if exposed else 10
+
+        # PRIORITY 1/11: Exact match on entity registry alias
         if entity_entry.aliases:
             for alias in entity_entry.aliases:
                 if alias.lower() == query_lower:
-                    # For exact matches, still consider domain priority
-                    _LOGGER.info("Exact alias match: '%s' -> %s", alias, entity_entry.entity_id)
-                    partial_matches.append((3, domain_pri, entity_entry.entity_id, friendly_name or alias))
+                    _LOGGER.info("Exact alias match%s: '%s' -> %s", "" if exposed else " (non-exposed)", alias, entity_entry.entity_id)
+                    partial_matches.append((1 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or alias))
                 elif _words_match(query_lower, alias.lower()):
-                    _LOGGER.info("Partial alias match: '%s' contains '%s' -> %s", alias, query_lower, entity_entry.entity_id)
-                    partial_matches.append((4, domain_pri, entity_entry.entity_id, friendly_name or alias))
+                    _LOGGER.info("Partial alias match%s: '%s' contains '%s' -> %s", "" if exposed else " (non-exposed)", alias, query_lower, entity_entry.entity_id)
+                    partial_matches.append((2 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or alias))
 
-        # PRIORITY 5: Exact match on friendly name
+        # PRIORITY 3/13: Exact match on friendly name
         if friendly_name:
             fn_lower = friendly_name.lower()
             if fn_lower == query_lower:
-                partial_matches.append((5, domain_pri, entity_entry.entity_id, friendly_name))
+                partial_matches.append((3 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
             elif _words_match(query_lower, fn_lower):
-                partial_matches.append((6, domain_pri, entity_entry.entity_id, friendly_name))
+                partial_matches.append((4 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
 
     # Check states not in entity registry
     for entity_id, state in all_states.items():
         if entity_id not in {e.entity_id for e in ent_reg.entities.values()}:
             friendly_name = state.attributes.get("friendly_name", "")
             domain_pri = get_domain_priority(entity_id)
+            exposed = _is_exposed(hass, entity_id)
+            pri_offset = 0 if exposed else 10
             if friendly_name:
                 fn_lower = friendly_name.lower()
                 if fn_lower == query_lower:
-                    partial_matches.append((5, domain_pri, entity_id, friendly_name))
+                    partial_matches.append((3 + pri_offset, domain_pri, entity_id, friendly_name))
                 elif _words_match(query_lower, fn_lower):
-                    partial_matches.append((6, domain_pri, entity_id, friendly_name))
+                    partial_matches.append((4 + pri_offset, domain_pri, entity_id, friendly_name))
 
     # Return best match - sort by match priority first, then domain priority
     if partial_matches:
