@@ -68,10 +68,10 @@ def build_tools(config: "ToolConfig") -> list[dict]:
         step = config.thermostat_temp_step
         tools.append(_tool(
             "control_thermostat",
-            f"Control thermostat. raise/lower=±{step}{temp_unit}, set=exact temp, set_mode, check=status.",
+            f"Control thermostat. raise/lower=±{step} degrees, set=exact temp, set_mode, check=status.",
             {
                 "action": {"type": "string", "enum": ["raise", "lower", "set", "check", "set_mode"]},
-                "temperature": {"type": "number", "description": f"Temp in {temp_unit}"},
+                "temperature": {"type": "number", "description": "Temp in degrees"},
                 "hvac_mode": {"type": "string", "enum": ["heat", "cool", "heat_cool", "auto", "off"]}
             },
             ["action"]

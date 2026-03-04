@@ -83,10 +83,10 @@ async def check_device_status(
 
         status_parts = []
         if target_temp:
-            formatted_temp = temp_format_func(target_temp) if temp_format_func else f"{target_temp}°"
+            formatted_temp = temp_format_func(target_temp) if temp_format_func else f"{target_temp} degrees"
             status_parts.append(f"set to {formatted_temp}")
         if current_temp:
-            formatted_temp = temp_format_func(current_temp) if temp_format_func else f"{current_temp}°"
+            formatted_temp = temp_format_func(current_temp) if temp_format_func else f"{current_temp} degrees"
             status_parts.append(f"currently {formatted_temp}")
         if hvac_mode:
             status_parts.append(f"mode: {hvac_mode}")
