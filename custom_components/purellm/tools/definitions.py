@@ -198,9 +198,9 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     ))
 
     # ===== DEVICE CONTROL (always enabled) =====
-    device_desc = "Control devices (lights, switches, locks, fans, blinds, covers, media_player). For specific device commands (TV pause, etc). Only include params user explicitly requested."
+    device_desc = "Control devices (lights, switches, locks, fans, blinds, covers, media_player). For specific device commands (TV pause, etc). PREFER this tool for any device the user has named/aliased. Only include params user explicitly requested."
     if _exposed_names:
-        device_desc += f" Known devices: {', '.join(_exposed_names[:50])}."
+        device_desc += f" Known devices (user aliases — always match these first): {', '.join(_exposed_names[:50])}."
     tools.append(_tool(
         "control_device",
         device_desc,
@@ -228,7 +228,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         activity_names = [a.get("name", "") for a in config.sofabaton_activities if a.get("name")]
         tools.append(_tool(
             "control_sofabaton",
-            f"SofaBaton: {', '.join(activity_names)}.",
+            f"SofaBaton multi-device activities ONLY (NOT for controlling individual devices like TVs/media players — use control_device for those). Activities: {', '.join(activity_names)}.",
             {"activity": {"type": "string"}, "action": {"type": "string", "enum": ["start", "stop"]}},
             ["activity", "action"]
         ))

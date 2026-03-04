@@ -103,6 +103,9 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "garage door", "mailbox",
         "front door", "back door", "side gate",
         "purifier", "diffuser",
+        " tv", "television", "apple tv", "roku", "fire stick",
+        "pause the", "resume the", "mute the", "unmute the",
+        "volume up", "volume down",
     ],
     "device_status": [
         "is the ", "is my ", "status of",
@@ -116,8 +119,7 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "latest news", "current news",
     ],
     "sofabaton": [
-        "sofabaton", " tv", "television",
-        "apple tv", "roku", "fire stick",
+        "sofabaton",
         "watch ", "start watching",
     ],
 }
@@ -141,7 +143,7 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
     "device": ["control_device"],
     "device_status": ["check_device_status"],
     "search": ["web_search"],
-    "sofabaton": ["control_sofabaton"],
+    "sofabaton": ["control_sofabaton", "control_device"],
 }
 
 # Tiny tools that are cheap to always include (~30 tokens each)
