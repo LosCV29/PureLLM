@@ -621,6 +621,13 @@ async def control_device(
         domain_services = service_map.get(domain, {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"})
         service = domain_services.get(action)
 
+        # Fallback: map common synonyms to turn_on/turn_off when domain doesn't define them
+        if not service:
+            generic_fallbacks = {"stop": "turn_off", "pause": "turn_off", "start": "turn_on", "resume": "turn_on"}
+            fallback_action = generic_fallbacks.get(action)
+            if fallback_action:
+                service = domain_services.get(fallback_action)
+
         if not service:
             failed.append(f"{friendly_name} (unsupported action)")
             continue
