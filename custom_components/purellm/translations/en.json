@@ -30,7 +30,6 @@
           "model": "Model Settings",
           "features": "Enable/Disable Features",
           "entities": "PureLLM Default Entities",
-          "aliases": "LLM Fallback Aliases",
           "music_rooms": "Music Room Mapping",
           "api_keys": "External API Keys",
           "location": "Location Settings",
@@ -85,17 +84,6 @@
           "thermostat_min_temp": "Thermostat Minimum Temperature",
           "thermostat_max_temp": "Thermostat Maximum Temperature",
           "thermostat_temp_step": "Temperature Adjustment Step"
-        }
-      },
-      "smart_devices": {
-        "title": "Smart Devices",
-        "description": "{devices}",
-        "data": {
-          "action": "Action",
-          "select_device": "Select Device",
-          "select_alias": "Select Alias",
-          "new_entity": "New Device",
-          "new_alias": "Voice Alias (what you'll say)"
         }
       },
       "music_rooms": {

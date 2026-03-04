@@ -6,7 +6,10 @@ of 375 lines of repetitive boilerplate.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
 
 
 def _tool(name: str, description: str, properties: dict = None, required: list = None) -> dict:
@@ -35,9 +38,15 @@ def _tool(name: str, description: str, properties: dict = None, required: list =
     }
 
 
-def build_tools(config: "ToolConfig") -> list[dict]:
+def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> list[dict]:
     """Build the tools list based on enabled features."""
     tools = []
+
+    # Get exposed entity names for tool descriptions
+    _exposed_names: list[str] = []
+    if hass:
+        from ..utils.fuzzy_matching import get_exposed_entity_names
+        _exposed_names = get_exposed_entity_names(hass)
 
     # ===== CORE TOOLS (always enabled) =====
     tools.append(_tool("get_current_datetime", "Get current date/time."))
@@ -137,9 +146,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
     # ===== DEVICE STATUS =====
     if config.enable_device_status:
         status_desc = "Check device status."
-        if config.device_aliases:
-            alias_names = ", ".join(config.device_aliases.keys())
-            status_desc += f" Known devices: {alias_names}."
+        if hass and _exposed_names:
+            status_desc += f" Known devices: {', '.join(_exposed_names[:50])}."
         tools.append(_tool(
             "check_device_status", status_desc,
             {"device": {"type": "string"}},
@@ -191,9 +199,8 @@ def build_tools(config: "ToolConfig") -> list[dict]:
 
     # ===== DEVICE CONTROL (always enabled) =====
     device_desc = "Control devices (lights, switches, locks, fans, blinds, covers, media_player). For specific device commands (TV pause, etc). Only include params user explicitly requested."
-    if config.device_aliases:
-        alias_names = ", ".join(config.device_aliases.keys())
-        device_desc += f" Known devices: {alias_names}."
+    if _exposed_names:
+        device_desc += f" Known devices: {', '.join(_exposed_names[:50])}."
     tools.append(_tool(
         "control_device",
         device_desc,
@@ -274,4 +281,3 @@ class ToolConfig:
         self.room_player_mapping = entity.room_player_mapping
         self.sofabaton_activities = getattr(entity, 'sofabaton_activities', [])
         self.frigate_camera_names = getattr(entity, 'frigate_camera_names', {})
-        self.device_aliases = getattr(entity, 'device_aliases', {})

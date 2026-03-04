@@ -19,7 +19,6 @@ _LOGGER = logging.getLogger(__name__)
 async def check_device_status(
     arguments: dict[str, Any],
     hass: "HomeAssistant",
-    device_aliases: dict[str, str],
     user_query: str = "",
     temp_format_func: callable = None,
 ) -> dict[str, Any]:
@@ -28,7 +27,6 @@ async def check_device_status(
     Args:
         arguments: Tool arguments (device)
         hass: Home Assistant instance
-        device_aliases: Custom device name -> entity_id mapping
         user_query: Original user query for better extraction
         temp_format_func: Function to format temperature values
 
@@ -63,7 +61,7 @@ async def check_device_status(
     if not device:
         return {"error": "No device specified. Please specify a device name like 'front door', 'garage', etc."}
 
-    entity_id, friendly_name = find_entity_by_name(hass, device, device_aliases)
+    entity_id, friendly_name = find_entity_by_name(hass, device)
 
     if not entity_id:
         return {"error": f"Could not find a device matching '{device}'. Try using the exact name as shown in Home Assistant."}
@@ -136,7 +134,6 @@ async def check_device_status(
 async def get_device_history(
     arguments: dict[str, Any],
     hass: "HomeAssistant",
-    device_aliases: dict[str, str],
     hass_timezone,
     user_query: str = "",
 ) -> dict[str, Any]:
@@ -145,7 +142,6 @@ async def get_device_history(
     Args:
         arguments: Tool arguments (device, days_back, date)
         hass: Home Assistant instance
-        device_aliases: Custom device name -> entity_id mapping
         hass_timezone: Home Assistant timezone
         user_query: Original user query for better extraction
 
@@ -175,7 +171,7 @@ async def get_device_history(
     if not device:
         return {"error": "No device specified. Please specify a device name like 'front door', 'garage', etc."}
 
-    entity_id, friendly_name = find_entity_by_name(hass, device, device_aliases)
+    entity_id, friendly_name = find_entity_by_name(hass, device)
 
     if not entity_id:
         return {"error": f"Could not find a device matching '{device}'. Try using the exact name as shown in Home Assistant."}
@@ -297,7 +293,6 @@ async def get_device_history(
 async def control_device(
     arguments: dict[str, Any],
     hass: "HomeAssistant",
-    device_aliases: dict[str, str],
     voice_scripts: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Control smart home devices.
@@ -317,7 +312,6 @@ async def control_device(
     Args:
         arguments: Tool arguments
         hass: Home Assistant instance
-        device_aliases: Custom device name -> entity_id mapping
         voice_scripts: List of voice script configs with trigger, open_script, close_script, sensor
 
     Returns:
@@ -328,9 +322,6 @@ async def control_device(
     from homeassistant.helpers import entity_registry as er
     from homeassistant.helpers import area_registry as ar
     from homeassistant.helpers import device_registry as dr
-
-    _LOGGER.warning("DEBUG control_device called with: %s", arguments)
-    _LOGGER.warning("DEBUG device_aliases: %s", device_aliases)
 
     action = arguments.get("action", "").strip().lower()
     brightness = arguments.get("brightness")
@@ -465,36 +456,19 @@ async def control_device(
 
     # Method 3: Area-based control
     elif area_name:
-        # First, check if area_name matches a device alias (e.g., "downstairs" -> light.downstairs_group)
+        # First, check if area_name matches an entity alias (e.g., "downstairs" -> light.downstairs_group)
         # This allows users to create aliases for light groups that the LLM might call as "areas"
-        area_alias_entity = None
-        area_name_lower = area_name.lower().strip()
+        area_alias_entity_id, area_alias_friendly = find_entity_by_name(hass, area_name)
 
-        # Check device aliases for exact match on area name
-        if area_name_lower in device_aliases:
-            area_alias_entity = device_aliases[area_name_lower]
-            _LOGGER.info("Area name '%s' matched device alias -> %s", area_name, area_alias_entity)
-        else:
-            # Check for partial matches (e.g., "downstairs lights" might match "all downstairs lights" alias)
-            for alias, entity_id in device_aliases.items():
-                # Check if area name is contained in alias or vice versa
-                if area_name_lower in alias or alias in area_name_lower:
-                    area_alias_entity = entity_id
-                    _LOGGER.info("Area name '%s' partially matched alias '%s' -> %s", area_name, alias, entity_id)
-                    break
-
-        # If we found a device alias match, use it as a single entity instead of area control
-        if area_alias_entity:
-            state = hass.states.get(area_alias_entity)
+        if area_alias_entity_id:
+            state = hass.states.get(area_alias_entity_id)
             if state:
-                friendly_name = state.attributes.get("friendly_name", area_alias_entity)
-                entities_to_control.append((area_alias_entity, friendly_name))
-            else:
-                _LOGGER.warning("Device alias entity '%s' not found in HA, falling back to area lookup", area_alias_entity)
-                area_alias_entity = None  # Reset to try area lookup
+                friendly_name = state.attributes.get("friendly_name", area_alias_entity_id)
+                entities_to_control.append((area_alias_entity_id, friendly_name))
+                _LOGGER.info("Area name '%s' matched entity alias -> %s", area_name, area_alias_entity_id)
 
-        # If no alias match found (or alias entity doesn't exist), proceed with area registry lookup
-        if not area_alias_entity:
+        # If no alias match found, proceed with area registry lookup
+        if not entities_to_control:
             ent_reg = er.async_get(hass)
             area_reg = ar.async_get(hass)
             dev_reg = dr.async_get(hass)
@@ -575,13 +549,13 @@ async def control_device(
                 entities_to_control.append((close_script, trigger_name))
             else:
                 # Fall back to normal entity lookup if no script configured for this action
-                found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
+                found_entity_id, friendly_name = find_entity_by_name(hass, device_name)
                 if found_entity_id:
                     entities_to_control.append((found_entity_id, friendly_name))
                 else:
                     return {"error": f"Could not find a device matching '{device_name}'."}
         else:
-            found_entity_id, friendly_name = find_entity_by_name(hass, device_name, device_aliases)
+            found_entity_id, friendly_name = find_entity_by_name(hass, device_name)
 
             if found_entity_id:
                 entities_to_control.append((found_entity_id, friendly_name))
