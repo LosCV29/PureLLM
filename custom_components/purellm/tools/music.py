@@ -8,10 +8,14 @@ import unicodedata
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
+from urllib.parse import quote
+
 from homeassistant.components.media_player import MediaPlayerEntityFeature
 from homeassistant.helpers import entity_registry as er, device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from ..utils.helpers import COMMON_ROOM_NAMES
+from ..utils.http_client import fetch_json, CACHE_TTL_LONG
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -200,6 +204,113 @@ _ORDINALS = {
     "fifth": 4, "5th": 4,
     "latest": -1, "newest": -1, "most recent": -1, "last": -1,
 }
+
+# MusicBrainz API configuration
+_MB_BASE = "https://musicbrainz.org/ws/2"
+_MB_USER_AGENT = "PureLLM-HomeAssistant/7.8.0 ( https://github.com/LosCV29/purellm )"
+
+# Map our theme keys to MusicBrainz tag names for server-side + client-side filtering
+_MB_THEME_TAGS: dict[str, list[str]] = {
+    "christmas": ["christmas", "xmas", "holiday", "noel"],
+    "xmas": ["christmas", "xmas", "holiday", "noel"],
+    "holiday": ["holiday", "christmas", "xmas"],
+    "halloween": ["halloween"],
+    "live": ["live"],
+    "acoustic": ["acoustic", "unplugged"],
+    "soundtrack": ["soundtrack", "film score"],
+}
+
+
+async def _musicbrainz_themed_albums(
+    session: Any,
+    artist: str,
+    theme: str,
+    theme_keywords: list[str],
+) -> list[dict]:
+    """Query MusicBrainz for themed albums by an artist.
+
+    Returns a list of dicts with keys: name, year, mb_id — sorted by year.
+    Returns empty list on any failure (network, no results, etc).
+    """
+    # Build Lucene query: artist:"X" AND primarytype:album
+    mb_tags = _MB_THEME_TAGS.get(theme, [theme])
+    tag_clause = " OR ".join(f'tag:"{t}"' for t in mb_tags)
+    query = f'artist:"{artist}" AND primarytype:album AND ({tag_clause})'
+    url = f"{_MB_BASE}/release-group?query={quote(query)}&fmt=json&limit=100"
+
+    _LOGGER.info("MUSICBRAINZ: Searching: %s", query)
+    data, status = await fetch_json(
+        session, url,
+        headers={"User-Agent": _MB_USER_AGENT, "Accept": "application/json"},
+        cache_ttl=CACHE_TTL_LONG,
+    )
+    if not data or status != 200:
+        _LOGGER.warning("MUSICBRAINZ: Search failed (status=%s)", status)
+        return []
+
+    release_groups = data.get("release-groups", [])
+    if not release_groups:
+        _LOGGER.info("MUSICBRAINZ: No release-groups found for query")
+        return []
+
+    # Filter and extract relevant albums
+    artist_lower = _strip_accents(artist.lower())
+    results: list[dict] = []
+    seen_titles: set[str] = set()
+
+    for rg in release_groups:
+        # Verify artist match (MusicBrainz search can be fuzzy)
+        rg_artists = rg.get("artist-credit", [])
+        rg_artist_name = ""
+        for ac in rg_artists:
+            a = ac.get("artist", {}) if isinstance(ac, dict) else {}
+            rg_artist_name = a.get("name", "")
+            break
+        if not rg_artist_name:
+            continue
+        rg_artist_lower = _strip_accents(rg_artist_name.lower())
+        if not (artist_lower in rg_artist_lower or rg_artist_lower in artist_lower):
+            continue
+
+        title = rg.get("title", "").strip()
+        if not title:
+            continue
+
+        # Skip compilations / secondary types we don't want
+        secondary = [s.lower() for s in (rg.get("secondary-types") or [])]
+        if "compilation" in secondary or "dj-mix" in secondary:
+            continue
+
+        # Deduplicate by normalized title
+        norm = re.sub(r'\s*\(.*?\)', '', title.lower()).strip()
+        if norm in seen_titles:
+            continue
+        seen_titles.add(norm)
+
+        # Verify theme match: check tags AND title keywords
+        rg_tags = {t.get("name", "").lower() for t in (rg.get("tags") or [])}
+        tag_match = any(kw in rg_tags for kw in mb_tags)
+        title_match = any(kw in title.lower() for kw in theme_keywords)
+        if not tag_match and not title_match:
+            continue
+
+        # Parse year from first-release-date
+        frd = rg.get("first-release-date", "")
+        year = 0
+        if frd and len(frd) >= 4:
+            try:
+                year = int(frd[:4])
+            except ValueError:
+                pass
+
+        results.append({"name": title, "year": year, "mb_id": rg.get("id", "")})
+        _LOGGER.info("MUSICBRAINZ: Found '%s' (%d) tags=%s", title, year, rg_tags & set(mb_tags))
+
+    # Sort by year (unknowns at end)
+    results.sort(key=lambda r: r["year"] if r["year"] > 0 else 9999)
+    _LOGGER.info("MUSICBRAINZ: %d themed albums found: %s", len(results),
+                 [(r["name"], r["year"]) for r in results])
+    return results
 
 
 def _parse_ordinal_theme(text: str) -> tuple[int | None, str | None]:
@@ -564,51 +675,124 @@ class MusicController:
     async def _find_themed_album(
         self, artist: str, ordinal: int | None, theme: str | None,
     ) -> dict | None:
-        """Find a themed/ordinal album by searching broadly for the artist.
+        """Find a themed/ordinal album using MusicBrainz + Music Assistant.
 
-        Searches Music Assistant for all albums by the artist, filters by theme
-        keywords (in album name and metadata.genres), sorts by year, and picks
-        the ordinal position.
+        Strategy:
+        1. Query MusicBrainz release-groups to identify the correct album name
+           (MusicBrainz has rich genre/tag metadata — e.g. "christmas" tags).
+        2. Pick the album by ordinal from the MusicBrainz results (sorted by year).
+        3. Search Music Assistant for that exact album name to get a playable URI.
+        4. If MusicBrainz fails, fall back to MA-only search with theme filtering.
 
-        Returns the matching album dict, or None if not found.
+        Returns the matching MA album dict, or None if not found.
         """
         ma_entries = self._hass.config_entries.async_entries("music_assistant")
         if not ma_entries:
             return None
         ma_config_entry_id = ma_entries[0].entry_id
+        theme_keywords = ALBUM_THEME_KEYWORDS.get(theme, [theme]) if theme else []
 
-        # Search broadly for albums by this artist (two passes for coverage)
-        _LOGGER.info("THEMED ALBUM: Searching all albums by '%s'", artist)
+        # ── Step 1: MusicBrainz lookup (identifies the album name) ──
+        mb_album_name: str | None = None
+        if theme:
+            try:
+                session = async_get_clientsession(self._hass)
+                mb_albums = await _musicbrainz_themed_albums(
+                    session, artist, theme, theme_keywords,
+                )
+                if mb_albums:
+                    # Pick by ordinal
+                    if ordinal is not None:
+                        if ordinal == -1:
+                            mb_pick = mb_albums[-1]
+                        elif 0 <= ordinal < len(mb_albums):
+                            mb_pick = mb_albums[ordinal]
+                        else:
+                            _LOGGER.info("MUSICBRAINZ: Ordinal %d out of range (have %d)", ordinal, len(mb_albums))
+                            mb_pick = None
+                    else:
+                        mb_pick = mb_albums[0]
+
+                    if mb_pick:
+                        mb_album_name = mb_pick["name"]
+                        _LOGGER.info("MUSICBRAINZ: Selected '%s' (%d)", mb_album_name, mb_pick.get("year", 0))
+            except Exception as err:
+                _LOGGER.warning("MUSICBRAINZ: Lookup failed, will fall back to MA-only: %s", err)
+
+        # ── Step 2: Search Music Assistant for the identified album ──
+        if mb_album_name:
+            _LOGGER.info("THEMED ALBUM: Searching MA for MusicBrainz pick: '%s' by '%s'", mb_album_name, artist)
+            ma_result = await self._search_ma_album_by_name(
+                ma_config_entry_id, mb_album_name, artist,
+            )
+            if ma_result:
+                _LOGGER.info("THEMED ALBUM: Found in MA: '%s' (uri=%s)",
+                             ma_result.get("name"), ma_result.get("uri") or ma_result.get("media_id"))
+                return ma_result
+            _LOGGER.info("THEMED ALBUM: MusicBrainz pick '%s' not found in MA, falling back", mb_album_name)
+
+        # ── Step 3: Fallback — MA-only search with theme filtering ──
+        _LOGGER.info("THEMED ALBUM: Fallback — searching MA directly for '%s'", artist)
+        return await self._find_themed_album_ma_only(
+            ma_config_entry_id, artist, ordinal, theme, theme_keywords,
+        )
+
+    async def _search_ma_album_by_name(
+        self, config_entry_id: str, album_name: str, artist: str,
+    ) -> dict | None:
+        """Search Music Assistant for a specific album by name and artist."""
+        artist_lower = _strip_accents(artist.lower())
+
+        # Try exact album name first, then album + artist
+        for query in [album_name, f"{artist} {album_name}"]:
+            search_result = await self._hass.services.async_call(
+                "music_assistant", "search",
+                {"config_entry_id": config_entry_id, "name": query, "media_type": ["album"], "limit": 10},
+                blocking=True, return_response=True,
+            )
+            for r in _parse_ma_results(search_result, "album"):
+                item_artist = _strip_accents(_extract_artist(r, lowercase=True))
+                if not (artist_lower in item_artist or item_artist in artist_lower):
+                    continue
+                item_name = _strip_accents((r.get("name") or r.get("title") or "").lower())
+                target_name = _strip_accents(album_name.lower())
+                # Fuzzy: check if one contains the other (handles "... Deluxe Edition" variants)
+                if target_name in item_name or item_name in target_name:
+                    return r
+        return None
+
+    async def _find_themed_album_ma_only(
+        self, config_entry_id: str, artist: str, ordinal: int | None,
+        theme: str | None, theme_keywords: list[str],
+    ) -> dict | None:
+        """Fallback: find themed album using only Music Assistant search + filtering."""
+        # Search broadly for albums by this artist
         search_result = await self._hass.services.async_call(
             "music_assistant", "search",
-            {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["album"], "limit": 50},
-            blocking=True, return_response=True
+            {"config_entry_id": config_entry_id, "name": artist, "media_type": ["album"], "limit": 50},
+            blocking=True, return_response=True,
         )
         results = _parse_ma_results(search_result, "album")
 
-        # Second search: "artist + theme" catches themed albums that may not
-        # rank in the top results for just the artist name alone
+        # Second search with theme keyword for broader coverage
         if theme:
-            _LOGGER.info("THEMED ALBUM: Second search: '%s %s'", artist, theme)
             theme_search = await self._hass.services.async_call(
                 "music_assistant", "search",
-                {"config_entry_id": ma_config_entry_id, "name": f"{artist} {theme}", "media_type": ["album"], "limit": 25},
-                blocking=True, return_response=True
+                {"config_entry_id": config_entry_id, "name": f"{artist} {theme}", "media_type": ["album"], "limit": 25},
+                blocking=True, return_response=True,
             )
-            theme_results = _parse_ma_results(theme_search, "album")
-            # Merge, dedup by URI later
             seen_uris = {(r.get("uri") or r.get("media_id")) for r in results}
-            for r in theme_results:
+            for r in _parse_ma_results(theme_search, "album"):
                 uri = r.get("uri") or r.get("media_id")
                 if uri and uri not in seen_uris:
                     results.append(r)
                     seen_uris.add(uri)
 
         if not results:
-            _LOGGER.info("THEMED ALBUM: No albums found for artist '%s'", artist)
+            _LOGGER.info("THEMED ALBUM (MA): No albums found for '%s'", artist)
             return None
 
-        # Filter to albums by the correct artist, excluding singles/EPs and deduplicating
+        # Filter to correct artist, exclude singles/EPs, deduplicate
         artist_lower = _strip_accents(artist.lower())
         seen_names: set[str] = set()
         artist_albums = []
@@ -617,87 +801,56 @@ class MusicController:
             if not (artist_lower in item_artist or item_artist in artist_lower):
                 continue
             album_name = (r.get("name") or r.get("title") or "").strip()
-            album_name_lower = album_name.lower()
-            # Skip singles and EPs — they aren't full albums
             album_type_val = (r.get("album_type") or "").lower()
             if album_type_val in ("single", "ep"):
-                _LOGGER.debug("THEMED ALBUM: Skipping single/EP: '%s' (album_type=%s)", album_name, album_type_val)
                 continue
-            if re.search(r'\b-\s*single\b', album_name_lower):
-                _LOGGER.debug("THEMED ALBUM: Skipping single (name): '%s'", album_name)
+            if re.search(r'\b-\s*single\b', album_name.lower()):
                 continue
-            # Deduplicate by normalized name (different editions of same album)
-            norm_name = re.sub(r'\s*\(.*?\)\s*', '', album_name_lower).strip()
+            norm_name = re.sub(r'\s*\(.*?\)\s*', '', album_name.lower()).strip()
             norm_name = re.sub(r'\s*[-–]\s*(deluxe|expanded|special|remaster).*$', '', norm_name, flags=re.IGNORECASE).strip()
             if norm_name in seen_names:
-                _LOGGER.debug("THEMED ALBUM: Skipping duplicate: '%s' (normalized: '%s')", album_name, norm_name)
                 continue
             seen_names.add(norm_name)
             artist_albums.append(r)
 
         if not artist_albums:
-            _LOGGER.info("THEMED ALBUM: No albums matched artist '%s' (had %d results)", artist, len(results))
+            _LOGGER.info("THEMED ALBUM (MA): No albums matched artist '%s'", artist)
             return None
 
-        _LOGGER.info("THEMED ALBUM: Found %d unique albums by '%s': %s", len(artist_albums), artist,
-                     [(r.get("name"), r.get("year"), r.get("album_type")) for r in artist_albums])
-
-        # Filter by theme if specified
-        if theme:
-            theme_keywords = ALBUM_THEME_KEYWORDS.get(theme, [theme])
+        # Filter by theme
+        if theme and theme_keywords:
             themed = []
             for r in artist_albums:
-                album_name = (r.get("name") or r.get("title") or "").lower()
-                # Check album name for theme keywords
-                name_match = any(kw in album_name for kw in theme_keywords)
-                # Check metadata.genres if available (e.g. {"Holiday", "Christmas"})
+                name_lower = (r.get("name") or r.get("title") or "").lower()
+                name_match = any(kw in name_lower for kw in theme_keywords)
                 genre_match = False
-                metadata = r.get("metadata") or {}
-                genres = metadata.get("genres") or []
+                genres = (r.get("metadata") or {}).get("genres") or []
                 if isinstance(genres, (list, set)):
                     genres_lower = {g.lower() for g in genres}
                     genre_match = any(kw in genres_lower for kw in theme_keywords)
-                # Check album_type field (e.g. "live", "soundtrack")
                 album_type = (r.get("album_type") or "").lower()
                 type_match = theme in album_type
-
                 if name_match or genre_match or type_match:
-                    _LOGGER.info("THEMED ALBUM: '%s' (%s) matches theme '%s' (name=%s, genre=%s, type=%s)",
-                                r.get("name"), r.get("year"), theme, name_match, genre_match, type_match)
                     themed.append(r)
-
             if not themed:
-                _LOGGER.info("THEMED ALBUM: No albums matched theme '%s' from %d artist albums", theme, len(artist_albums))
+                _LOGGER.info("THEMED ALBUM (MA): No albums matched theme '%s'", theme)
                 return None
             artist_albums = themed
 
-        # Sort by year for ordinal selection
-        def year_key(r):
-            y = r.get("year")
-            return y if isinstance(y, int) and y > 0 else 9999
-
-        artist_albums.sort(key=year_key)
-        _LOGGER.info("THEMED ALBUM: Sorted %d albums by year: %s",
-                     len(artist_albums),
-                     [(r.get("name"), r.get("year")) for r in artist_albums])
+        # Sort by year
+        artist_albums.sort(key=lambda r: r.get("year") if isinstance(r.get("year"), int) and r.get("year") > 0 else 9999)
+        _LOGGER.info("THEMED ALBUM (MA): Sorted %d albums: %s",
+                     len(artist_albums), [(r.get("name"), r.get("year")) for r in artist_albums])
 
         # Pick by ordinal
         if ordinal is not None:
             if ordinal == -1:
-                # Latest/newest — pick last by year (or first in reverse)
-                pick = artist_albums[-1]
-            elif 0 <= ordinal < len(artist_albums):
-                pick = artist_albums[ordinal]
-            else:
-                _LOGGER.info("THEMED ALBUM: Ordinal %d out of range (have %d albums)", ordinal, len(artist_albums))
-                return None
-        else:
-            # No ordinal, just theme — pick first match
-            pick = artist_albums[0]
-
-        _LOGGER.info("THEMED ALBUM: Selected '%s' (%s) by '%s'",
-                     pick.get("name"), pick.get("year"), _extract_artist(pick))
-        return pick
+                return artist_albums[-1]
+            if 0 <= ordinal < len(artist_albums):
+                return artist_albums[ordinal]
+            _LOGGER.info("THEMED ALBUM (MA): Ordinal %d out of range (have %d)", ordinal, len(artist_albums))
+            return None
+        return artist_albums[0]
 
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "") -> dict:
         """Play music via Music Assistant with search-first for accuracy.
