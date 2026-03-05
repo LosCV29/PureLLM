@@ -188,6 +188,18 @@ class MusicController:
         _LOGGER.debug("MUSIC: Raw arguments from LLM: %s", arguments)
         _LOGGER.debug("MUSIC: Extracted - action='%s', query='%s', room='%s'", action, query, room)
 
+        # DEFENSIVE: Detect album intent from query even if LLM set wrong media_type
+        # Handles cases like "play album Carolyn's Boy" where LLM picks a single track
+        if action == "play" and query and media_type != "album":
+            album_pattern = r'\balbum\b'
+            if re.search(album_pattern, query, flags=re.IGNORECASE):
+                _LOGGER.info("MUSIC: Detected 'album' keyword in query '%s', forcing media_type='album'", query)
+                media_type = "album"
+                # Strip "album" from query so it doesn't interfere with search
+                query = re.sub(album_pattern, '', query, flags=re.IGNORECASE).strip()
+                if not album:
+                    album = query
+
         # DEFENSIVE: ALWAYS strip room phrases from query - LLM often includes them
         # This handles cases like query="Young Dolph in the living room"
         # Strip regardless of whether room param is set or not

@@ -161,6 +161,7 @@ SPORTS: Copy response_text VERBATIM. Never make up scores. For Champions League 
 MUSIC: MUST call control_music for any music request. Use response_text VERBATIM. Never hallucinate music responses.
 Stop/pause/resume/skip: just action, no room needed (auto-detects). Extract room separately from query.
 Play: set media_type (album/track/artist). Shuffle: action="shuffle", query=genre/vibe.
+ALBUMS: When user says "play album X" → media_type="album", query=album name, album=album name. NEVER resolve an album to a single track. Play the WHOLE album. Do NOT pick a song from the album — set media_type="album" so all tracks play.
 Ordinal/tagged albums: album=genre tag only, query=full phrase, artist=name. For "album with [song]" use song_on_album.
 Soundtracks: movie only, not Broadway.
 """
