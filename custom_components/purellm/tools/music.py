@@ -741,7 +741,7 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            await self._hass.services.async_call("media_player", "media_next_track", {"entity_id": playing})
+            await self._call_media_service(playing, "media_next_track")
             return {"status": "skipped", "message": "Skipped to next track"}
         return {"error": "No music is playing to skip"}
 
@@ -750,7 +750,7 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            await self._hass.services.async_call("media_player", "media_previous_track", {"entity_id": playing})
+            await self._call_media_service(playing, "media_previous_track")
             return {"status": "skipped", "message": "Previous track"}
         return {"error": "No music is playing"}
 
@@ -759,7 +759,11 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state to restart track...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            await self._hass.services.async_call("media_player", "media_seek", {"entity_id": playing, "seek_position": 0})
+            area_id = self._get_area_id(playing)
+            target = {"area_id": area_id} if area_id else {"entity_id": playing}
+            await self._hass.services.async_call(
+                "media_player", "media_seek", {"seek_position": 0},
+                target=target, blocking=True)
             return {"status": "restarted", "message": "Bringing it back from the top"}
         return {"error": "No music is playing"}
 
