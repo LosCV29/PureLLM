@@ -928,6 +928,8 @@ class PureLLMConversationEntity(ConversationEntity):
                 continue_conversation=False,
             )
 
+        self._current_user_text = user_text  # For tool handlers that need original utterance
+
         all_tools = self._build_tools()
         intents = classify_intent(user_text)
         tools = filter_tools_by_intent(all_tools, intents)
@@ -1676,6 +1678,9 @@ class PureLLMConversationEntity(ConversationEntity):
             if tool_name == "control_music":
                 if not self._music_controller:
                     return {"error": "Music control not configured"}
+                # Pass original user text so control_music can detect album intent
+                # even when the LLM strips "album" from the query parameter
+                arguments["_user_text"] = getattr(self, "_current_user_text", "")
                 return await self._music_controller.control_music(arguments)
 
             # Fall back to script execution

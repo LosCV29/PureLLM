@@ -108,6 +108,38 @@ def _strip_accents(text: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
+# Roman ↔ Arabic numeral mapping for album name matching (e.g. "Culture 3" ↔ "Culture III")
+_ROMAN_TO_ARABIC = {
+    "i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5",
+    "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10",
+}
+_ARABIC_TO_ROMAN = {v: k for k, v in _ROMAN_TO_ARABIC.items()}
+
+
+def _normalize_numerals(text: str) -> str:
+    """Normalize Roman numerals to Arabic numbers for consistent matching.
+
+    Converts 'III' → '3', 'II' → '2', etc. so that 'Culture 3' matches 'Culture III'.
+    Processes longest matches first to avoid 'III' being partially matched as 'I'.
+    """
+    if not text:
+        return ""
+    # Replace Arabic → Roman first isn't needed; normalize everything to Arabic.
+    # Process longest roman numerals first (viii before vi before i)
+    words = text.split()
+    result = []
+    for word in words:
+        lower = word.lower()
+        if lower in _ROMAN_TO_ARABIC:
+            result.append(_ROMAN_TO_ARABIC[lower])
+        elif lower in _ARABIC_TO_ROMAN:
+            # Already Arabic, keep as-is
+            result.append(word)
+        else:
+            result.append(word)
+    return " ".join(result)
+
+
 # Holiday keywords for shuffle playlist search
 HOLIDAY_KEYWORDS = {
     # Christmas
@@ -214,18 +246,26 @@ class MusicController:
 
         _LOGGER.debug("MUSIC: Final - action='%s', query='%s', room='%s'", action, query, room)
 
-        # DEFENSIVE: If user said "album" in their request, ensure album param is set
-        # so _play() treats it as an album request (prevents smart override to "track").
-        # The LLM sometimes puts "album" in the query without setting media_type/album.
-        if action == "play" and query:
-            album_pattern = r'\balbum\b'
-            if re.search(album_pattern, query, flags=re.IGNORECASE):
-                _LOGGER.info("MUSIC: Detected 'album' keyword in query '%s', setting album param", query)
-                query = re.sub(album_pattern, '', query, flags=re.IGNORECASE).strip()
-                if not album:
-                    album = query
-                if media_type != "album":
-                    media_type = "album"
+        # DEFENSIVE: If user said "album" in their original request, ensure album param
+        # is set so _play() treats it as an album request. The LLM often strips "album"
+        # from the query param and may set media_type wrong, which causes the smart
+        # override in _play() to convert to "track" (playing a single song).
+        # Check BOTH the original user text AND the LLM's query for "album".
+        user_text = arguments.pop("_user_text", "")
+        album_pattern = r'\balbum\b'
+        has_album_intent = (
+            action == "play" and
+            media_type != "album" and
+            (re.search(album_pattern, user_text, flags=re.IGNORECASE) or
+             re.search(album_pattern, query, flags=re.IGNORECASE))
+        )
+        if has_album_intent:
+            _LOGGER.info("MUSIC: Detected 'album' in user text, forcing media_type='album'")
+            media_type = "album"
+            # Strip "album" from query if present so it doesn't interfere with search
+            query = re.sub(album_pattern, '', query, flags=re.IGNORECASE).strip()
+            if not album:
+                album = query
 
         all_players = list(self._players.values())
 
@@ -543,10 +583,10 @@ class MusicController:
 
                 # Filter by album name if specified
                 if album and try_type == "album":
-                    album_filter = _strip_accents(album.lower())
+                    album_filter = _normalize_numerals(_strip_accents(album.lower()))
                     filtered_results = [
                         r for r in results
-                        if album_filter in _strip_accents((r.get("name") or r.get("title") or "").lower())
+                        if album_filter in _normalize_numerals(_strip_accents((r.get("name") or r.get("title") or "").lower()))
                     ]
                     if filtered_results:
                         _LOGGER.info("Filtered %d albums to %d matching '%s'",
@@ -556,13 +596,13 @@ class MusicController:
                         _LOGGER.warning("No albums matched filter '%s', using all %d results",
                                        album, len(results))
 
-                query_lower = _strip_accents(query.lower())
+                query_lower = _normalize_numerals(_strip_accents(query.lower()))
                 artist_lower = _strip_accents(artist.lower()) if artist else ""
 
                 # Score results to find best match
                 def score_result(item):
                     score = 0
-                    item_name = _strip_accents((item.get("name") or item.get("title") or "").lower())
+                    item_name = _normalize_numerals(_strip_accents((item.get("name") or item.get("title") or "").lower()))
                     item_artist = _strip_accents(_extract_artist(item, lowercase=True))
 
                     # Exact query match in name
@@ -754,7 +794,7 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            await self._call_media_service(playing, "media_next_track")
+            await self._hass.services.async_call("media_player", "media_next_track", {"entity_id": playing})
             return {"status": "skipped", "message": "Skipped to next track"}
         return {"error": "No music is playing to skip"}
 
@@ -763,7 +803,7 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            await self._call_media_service(playing, "media_previous_track")
+            await self._hass.services.async_call("media_player", "media_previous_track", {"entity_id": playing})
             return {"status": "skipped", "message": "Previous track"}
         return {"error": "No music is playing"}
 
@@ -772,11 +812,7 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state to restart track...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            area_id = self._get_area_id(playing)
-            target = {"area_id": area_id} if area_id else {"entity_id": playing}
-            await self._hass.services.async_call(
-                "media_player", "media_seek", {"seek_position": 0},
-                target=target, blocking=True)
+            await self._hass.services.async_call("media_player", "media_seek", {"entity_id": playing, "seek_position": 0})
             return {"status": "restarted", "message": "Bringing it back from the top"}
         return {"error": "No music is playing"}
 
