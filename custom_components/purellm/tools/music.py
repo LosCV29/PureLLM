@@ -214,6 +214,19 @@ class MusicController:
 
         _LOGGER.debug("MUSIC: Final - action='%s', query='%s', room='%s'", action, query, room)
 
+        # DEFENSIVE: If user said "album" in their request, ensure album param is set
+        # so _play() treats it as an album request (prevents smart override to "track").
+        # The LLM sometimes puts "album" in the query without setting media_type/album.
+        if action == "play" and query:
+            album_pattern = r'\balbum\b'
+            if re.search(album_pattern, query, flags=re.IGNORECASE):
+                _LOGGER.info("MUSIC: Detected 'album' keyword in query '%s', setting album param", query)
+                query = re.sub(album_pattern, '', query, flags=re.IGNORECASE).strip()
+                if not album:
+                    album = query
+                if media_type != "album":
+                    media_type = "album"
+
         all_players = list(self._players.values())
 
         if not all_players:
