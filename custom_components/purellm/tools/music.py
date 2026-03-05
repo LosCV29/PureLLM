@@ -246,18 +246,26 @@ class MusicController:
 
         _LOGGER.debug("MUSIC: Final - action='%s', query='%s', room='%s'", action, query, room)
 
-        # DEFENSIVE: If user said "album" in their request, ensure album param is set
-        # so _play() treats it as an album request (prevents smart override to "track").
-        # The LLM sometimes puts "album" in the query without setting media_type/album.
-        if action == "play" and query:
-            album_pattern = r'\balbum\b'
-            if re.search(album_pattern, query, flags=re.IGNORECASE):
-                _LOGGER.info("MUSIC: Detected 'album' keyword in query '%s', setting album param", query)
-                query = re.sub(album_pattern, '', query, flags=re.IGNORECASE).strip()
-                if not album:
-                    album = query
-                if media_type != "album":
-                    media_type = "album"
+        # DEFENSIVE: If user said "album" in their original request, ensure album param
+        # is set so _play() treats it as an album request. The LLM often strips "album"
+        # from the query param and may set media_type wrong, which causes the smart
+        # override in _play() to convert to "track" (playing a single song).
+        # Check BOTH the original user text AND the LLM's query for "album".
+        user_text = arguments.pop("_user_text", "")
+        album_pattern = r'\balbum\b'
+        has_album_intent = (
+            action == "play" and
+            media_type != "album" and
+            (re.search(album_pattern, user_text, flags=re.IGNORECASE) or
+             re.search(album_pattern, query, flags=re.IGNORECASE))
+        )
+        if has_album_intent:
+            _LOGGER.info("MUSIC: Detected 'album' in user text, forcing media_type='album'")
+            media_type = "album"
+            # Strip "album" from query if present so it doesn't interfere with search
+            query = re.sub(album_pattern, '', query, flags=re.IGNORECASE).strip()
+            if not album:
+                album = query
 
         all_players = list(self._players.values())
 
@@ -786,7 +794,7 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            await self._call_media_service(playing, "media_next_track")
+            await self._hass.services.async_call("media_player", "media_next_track", {"entity_id": playing})
             return {"status": "skipped", "message": "Skipped to next track"}
         return {"error": "No music is playing to skip"}
 
@@ -795,7 +803,7 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            await self._call_media_service(playing, "media_previous_track")
+            await self._hass.services.async_call("media_player", "media_previous_track", {"entity_id": playing})
             return {"status": "skipped", "message": "Previous track"}
         return {"error": "No music is playing"}
 
@@ -804,11 +812,7 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state to restart track...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            area_id = self._get_area_id(playing)
-            target = {"area_id": area_id} if area_id else {"entity_id": playing}
-            await self._hass.services.async_call(
-                "media_player", "media_seek", {"seek_position": 0},
-                target=target, blocking=True)
+            await self._hass.services.async_call("media_player", "media_seek", {"entity_id": playing, "seek_position": 0})
             return {"status": "restarted", "message": "Bringing it back from the top"}
         return {"error": "No music is playing"}
 
