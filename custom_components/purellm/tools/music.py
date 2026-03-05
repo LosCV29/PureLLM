@@ -577,14 +577,33 @@ class MusicController:
             return None
         ma_config_entry_id = ma_entries[0].entry_id
 
-        # Search broadly for albums by this artist
+        # Search broadly for albums by this artist (two passes for coverage)
         _LOGGER.info("THEMED ALBUM: Searching all albums by '%s'", artist)
         search_result = await self._hass.services.async_call(
             "music_assistant", "search",
-            {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["album"], "limit": 25},
+            {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["album"], "limit": 50},
             blocking=True, return_response=True
         )
         results = _parse_ma_results(search_result, "album")
+
+        # Second search: "artist + theme" catches themed albums that may not
+        # rank in the top results for just the artist name alone
+        if theme:
+            _LOGGER.info("THEMED ALBUM: Second search: '%s %s'", artist, theme)
+            theme_search = await self._hass.services.async_call(
+                "music_assistant", "search",
+                {"config_entry_id": ma_config_entry_id, "name": f"{artist} {theme}", "media_type": ["album"], "limit": 25},
+                blocking=True, return_response=True
+            )
+            theme_results = _parse_ma_results(theme_search, "album")
+            # Merge, dedup by URI later
+            seen_uris = {(r.get("uri") or r.get("media_id")) for r in results}
+            for r in theme_results:
+                uri = r.get("uri") or r.get("media_id")
+                if uri and uri not in seen_uris:
+                    results.append(r)
+                    seen_uris.add(uri)
+
         if not results:
             _LOGGER.info("THEMED ALBUM: No albums found for artist '%s'", artist)
             return None
