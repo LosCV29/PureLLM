@@ -159,13 +159,13 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control room-based music only (NOT for specific devices like TVs). To pause/resume/play a specific device, use control_device. Rooms: {rooms_list}. Room required for play/shuffle. Room NOT needed for stop/pause/resume/skip — just pass the action and the tool auto-detects the active player. For play action you MUST set media_type.",
+            f"Control room-based music only (NOT for specific devices like TVs). To pause/resume/play a specific device, use control_device. Rooms: {rooms_list}. Room required for play/shuffle. Room NOT needed for stop/pause/resume/skip — just pass the action and the tool auto-detects the active player. For play action you MUST set media_type. For ordinal/themed requests like 'first christmas album by X', set media_type='album', artist=X, and query to the full phrase (e.g. 'first christmas album').",
             {
                 "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"], "description": "Action"},
                 "media_type": {"type": "string", "enum": ["artist", "album", "track"], "description": "REQUIRED for play action. Set 'album' for albums, 'track' for songs, 'artist' for artist radio"},
-                "query": {"type": "string", "description": "Search query. For tracks: song name. For artists: artist name. For ordinal/tagged album requests (e.g. 'first christmas album'), put the full modifier phrase here (e.g. 'first christmas album')"},
-                "album": {"type": "string", "description": "Album name - REQUIRED when media_type is 'album'. For ordinal/tagged requests (first/second/latest + genre), set this to the genre/tag word only (e.g. 'christmas', 'holiday', 'live')"},
-                "artist": {"type": "string", "description": "Artist name"},
+                "query": {"type": "string", "description": "Search query. For tracks: song name. For artists: artist name. For albums: album name. For ordinal/themed requests (e.g. 'first christmas album'), include the full phrase"},
+                "album": {"type": "string", "description": "Album name - REQUIRED when media_type is 'album'"},
+                "artist": {"type": "string", "description": "Artist name - REQUIRED for ordinal/themed album requests (e.g. 'first christmas album by Kelly Clarkson')"},
                 "song_on_album": {"type": "string", "description": "Song name to find the album containing it"},
                 "room": {"type": "string", "description": "Target room"},
             },

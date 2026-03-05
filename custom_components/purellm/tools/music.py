@@ -322,6 +322,12 @@ class MusicController:
             if not album:
                 album = query
 
+        # Detect ordinal/themed album requests from original user text
+        # e.g. "play Kelly Clarkson's first christmas album in the living room"
+        ordinal, theme = _parse_ordinal_theme(user_text) if user_text else (None, None)
+        if ordinal is not None or theme:
+            _LOGGER.info("MUSIC: Detected ordinal=%s, theme=%s from user text", ordinal, theme)
+
         all_players = list(self._players.values())
 
         if not all_players:
@@ -348,6 +354,22 @@ class MusicController:
             target_players = self._find_target_players(room)
 
             if action == "play":
+                # Try themed/ordinal album search if detected
+                # e.g. "play Kelly Clarkson's first christmas album"
+                if (ordinal is not None or theme) and artist and media_type == "album":
+                    themed_result = await self._find_themed_album(artist, ordinal, theme)
+                    if themed_result:
+                        found_name = _normalize_unicode(themed_result.get("name") or themed_result.get("title"))
+                        found_uri = themed_result.get("uri") or themed_result.get("media_id")
+                        found_artist = _extract_artist(themed_result) or artist
+                        if found_uri:
+                            if not target_players:
+                                return {"error": f"Unknown room: {room}. Available: {', '.join(self._players.keys())}"}
+                            await self._play_on_players(target_players, found_uri, "album", shuffle=shuffle)
+                            display_name = f"{found_name} by {found_artist}"
+                            return {"status": "playing", "response_text": f"Playing {display_name} in the {room}"}
+                    _LOGGER.info("MUSIC: Themed album search failed, falling back to normal search")
+
                 return await self._play(query, media_type, room, shuffle, target_players, artist, album)
             elif action == "pause":
                 return await self._pause(all_players, target_players if target_players else None)
