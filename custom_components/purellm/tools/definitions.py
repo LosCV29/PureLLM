@@ -159,15 +159,15 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Room music (NOT specific devices like TVs). Rooms: {rooms_list}. Room required for play/shuffle. Stop/pause/skip auto-detects player. Play REQUIRES media_type.",
+            f"Control room-based music only (NOT for specific devices like TVs). To pause/resume/play a specific device, use control_device. Rooms: {rooms_list}. Room required for play/shuffle. Room NOT needed for stop/pause/resume/skip — just pass the action and the tool auto-detects the active player. For play action you MUST set media_type.",
             {
-                "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"]},
-                "media_type": {"type": "string", "enum": ["artist", "album", "track"], "description": "Required for play"},
-                "query": {"type": "string", "description": "Search query or modifier phrase"},
-                "album": {"type": "string", "description": "Album name or genre tag"},
-                "artist": {"type": "string"},
-                "song_on_album": {"type": "string", "description": "Find album containing this song"},
-                "room": {"type": "string"},
+                "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle"], "description": "Action"},
+                "media_type": {"type": "string", "enum": ["artist", "album", "track"], "description": "REQUIRED for play action. Set 'album' for albums, 'track' for songs, 'artist' for artist radio"},
+                "query": {"type": "string", "description": "Search query. For tracks: song name. For artists: artist name. For ordinal/tagged album requests (e.g. 'first christmas album'), put the full modifier phrase here (e.g. 'first christmas album')"},
+                "album": {"type": "string", "description": "Album name - REQUIRED when media_type is 'album'. For ordinal/tagged requests (first/second/latest + genre), set this to the genre/tag word only (e.g. 'christmas', 'holiday', 'live')"},
+                "artist": {"type": "string", "description": "Artist name"},
+                "song_on_album": {"type": "string", "description": "Song name to find the album containing it"},
+                "room": {"type": "string", "description": "Target room"},
             },
             ["action"]
         ))

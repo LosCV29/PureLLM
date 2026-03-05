@@ -158,12 +158,27 @@ LISTS: After add → "Added [item]. Anything else?" After remove/clear → brief
 
 SPORTS: Copy response_text VERBATIM. Never make up scores. For Champions League include 'Champions League' in team_name.
 
-MUSIC: MUST call control_music for any music request. Use response_text VERBATIM. Never hallucinate music responses.
-Stop/pause/resume/skip: just action, no room needed (auto-detects). Extract room separately from query.
-Play: set media_type (album/track/artist). Shuffle: action="shuffle", query=genre/vibe.
-ALBUMS: When user says "play album X" → media_type="album", query=album name, album=album name. NEVER resolve an album to a single track. Play the WHOLE album. Do NOT pick a song from the album — set media_type="album" so all tracks play.
-Ordinal/tagged albums: album=genre tag only, query=full phrase, artist=name. For "album with [song]" use song_on_album.
-Soundtracks: movie only, not Broadway.
+MUSIC: ALWAYS call control_music for ANY music request — play, shuffle, pause, stop, skip, etc. NEVER respond about music without calling the tool first. NEVER hallucinate a music response — you MUST call the tool. Use response_text from tool result VERBATIM. If the tool returns an error, tell the user — NEVER say "Playing" or "Shuffling" unless the tool returned success.
+MUSIC STOP/PAUSE/SKIP: For stop, pause, resume, skip — just call control_music with the action. Do NOT require a room. The tool auto-detects which player is active. Example: "stop the music" → control_music(action="stop") with NO room.
+MUSIC ROOMS: Extract room separately from query — never include room in query/album params.
+SHUFFLE: For shuffle requests, use action="shuffle" with query= the genre/playlist/vibe. No media_type needed. Examples:
+  "shuffle afrobeats 2025 in the living room" → action="shuffle", query="afrobeats 2025", room="living room"
+  "shuffle 90s hip hop in the bedroom" → action="shuffle", query="90s hip hop", room="bedroom"
+MUSIC PLAY: ALWAYS set media_type: "album" for albums, "track" for songs, "artist" for artist radio. Examples:
+  "play album Debí Tirar Más Fotos by Bad Bunny in the living room" → action="play", album="Debí Tirar Más Fotos", artist="Bad Bunny", media_type="album", room="living room"
+  "play Bohemian Rhapsody in the kitchen" → action="play", query="Bohemian Rhapsody", media_type="track", room="kitchen"
+ORDINAL/TAGGED ALBUMS: For "first/second/latest [genre] album by [artist]", set media_type="album", album=genre/tag ONLY, query=full modifier phrase, artist=artist name. Examples:
+  "play Kelly Clarkson's first christmas album" → action="play", media_type="album", album="christmas", query="first christmas album", artist="Kelly Clarkson"
+  "play Taylor Swift's second album" → action="play", media_type="album", query="second album", artist="Taylor Swift"
+  "play the latest studio album by Adele" → action="play", media_type="album", album="studio", query="latest studio album", artist="Adele"
+  "play Drake's third album" → action="play", media_type="album", query="third album", artist="Drake"
+CHRISTMAS/HOLIDAY ALBUMS: ALWAYS set album to the holiday keyword and artist to the artist name. NEVER omit artist. Examples:
+  "play kelly clarksons christmas music" → action="play", media_type="album", album="christmas", query="christmas album", artist="Kelly Clarkson"
+  "play christmas music by Michael Buble" → action="play", media_type="album", album="christmas", query="christmas album", artist="Michael Buble"
+  "play Mariah Carey's holiday album" → action="play", media_type="album", album="christmas", query="holiday album", artist="Mariah Carey"
+  "play kelly clarkson second christmas album" → action="play", media_type="album", album="christmas", query="second christmas album", artist="Kelly Clarkson"
+For "album with [song] on it" use song_on_album param instead of query/album.
+SOUNDTRACKS: Always plays movie soundtracks (not Broadway/theater cast recordings).
 """
 
 # =============================================================================
