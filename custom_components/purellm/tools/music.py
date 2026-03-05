@@ -177,6 +177,61 @@ HOLIDAY_KEYWORDS = {
     "spring": ["spring", "easter"],
 }
 
+# Theme keywords for album filtering (broader than holidays — includes album styles)
+ALBUM_THEME_KEYWORDS = {
+    "christmas": ["christmas", "xmas", "holiday", "noel", "santa", "jingle", "merry", "wrapped"],
+    "xmas": ["christmas", "xmas", "holiday", "noel"],
+    "holiday": ["holiday", "christmas", "xmas"],
+    "halloween": ["halloween", "spooky", "scary", "horror"],
+    "live": ["live", "concert", "unplugged", "acoustic live", "in concert"],
+    "acoustic": ["acoustic", "unplugged"],
+    "deluxe": ["deluxe", "expanded", "special edition"],
+    "remix": ["remix", "remixed", "reimagined"],
+    "greatest hits": ["greatest hits", "best of", "essentials", "collection"],
+    "soundtrack": ["soundtrack", "motion picture", "original score"],
+}
+
+# Ordinal words → index (0-based). "latest"/"newest" use -1 for reverse sort.
+_ORDINALS = {
+    "first": 0, "1st": 0,
+    "second": 1, "2nd": 1,
+    "third": 2, "3rd": 2,
+    "fourth": 3, "4th": 3,
+    "fifth": 4, "5th": 4,
+    "latest": -1, "newest": -1, "most recent": -1, "last": -1,
+}
+
+
+def _parse_ordinal_theme(text: str) -> tuple[int | None, str | None]:
+    """Parse ordinal position and theme from user text.
+
+    Returns (ordinal_index, theme) where:
+    - ordinal_index: 0-based position (0=first, 1=second, -1=latest), or None
+    - theme: theme keyword like "christmas", "live", etc., or None
+
+    Examples:
+        "first christmas album" → (0, "christmas")
+        "second album" → (1, None)
+        "latest live album" → (-1, "live")
+        "play culture 3" → (None, None)
+    """
+    text_lower = text.lower()
+
+    ordinal = None
+    for word, idx in _ORDINALS.items():
+        if word in text_lower:
+            ordinal = idx
+            break
+
+    theme = None
+    # Check multi-word themes first (e.g. "greatest hits"), then single-word
+    for keyword in sorted(ALBUM_THEME_KEYWORDS.keys(), key=len, reverse=True):
+        if keyword in text_lower:
+            theme = keyword
+            break
+
+    return ordinal, theme
+
 
 class MusicController:
     """Controller for music playback operations.
@@ -267,6 +322,12 @@ class MusicController:
             if not album:
                 album = query
 
+        # Detect ordinal/themed album requests from original user text
+        # e.g. "play Kelly Clarkson's first christmas album in the living room"
+        ordinal, theme = _parse_ordinal_theme(user_text) if user_text else (None, None)
+        if ordinal is not None or theme:
+            _LOGGER.info("MUSIC: Detected ordinal=%s, theme=%s from user text", ordinal, theme)
+
         all_players = list(self._players.values())
 
         if not all_players:
@@ -293,6 +354,22 @@ class MusicController:
             target_players = self._find_target_players(room)
 
             if action == "play":
+                # Try themed/ordinal album search if detected
+                # e.g. "play Kelly Clarkson's first christmas album"
+                if (ordinal is not None or theme) and artist and media_type == "album":
+                    themed_result = await self._find_themed_album(artist, ordinal, theme)
+                    if themed_result:
+                        found_name = _normalize_unicode(themed_result.get("name") or themed_result.get("title"))
+                        found_uri = themed_result.get("uri") or themed_result.get("media_id")
+                        found_artist = _extract_artist(themed_result) or artist
+                        if found_uri:
+                            if not target_players:
+                                return {"error": f"Unknown room: {room}. Available: {', '.join(self._players.keys())}"}
+                            await self._play_on_players(target_players, found_uri, "album", shuffle=shuffle)
+                            display_name = f"{found_name} by {found_artist}"
+                            return {"status": "playing", "response_text": f"Playing {display_name} in the {room}"}
+                    _LOGGER.info("MUSIC: Themed album search failed, falling back to normal search")
+
                 return await self._play(query, media_type, room, shuffle, target_players, artist, album)
             elif action == "pause":
                 return await self._pause(all_players, target_players if target_players else None)
@@ -483,6 +560,105 @@ class MusicController:
             await self._hass.services.async_call(
                 "media_player", service, {},
                 target={"entity_id": entity_id}, blocking=True)
+
+    async def _find_themed_album(
+        self, artist: str, ordinal: int | None, theme: str | None,
+    ) -> dict | None:
+        """Find a themed/ordinal album by searching broadly for the artist.
+
+        Searches Music Assistant for all albums by the artist, filters by theme
+        keywords (in album name and metadata.genres), sorts by year, and picks
+        the ordinal position.
+
+        Returns the matching album dict, or None if not found.
+        """
+        ma_entries = self._hass.config_entries.async_entries("music_assistant")
+        if not ma_entries:
+            return None
+        ma_config_entry_id = ma_entries[0].entry_id
+
+        # Search broadly for albums by this artist
+        _LOGGER.info("THEMED ALBUM: Searching all albums by '%s'", artist)
+        search_result = await self._hass.services.async_call(
+            "music_assistant", "search",
+            {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["album"], "limit": 25},
+            blocking=True, return_response=True
+        )
+        results = _parse_ma_results(search_result, "album")
+        if not results:
+            _LOGGER.info("THEMED ALBUM: No albums found for artist '%s'", artist)
+            return None
+
+        # Filter to albums by the correct artist
+        artist_lower = _strip_accents(artist.lower())
+        artist_albums = []
+        for r in results:
+            item_artist = _strip_accents(_extract_artist(r, lowercase=True))
+            if artist_lower in item_artist or item_artist in artist_lower:
+                artist_albums.append(r)
+
+        if not artist_albums:
+            _LOGGER.info("THEMED ALBUM: No albums matched artist '%s' (had %d results)", artist, len(results))
+            return None
+
+        _LOGGER.info("THEMED ALBUM: Found %d albums by '%s'", len(artist_albums), artist)
+
+        # Filter by theme if specified
+        if theme:
+            theme_keywords = ALBUM_THEME_KEYWORDS.get(theme, [theme])
+            themed = []
+            for r in artist_albums:
+                album_name = (r.get("name") or r.get("title") or "").lower()
+                # Check album name for theme keywords
+                name_match = any(kw in album_name for kw in theme_keywords)
+                # Check metadata.genres if available (e.g. {"Holiday", "Christmas"})
+                genre_match = False
+                metadata = r.get("metadata") or {}
+                genres = metadata.get("genres") or []
+                if isinstance(genres, (list, set)):
+                    genres_lower = {g.lower() for g in genres}
+                    genre_match = any(kw in genres_lower for kw in theme_keywords)
+                # Check album_type field (e.g. "live", "soundtrack")
+                album_type = (r.get("album_type") or "").lower()
+                type_match = theme in album_type
+
+                if name_match or genre_match or type_match:
+                    _LOGGER.info("THEMED ALBUM: '%s' (%s) matches theme '%s' (name=%s, genre=%s, type=%s)",
+                                r.get("name"), r.get("year"), theme, name_match, genre_match, type_match)
+                    themed.append(r)
+
+            if not themed:
+                _LOGGER.info("THEMED ALBUM: No albums matched theme '%s' from %d artist albums", theme, len(artist_albums))
+                return None
+            artist_albums = themed
+
+        # Sort by year for ordinal selection
+        def year_key(r):
+            y = r.get("year")
+            return y if isinstance(y, int) and y > 0 else 9999
+
+        artist_albums.sort(key=year_key)
+        _LOGGER.info("THEMED ALBUM: Sorted %d albums by year: %s",
+                     len(artist_albums),
+                     [(r.get("name"), r.get("year")) for r in artist_albums])
+
+        # Pick by ordinal
+        if ordinal is not None:
+            if ordinal == -1:
+                # Latest/newest — pick last by year (or first in reverse)
+                pick = artist_albums[-1]
+            elif 0 <= ordinal < len(artist_albums):
+                pick = artist_albums[ordinal]
+            else:
+                _LOGGER.info("THEMED ALBUM: Ordinal %d out of range (have %d albums)", ordinal, len(artist_albums))
+                return None
+        else:
+            # No ordinal, just theme — pick first match
+            pick = artist_albums[0]
+
+        _LOGGER.info("THEMED ALBUM: Selected '%s' (%s) by '%s'",
+                     pick.get("name"), pick.get("year"), _extract_artist(pick))
+        return pick
 
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "") -> dict:
         """Play music via Music Assistant with search-first for accuracy.
