@@ -108,6 +108,38 @@ def _strip_accents(text: str) -> str:
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
+# Roman ↔ Arabic numeral mapping for album name matching (e.g. "Culture 3" ↔ "Culture III")
+_ROMAN_TO_ARABIC = {
+    "i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5",
+    "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10",
+}
+_ARABIC_TO_ROMAN = {v: k for k, v in _ROMAN_TO_ARABIC.items()}
+
+
+def _normalize_numerals(text: str) -> str:
+    """Normalize Roman numerals to Arabic numbers for consistent matching.
+
+    Converts 'III' → '3', 'II' → '2', etc. so that 'Culture 3' matches 'Culture III'.
+    Processes longest matches first to avoid 'III' being partially matched as 'I'.
+    """
+    if not text:
+        return ""
+    # Replace Arabic → Roman first isn't needed; normalize everything to Arabic.
+    # Process longest roman numerals first (viii before vi before i)
+    words = text.split()
+    result = []
+    for word in words:
+        lower = word.lower()
+        if lower in _ROMAN_TO_ARABIC:
+            result.append(_ROMAN_TO_ARABIC[lower])
+        elif lower in _ARABIC_TO_ROMAN:
+            # Already Arabic, keep as-is
+            result.append(word)
+        else:
+            result.append(word)
+    return " ".join(result)
+
+
 # Holiday keywords for shuffle playlist search
 HOLIDAY_KEYWORDS = {
     # Christmas
@@ -543,10 +575,10 @@ class MusicController:
 
                 # Filter by album name if specified
                 if album and try_type == "album":
-                    album_filter = _strip_accents(album.lower())
+                    album_filter = _normalize_numerals(_strip_accents(album.lower()))
                     filtered_results = [
                         r for r in results
-                        if album_filter in _strip_accents((r.get("name") or r.get("title") or "").lower())
+                        if album_filter in _normalize_numerals(_strip_accents((r.get("name") or r.get("title") or "").lower()))
                     ]
                     if filtered_results:
                         _LOGGER.info("Filtered %d albums to %d matching '%s'",
@@ -556,13 +588,13 @@ class MusicController:
                         _LOGGER.warning("No albums matched filter '%s', using all %d results",
                                        album, len(results))
 
-                query_lower = _strip_accents(query.lower())
+                query_lower = _normalize_numerals(_strip_accents(query.lower()))
                 artist_lower = _strip_accents(artist.lower()) if artist else ""
 
                 # Score results to find best match
                 def score_result(item):
                     score = 0
-                    item_name = _strip_accents((item.get("name") or item.get("title") or "").lower())
+                    item_name = _normalize_numerals(_strip_accents((item.get("name") or item.get("title") or "").lower()))
                     item_artist = _strip_accents(_extract_artist(item, lowercase=True))
 
                     # Exact query match in name
