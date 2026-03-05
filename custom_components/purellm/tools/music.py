@@ -179,7 +179,7 @@ HOLIDAY_KEYWORDS = {
 
 # Theme keywords for album filtering (broader than holidays — includes album styles)
 ALBUM_THEME_KEYWORDS = {
-    "christmas": ["christmas", "xmas", "holiday", "noel", "santa", "jingle", "merry", "wrapped"],
+    "christmas": ["christmas", "xmas", "holiday", "noel", "santa", "jingle", "merry"],
     "xmas": ["christmas", "xmas", "holiday", "noel"],
     "holiday": ["holiday", "christmas", "xmas"],
     "halloween": ["halloween", "spooky", "scary", "horror"],
@@ -589,19 +589,39 @@ class MusicController:
             _LOGGER.info("THEMED ALBUM: No albums found for artist '%s'", artist)
             return None
 
-        # Filter to albums by the correct artist
+        # Filter to albums by the correct artist, excluding singles/EPs and deduplicating
         artist_lower = _strip_accents(artist.lower())
+        seen_names: set[str] = set()
         artist_albums = []
         for r in results:
             item_artist = _strip_accents(_extract_artist(r, lowercase=True))
-            if artist_lower in item_artist or item_artist in artist_lower:
-                artist_albums.append(r)
+            if not (artist_lower in item_artist or item_artist in artist_lower):
+                continue
+            album_name = (r.get("name") or r.get("title") or "").strip()
+            album_name_lower = album_name.lower()
+            # Skip singles and EPs — they aren't full albums
+            album_type_val = (r.get("album_type") or "").lower()
+            if album_type_val in ("single", "ep"):
+                _LOGGER.debug("THEMED ALBUM: Skipping single/EP: '%s' (album_type=%s)", album_name, album_type_val)
+                continue
+            if re.search(r'\b-\s*single\b', album_name_lower):
+                _LOGGER.debug("THEMED ALBUM: Skipping single (name): '%s'", album_name)
+                continue
+            # Deduplicate by normalized name (different editions of same album)
+            norm_name = re.sub(r'\s*\(.*?\)\s*', '', album_name_lower).strip()
+            norm_name = re.sub(r'\s*[-–]\s*(deluxe|expanded|special|remaster).*$', '', norm_name, flags=re.IGNORECASE).strip()
+            if norm_name in seen_names:
+                _LOGGER.debug("THEMED ALBUM: Skipping duplicate: '%s' (normalized: '%s')", album_name, norm_name)
+                continue
+            seen_names.add(norm_name)
+            artist_albums.append(r)
 
         if not artist_albums:
             _LOGGER.info("THEMED ALBUM: No albums matched artist '%s' (had %d results)", artist, len(results))
             return None
 
-        _LOGGER.info("THEMED ALBUM: Found %d albums by '%s'", len(artist_albums), artist)
+        _LOGGER.info("THEMED ALBUM: Found %d unique albums by '%s': %s", len(artist_albums), artist,
+                     [(r.get("name"), r.get("year"), r.get("album_type")) for r in artist_albums])
 
         # Filter by theme if specified
         if theme:
