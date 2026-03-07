@@ -311,39 +311,13 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     extra_system_prompt = "\n".join(prompt_parts)
     _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
 
-    # Step 1: Speak the question via TTS
-    try:
-        await hass.services.async_call(
-            "tts", "speak",
-            {
-                "entity_id": tts_entity_id,
-                "media_player_entity_id": media_player_entity_id,
-                "message": question,
-            },
-            blocking=True,
-        )
-        _LOGGER.debug("ask_and_act: TTS spoke question")
-    except Exception as err:
-        _LOGGER.error("ask_and_act: TTS failed: %s", err)
-        return {"error": f"TTS failed: {err}"}
-
-    # Step 2: Wait for TTS audio to finish playing on the media player.
-    # tts.speak with blocking=True only waits for the audio to be queued,
-    # not for playback to complete. The satellite cannot enter listening mode
-    # while its media player is still actively playing audio.
-    await _wait_for_media_player_idle(hass, media_player_entity_id)
-
-    # Step 2b: Wait for the satellite pipeline to fully finish and return to
-    # idle.  The media player may go idle slightly before the satellite's
-    # internal pipeline state transitions back to "idle".  If we call
-    # start_conversation while the satellite is still in "responding" state
-    # it will be silently ignored.
+    # Wait for the satellite pipeline to be idle before starting.
     await _wait_for_satellite_idle(hass, satellite_entity_id)
 
-    # Step 3: Listen for response.
-    # Do NOT pass start_message (even "") — an empty string causes HA to
-    # synthesize TTS for "", which produces invalid WAV and crashes the pipeline.
-    # Omitting start_message entirely skips TTS and goes straight to listening.
+    # Use start_conversation with start_message to atomically speak the
+    # question and enter listening mode.  This avoids the race condition of
+    # separate TTS + start_conversation calls.  start_message must be
+    # non-empty (empty string produces invalid WAV and crashes the pipeline).
     # Retry up to 3 times because start_conversation can be silently ignored
     # if the satellite's internal pipeline has not fully released yet, even
     # after the entity state shows "idle".
@@ -354,6 +328,7 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
                 "assist_satellite", "start_conversation",
                 {
                     "entity_id": satellite_entity_id,
+                    "start_message": question,
                     "extra_system_prompt": extra_system_prompt,
                     "preannounce": False,
                 },
