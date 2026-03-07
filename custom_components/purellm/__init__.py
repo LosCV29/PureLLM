@@ -92,13 +92,65 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     return True
 
 
+async def _wait_for_satellite_state(
+    hass: HomeAssistant,
+    satellite_entity_id: str,
+    target_state: str,
+    timeout: float = 15.0,
+) -> bool:
+    """Wait for the assist satellite to reach a target state using event listener.
+
+    Returns True if the target state was reached, False on timeout.
+    """
+    state = hass.states.get(satellite_entity_id)
+    if state and state.state == target_state:
+        return True
+
+    reached = asyncio.Event()
+
+    @callback
+    def _on_state_change(event: Event) -> None:
+        new_state = event.data.get("new_state")
+        if (
+            event.data.get("entity_id") == satellite_entity_id
+            and new_state is not None
+            and new_state.state == target_state
+        ):
+            reached.set()
+
+    unsub = hass.bus.async_listen("state_changed", _on_state_change)
+    try:
+        # Re-check after subscribing to avoid TOCTOU race
+        state = hass.states.get(satellite_entity_id)
+        if state and state.state == target_state:
+            return True
+
+        _LOGGER.debug(
+            "ask_and_act: satellite %s in state '%s', waiting for '%s'…",
+            satellite_entity_id, state.state if state else "unknown", target_state,
+        )
+        async with asyncio.timeout(timeout):
+            await reached.wait()
+        return True
+    except TimeoutError:
+        _LOGGER.warning(
+            "ask_and_act: timed out waiting for satellite %s to reach '%s' (state=%s)",
+            satellite_entity_id, target_state,
+            hass.states.get(satellite_entity_id).state if hass.states.get(satellite_entity_id) else "unknown",
+        )
+        return False
+    finally:
+        unsub()
+
+
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
-    Uses start_conversation with start_message to atomically speak the
-    question and enter listening mode on the satellite.  The LLM then
-    matches the user's response to the provided answers and executes
-    the appropriate action via its control_device tool.
+    Two-step approach:
+    1. Use assist_satellite.announce to speak the question on the satellite.
+       announce handles TTS internally and blocks until audio finishes.
+    2. Wait for satellite to return to idle, then call start_conversation
+       to enter listening mode with the extra_system_prompt for answer matching.
     """
     satellite_entity_id = call.data["satellite_entity_id"]
     question = call.data["question"]
@@ -143,26 +195,73 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     extra_system_prompt = "\n".join(prompt_parts)
     _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
 
-    # Use start_conversation with start_message to speak the question AND
-    # enter listening mode atomically.  Previous approach (separate TTS +
-    # wait + empty start_message) was fragile because of timing issues
-    # between the media player finishing, the satellite pipeline tearing
-    # down, and start_conversation being silently ignored.
+    # Step 1: Announce the question on the satellite.
+    # assist_satellite.announce handles TTS and audio playback internally,
+    # so no need to manually resolve TTS entities or media players.
     try:
         await hass.services.async_call(
-            "assist_satellite", "start_conversation",
+            "assist_satellite", "announce",
             {
                 "entity_id": satellite_entity_id,
-                "start_message": question,
-                "extra_system_prompt": extra_system_prompt,
-                "preannounce": False,
+                "message": question,
             },
             blocking=True,
         )
-        _LOGGER.info("ask_and_act: start_conversation called with question as start_message")
+        _LOGGER.debug("ask_and_act: announce completed")
     except Exception as err:
-        _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
-        return {"error": f"start_conversation failed: {err}"}
+        _LOGGER.error("ask_and_act: announce failed: %s", err)
+        return {"error": f"announce failed: {err}"}
+
+    # Step 2: Wait for satellite to return to idle after announcement.
+    # announce with blocking=True should already wait, but the satellite
+    # pipeline may still be tearing down internally.
+    await _wait_for_satellite_state(hass, satellite_entity_id, "idle", timeout=10.0)
+
+    # Small settle delay - satellite internal pipeline teardown may lag
+    # behind the entity state change.
+    await asyncio.sleep(0.5)
+
+    # Step 3: Start conversation to enter listening mode.
+    # Retry up to 3 times because start_conversation can be silently ignored
+    # if the satellite pipeline hasn't fully released yet.
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await hass.services.async_call(
+                "assist_satellite", "start_conversation",
+                {
+                    "entity_id": satellite_entity_id,
+                    "start_message": "",
+                    "extra_system_prompt": extra_system_prompt,
+                    "preannounce": False,
+                },
+                blocking=True,
+            )
+        except Exception as err:
+            _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
+            return {"error": f"start_conversation failed: {err}"}
+
+        # Verify the satellite actually entered listening mode
+        await asyncio.sleep(0.3)
+        state = hass.states.get(satellite_entity_id)
+        if state and state.state in ("listening", "processing", "responding"):
+            _LOGGER.info(
+                "ask_and_act: satellite entered '%s' (attempt %d)",
+                state.state, attempt,
+            )
+            return {"success": True}
+
+        if attempt < max_attempts:
+            _LOGGER.warning(
+                "ask_and_act: satellite still '%s' after start_conversation (attempt %d/%d), retrying…",
+                state.state if state else "unknown", attempt, max_attempts,
+            )
+            await asyncio.sleep(0.5 * attempt)
+        else:
+            _LOGGER.warning(
+                "ask_and_act: satellite state is '%s' after %d attempts — may not be listening",
+                state.state if state else "unknown", max_attempts,
+            )
 
     return {"success": True}
 
