@@ -61,6 +61,11 @@ PENDING_ASK_AND_ACT_KEY = "pending_ask_and_act"
 TIMER_LISTENER_KEY = "timer_finished_listener"
 
 SNAPSHOT_VIEW_KEY = "snapshot_view_registered"
+SILENCE_WAV_KEY = "silence_wav_written"
+
+# Media source URI for the silent WAV used by start_conversation.
+# Resolves to <config_dir>/media/purellm_silence.wav via HA's local media source.
+SILENCE_MEDIA_ID = "media-source://media_source/local/purellm_silence.wav"
 
 
 # Timeout for pending ask_and_act context (seconds). If the user doesn't
@@ -467,11 +472,10 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     await _wait_for_satellite_idle(hass, satellite_entity_id)
 
     # Step 4: start_conversation to enter listening mode.
-    # Use start_media_id with a silent WAV instead of start_message to avoid
-    # TTS synthesis — the question was already spoken in step 1.  The old code
-    # used start_message="" which worked with HA Cloud TTS but crashes with
-    # openai-streaming (can't synthesize empty text).
-    silence_url = "/api/purellm/silence.wav"
+    # Use start_media_id with a silent WAV (via HA media source) instead of
+    # start_message to avoid TTS synthesis — the question was already spoken
+    # in step 1.  The old code used start_message="" which worked with HA Cloud
+    # TTS but crashes openai-streaming (can't synthesize empty text).
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
@@ -479,7 +483,7 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
                 "assist_satellite", "start_conversation",
                 {
                     "entity_id": satellite_entity_id,
-                    "start_media_id": silence_url,
+                    "start_media_id": SILENCE_MEDIA_ID,
                     "extra_system_prompt": extra_system_prompt,
                     "preannounce": False,
                 },
@@ -662,6 +666,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.http.register_view(PureLLMSnapshotView(hass))
         hass.http.register_view(PureLLMSilentWavView())
         hass.data[DOMAIN][SNAPSHOT_VIEW_KEY] = True
+
+    # Write silent WAV to HA's media directory for start_conversation's
+    # start_media_id.  This lets us skip TTS synthesis (which crashes with
+    # some engines on empty strings) while keeping a single-flow UX.
+    if SILENCE_WAV_KEY not in hass.data[DOMAIN]:
+        media_dir = hass.config.path("media")
+        silence_path = os.path.join(media_dir, "purellm_silence.wav")
+        try:
+            os.makedirs(media_dir, exist_ok=True)
+            with open(silence_path, "wb") as f:
+                f.write(_get_silent_wav())
+            _LOGGER.debug("Wrote silent WAV to %s", silence_path)
+        except OSError as err:
+            _LOGGER.warning("Could not write silent WAV to media dir: %s", err)
+        hass.data[DOMAIN][SILENCE_WAV_KEY] = True
 
     # Register ask_and_act service (only once per HA instance)
     if SERVICE_REGISTERED_KEY not in hass.data[DOMAIN]:
