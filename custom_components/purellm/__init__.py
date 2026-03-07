@@ -91,12 +91,36 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     return True
 
 
+def _get_satellite_entity(hass: HomeAssistant, entity_id: str):
+    """Get the assist satellite entity object directly.
+
+    This mirrors how HA's own ask_question service handler accesses the entity:
+    it goes through the EntityComponent registered for the assist_satellite domain.
+    """
+    component = hass.data.get("assist_satellite")
+    if component is None:
+        _LOGGER.error("ask_and_act: assist_satellite component not loaded")
+        return None
+
+    entity = component.get_entity(entity_id)
+    if entity is None:
+        _LOGGER.error("ask_and_act: entity %s not found", entity_id)
+        return None
+
+    return entity
+
+
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
-    Uses assist_satellite.ask_question which atomically speaks the question,
-    enters listening mode, and matches the response against predefined answers.
-    Then executes the corresponding action and announces the response.
+    Emulates HA's own ask_question flow by calling the satellite entity's
+    async_internal_ask_question method directly.  This atomically:
+    1. Cancels any running pipeline
+    2. Resolves TTS for the question
+    3. Plays the question on the satellite (async_start_conversation)
+    4. Creates a Future that gets resolved when STT finishes
+    5. Matches the transcribed response against answer sentences via hassil
+    Then we execute the matched action and announce the response.
     """
     satellite_entity_id = call.data["satellite_entity_id"]
     question = call.data["question"]
@@ -105,51 +129,47 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s",
                  question, satellite_entity_id)
 
+    # Get the satellite entity object directly (same as HA's service handler)
+    entity = _get_satellite_entity(hass, satellite_entity_id)
+    if entity is None:
+        return {"error": f"satellite entity {satellite_entity_id} not found"}
+
     # Build the answers list for ask_question (just id + sentences)
     ask_answers = [
         {"id": a["id"], "sentences": a["sentences"]}
         for a in answers
     ]
 
-    # Step 1: Ask the question and get the matched answer.
-    # ask_question atomically: speaks the question, enters listening mode,
-    # matches the response against the provided answer sentences, and returns
-    # the matched answer ID.  No start_conversation needed.
+    # Call the entity's internal ask_question method directly.
+    # This is the exact same method HA's own ask_question service calls.
+    # It handles the full flow: cancel pipeline -> TTS -> play question ->
+    # listen -> STT -> match answers.
     try:
-        result = await hass.services.async_call(
-            "assist_satellite", "ask_question",
-            {
-                "entity_id": satellite_entity_id,
-                "question": question,
-                "preannounce": False,
-                "answers": ask_answers,
-            },
-            blocking=True,
-            return_response=True,
+        answer = await entity.async_internal_ask_question(
+            question=question,
+            preannounce=False,
+            answers=ask_answers,
         )
-        _LOGGER.info("ask_and_act: ask_question returned: %s", result)
+        _LOGGER.info("ask_and_act: ask_question returned: id=%s, sentence=%s",
+                     answer.id if answer else None,
+                     answer.sentence if answer else None)
     except Exception as err:
         _LOGGER.error("ask_and_act: ask_question failed: %s", err)
         return {"error": f"ask_question failed: {err}"}
 
-    # Step 2: Find the matched answer and execute its action.
-    # result format from ask_question: {"id": "yes", "sentence": "..."}
-    # or result may be None / empty if no match or timeout.
-    matched_id = None
-    if isinstance(result, dict):
-        matched_id = result.get("id")
-    elif hasattr(result, "id"):
-        matched_id = result.id
+    # Find the matched answer and execute its action.
+    matched_id = answer.id if answer else None
 
     if not matched_id:
-        _LOGGER.info("ask_and_act: no answer matched (result=%s)", result)
+        _LOGGER.info("ask_and_act: no answer matched (sentence=%s)",
+                     answer.sentence if answer else None)
         return {"no_match": True}
 
     # Find the answer config with this ID
     matched_answer = None
-    for answer in answers:
-        if answer["id"] == matched_id:
-            matched_answer = answer
+    for a in answers:
+        if a["id"] == matched_id:
+            matched_answer = a
             break
 
     if not matched_answer:
@@ -180,22 +200,28 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
             except Exception as err:
                 _LOGGER.error("ask_and_act: action execution failed: %s", err)
 
-    # Step 3: Announce the response if one is configured
+    # Announce the response if one is configured.
+    # Use the entity's own announce method for consistency.
     response_text = matched_answer.get("response")
     if response_text:
         try:
-            await hass.services.async_call(
-                "assist_satellite", "announce",
-                {
-                    "entity_id": satellite_entity_id,
-                    "message": response_text,
-                    "preannounce": False,
-                },
-                blocking=True,
-            )
+            await entity.async_internal_announce(message=response_text, preannounce=False)
             _LOGGER.debug("ask_and_act: announced response '%s'", response_text)
         except Exception as err:
-            _LOGGER.error("ask_and_act: announce response failed: %s", err)
+            # Fall back to service call if direct method not available
+            _LOGGER.debug("ask_and_act: direct announce failed (%s), trying service call", err)
+            try:
+                await hass.services.async_call(
+                    "assist_satellite", "announce",
+                    {
+                        "entity_id": satellite_entity_id,
+                        "message": response_text,
+                        "preannounce": False,
+                    },
+                    blocking=True,
+                )
+            except Exception as err2:
+                _LOGGER.error("ask_and_act: announce response failed: %s", err2)
 
     return {"success": True, "matched_id": matched_id}
 
