@@ -654,6 +654,15 @@ class PureLLMConversationEntity(ConversationEntity):
         if user_input.conversation_id and user_input.conversation_id in self._conversation_history:
             return self._conversation_history[user_input.conversation_id].get("extra_system_prompt")
 
+        # Fallback: check for pending ask_and_act context stored by the service
+        # handler.  This handles the case where start_conversation's pipeline
+        # failed (e.g. wake word provider missing) and the user responded by
+        # pressing the satellite button or saying the wake word instead.
+        from . import consume_pending_ask_and_act
+        pending = consume_pending_ask_and_act(self.hass, user_input.device_id)
+        if pending:
+            return pending
+
         return None
 
     async def _check_sentence_triggers(

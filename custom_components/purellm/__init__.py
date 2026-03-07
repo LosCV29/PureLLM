@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -51,10 +52,79 @@ PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.UPDATE]
 # Key for storing service registration
 SERVICE_REGISTERED_KEY = "ask_and_act_service_registered"
 
+# Key for storing pending ask_and_act context (fallback when start_conversation
+# fails due to pipeline issues like missing wake word provider).
+# Maps satellite_entity_id -> {"extra_system_prompt": str, "timestamp": float}
+PENDING_ASK_AND_ACT_KEY = "pending_ask_and_act"
+
 # Key for storing the timer listener unsub function
 TIMER_LISTENER_KEY = "timer_finished_listener"
 
 SNAPSHOT_VIEW_KEY = "snapshot_view_registered"
+
+
+# Timeout for pending ask_and_act context (seconds). If the user doesn't
+# respond within this window, the stored context is discarded.
+PENDING_ASK_AND_ACT_TIMEOUT = 60.0
+
+
+def store_pending_ask_and_act(
+    hass: HomeAssistant,
+    satellite_entity_id: str,
+    extra_system_prompt: str,
+) -> None:
+    """Store ask_and_act context so the conversation agent can pick it up.
+
+    This is the fallback path: if start_conversation fails (e.g. due to a
+    missing wake word provider), the user can still respond by pressing the
+    satellite button or saying the wake word.  The PureLLM conversation agent
+    checks for pending context and injects it as extra_system_prompt.
+    """
+    hass.data[DOMAIN].setdefault(PENDING_ASK_AND_ACT_KEY, {})[satellite_entity_id] = {
+        "extra_system_prompt": extra_system_prompt,
+        "timestamp": time.time(),
+    }
+    _LOGGER.debug(
+        "ask_and_act: stored pending context for %s", satellite_entity_id,
+    )
+
+
+def consume_pending_ask_and_act(
+    hass: HomeAssistant,
+    device_id: str | None,
+) -> str | None:
+    """Consume and return pending ask_and_act context for a device.
+
+    Called by the conversation agent when processing a new message.
+    Maps device_id -> satellite entity, then pops the stored context.
+    Returns the extra_system_prompt if found and not expired, else None.
+    """
+    pending = hass.data.get(DOMAIN, {}).get(PENDING_ASK_AND_ACT_KEY)
+    if not pending or not device_id:
+        return None
+
+    # Map device_id to satellite_entity_id by checking the entity registry
+    from homeassistant.helpers import entity_registry as er
+    ent_reg = er.async_get(hass)
+
+    # Find all assist_satellite entities belonging to this device
+    for entity in er.async_entries_for_device(ent_reg, device_id):
+        if entity.entity_id in pending:
+            entry = pending.pop(entity.entity_id)
+            elapsed = time.time() - entry["timestamp"]
+            if elapsed > PENDING_ASK_AND_ACT_TIMEOUT:
+                _LOGGER.debug(
+                    "ask_and_act: pending context for %s expired (%.0fs)",
+                    entity.entity_id, elapsed,
+                )
+                return None
+            _LOGGER.info(
+                "ask_and_act: consumed pending context for %s (waited %.1fs)",
+                entity.entity_id, elapsed,
+            )
+            return entry["extra_system_prompt"]
+
+    return None
 
 
 class PureLLMSnapshotView(HomeAssistantView):
@@ -91,43 +161,6 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     """Set up the PureLLM component."""
     hass.data.setdefault(DOMAIN, {})
     return True
-
-
-async def _wait_for_media_player_idle(
-    hass: HomeAssistant,
-    media_player_entity_id: str,
-    timeout: float = 15.0,
-    poll_interval: float = 0.2,
-) -> None:
-    """Wait for a media player to finish playing and return to idle.
-
-    After tts.speak returns, the audio is still playing on the media player.
-    This polls the media player state until it is no longer 'playing' or
-    until the timeout is reached.
-    """
-    elapsed = 0.0
-    while elapsed < timeout:
-        state = hass.states.get(media_player_entity_id)
-        if state is None:
-            _LOGGER.warning(
-                "ask_and_act: media_player %s not found, proceeding",
-                media_player_entity_id,
-            )
-            return
-        if state.state not in ("playing", "buffering"):
-            _LOGGER.debug(
-                "ask_and_act: media_player %s is %s, proceeding",
-                media_player_entity_id, state.state,
-            )
-            return
-        await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
-
-    _LOGGER.warning(
-        "ask_and_act: timed out waiting for media_player %s to finish (state=%s)",
-        media_player_entity_id,
-        hass.states.get(media_player_entity_id).state if hass.states.get(media_player_entity_id) else "unknown",
-    )
 
 
 async def _wait_for_satellite_idle(
@@ -245,24 +278,21 @@ def _resolve_tts_entity(hass: HomeAssistant) -> str | None:
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
-    This service leverages the LLM to:
-    1. Speak question via TTS
-    2. Wait for TTS audio to finish playing
-    3. Listen for response via satellite
-    4. LLM executes the appropriate action based on response
-    5. LLM speaks confirmation
-
-    The LLM handles action execution via its control_device tool.
+    Hybrid approach:
+    1. Store extra_system_prompt context for this satellite (fallback path)
+    2. Speak the question via TTS
+    3. Try start_conversation to enter listening mode automatically
+       - If start_conversation works: satellite speaks, listens, processes
+       - If it fails (e.g. missing wake word provider): user can still respond
+         by pressing the satellite button or saying the wake word — the PureLLM
+         conversation agent picks up the stored context automatically.
     """
     satellite_entity_id = call.data["satellite_entity_id"]
     question = call.data["question"]
     answers = call.data["answers"]
     tts_entity_id = call.data.get("tts_entity_id") or _resolve_tts_entity(hass) or "tts.home_assistant_cloud"
-    _LOGGER.debug("ask_and_act: Using TTS entity: %s", tts_entity_id)
 
     # Derive media_player from satellite entity ID
-    # Pattern: assist_satellite.home_assistant_voice_XXXXXX_assist_satellite
-    #       -> media_player.home_assistant_voice_XXXXXX_media_player
     satellite_suffix = satellite_entity_id.split(".")[-1]
     if "_assist_satellite" in satellite_suffix:
         media_player_suffix = satellite_suffix.replace("_assist_satellite", "_media_player")
@@ -272,12 +302,11 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
             "assist_satellite.", "media_player."
         ).replace("_assist_satellite", "_media_player")
 
-    _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s, media_player=%s",
-                 question, satellite_entity_id, media_player_entity_id)
+    _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s, tts=%s",
+                 question, satellite_entity_id, tts_entity_id)
 
     # Build the extra_system_prompt with embedded answers data for reliable
     # code-based matching, plus LLM instructions as a fallback.
-    # Serialize answers for the conversation handler to parse and execute directly.
     answers_json = json.dumps(answers)
 
     prompt_parts = [
@@ -311,54 +340,53 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     extra_system_prompt = "\n".join(prompt_parts)
     _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
 
-    # Wait for the satellite pipeline to be idle before starting.
+    # Store context as fallback — if start_conversation's pipeline fails
+    # (e.g. missing wake word provider on ESPHome Voice PE), the user can
+    # still respond by pressing the satellite button or saying the wake word.
+    # PureLLM's conversation agent picks up the stored context automatically.
+    store_pending_ask_and_act(hass, satellite_entity_id, extra_system_prompt)
+
+    # Wait for satellite to be idle before starting.
     await _wait_for_satellite_idle(hass, satellite_entity_id)
 
-    # Use start_conversation with start_message to atomically speak the
-    # question and enter listening mode.  This avoids the race condition of
-    # separate TTS + start_conversation calls.  start_message must be
-    # non-empty (empty string produces invalid WAV and crashes the pipeline).
-    # Retry up to 3 times because start_conversation can be silently ignored
-    # if the satellite's internal pipeline has not fully released yet, even
-    # after the entity state shows "idle".
-    max_attempts = 3
-    for attempt in range(1, max_attempts + 1):
+    # start_conversation speaks the question (via start_message TTS) and
+    # then tries to enter listening mode.  Use blocking=False so we return
+    # immediately (blocking=True waits for the entire conversation).
+    #
+    # If the satellite's pipeline has a wake word provider issue, the
+    # announcement (question) is still played — only the subsequent
+    # pipeline start fails.  In that case, the user responds manually
+    # (button/wake word) and the stored context (above) handles the rest.
+    try:
+        await hass.services.async_call(
+            "assist_satellite", "start_conversation",
+            {
+                "entity_id": satellite_entity_id,
+                "start_message": question,
+                "extra_system_prompt": extra_system_prompt,
+                "preannounce": False,
+            },
+            blocking=False,
+        )
+        _LOGGER.info("ask_and_act: start_conversation fired for %s", satellite_entity_id)
+    except Exception as err:
+        # start_conversation service itself failed (not a pipeline error).
+        # Fall back to TTS to at least speak the question.
+        _LOGGER.warning("ask_and_act: start_conversation failed: %s", err)
         try:
             await hass.services.async_call(
-                "assist_satellite", "start_conversation",
+                "tts", "speak",
                 {
-                    "entity_id": satellite_entity_id,
-                    "start_message": question,
-                    "extra_system_prompt": extra_system_prompt,
-                    "preannounce": False,
+                    "entity_id": tts_entity_id,
+                    "media_player_entity_id": media_player_entity_id,
+                    "message": question,
                 },
                 blocking=True,
             )
-        except Exception as err:
-            _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
-            return {"error": f"start_conversation failed: {err}"}
-
-        # Verify the satellite actually entered listening mode
-        await asyncio.sleep(0.3)
-        state = hass.states.get(satellite_entity_id)
-        if state and state.state in ("listening", "processing"):
-            _LOGGER.info(
-                "ask_and_act: start_conversation succeeded (attempt %d), satellite is %s",
-                attempt, state.state,
-            )
-            return {"success": True}
-
-        if attempt < max_attempts:
-            _LOGGER.warning(
-                "ask_and_act: satellite still '%s' after start_conversation (attempt %d/%d), retrying…",
-                state.state if state else "unknown", attempt, max_attempts,
-            )
-            await asyncio.sleep(0.5)
-        else:
-            _LOGGER.warning(
-                "ask_and_act: satellite state is '%s' after %d attempts — may not be listening",
-                state.state if state else "unknown", max_attempts,
-            )
+            _LOGGER.info("ask_and_act: TTS fallback spoke question on %s", media_player_entity_id)
+        except Exception as tts_err:
+            _LOGGER.error("ask_and_act: TTS fallback also failed: %s", tts_err)
+            return {"error": f"start_conversation and TTS both failed: {tts_err}"}
 
     return {"success": True}
 
