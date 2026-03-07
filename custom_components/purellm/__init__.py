@@ -130,6 +130,47 @@ async def _wait_for_media_player_idle(
     )
 
 
+async def _wait_for_satellite_idle(
+    hass: HomeAssistant,
+    satellite_entity_id: str,
+    timeout: float = 10.0,
+    poll_interval: float = 0.3,
+) -> None:
+    """Wait for the assist satellite to return to idle before starting a new conversation.
+
+    After TTS playback the satellite pipeline may still be winding down
+    (e.g. state 'responding'). Calling start_conversation on a non-idle
+    satellite is silently ignored, so we must wait.
+    """
+    elapsed = 0.0
+    while elapsed < timeout:
+        state = hass.states.get(satellite_entity_id)
+        if state is None:
+            _LOGGER.warning(
+                "ask_and_act: satellite %s not found, proceeding",
+                satellite_entity_id,
+            )
+            return
+        if state.state == "idle":
+            _LOGGER.debug(
+                "ask_and_act: satellite %s is idle, proceeding",
+                satellite_entity_id,
+            )
+            return
+        _LOGGER.debug(
+            "ask_and_act: satellite %s still in state '%s', waiting…",
+            satellite_entity_id, state.state,
+        )
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
+    _LOGGER.warning(
+        "ask_and_act: timed out waiting for satellite %s to become idle (state=%s)",
+        satellite_entity_id,
+        hass.states.get(satellite_entity_id).state if hass.states.get(satellite_entity_id) else "unknown",
+    )
+
+
 def _resolve_tts_entity(hass: HomeAssistant) -> str | None:
     """Resolve the TTS entity from the preferred assist pipeline.
 
@@ -253,6 +294,13 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     # not for playback to complete. The satellite cannot enter listening mode
     # while its media player is still actively playing audio.
     await _wait_for_media_player_idle(hass, media_player_entity_id)
+
+    # Step 2b: Wait for the satellite pipeline to fully finish and return to
+    # idle.  The media player may go idle slightly before the satellite's
+    # internal pipeline state transitions back to "idle".  If we call
+    # start_conversation while the satellite is still in "responding" state
+    # it will be silently ignored.
+    await _wait_for_satellite_idle(hass, satellite_entity_id)
 
     # Step 3: Listen for response (empty start_message = skip announcement, just listen)
     try:
