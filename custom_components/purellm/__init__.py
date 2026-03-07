@@ -127,6 +127,66 @@ def consume_pending_ask_and_act(
     return None
 
 
+def _generate_silent_wav() -> bytes:
+    """Generate a minimal 0.5 second silent WAV file (16 kHz, 16-bit, mono).
+
+    Used as start_media_id for start_conversation to skip TTS synthesis
+    (which crashes with some TTS engines on empty strings) while still
+    satisfying the 'must contain start_message or start_media_id' validation.
+    """
+    import struct
+    sample_rate = 16000
+    num_channels = 1
+    bits_per_sample = 16
+    duration_samples = sample_rate // 2  # 0.5 seconds
+    data_size = duration_samples * num_channels * (bits_per_sample // 8)
+    # RIFF header
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + data_size,  # file size - 8
+        b"WAVE",
+        b"fmt ",
+        16,  # chunk size
+        1,  # PCM format
+        num_channels,
+        sample_rate,
+        sample_rate * num_channels * (bits_per_sample // 8),  # byte rate
+        num_channels * (bits_per_sample // 8),  # block align
+        bits_per_sample,
+        b"data",
+        data_size,
+    )
+    return header + b"\x00" * data_size
+
+
+# Cache the silent WAV so we don't regenerate it every time.
+_SILENT_WAV: bytes | None = None
+
+
+def _get_silent_wav() -> bytes:
+    global _SILENT_WAV
+    if _SILENT_WAV is None:
+        _SILENT_WAV = _generate_silent_wav()
+    return _SILENT_WAV
+
+
+class PureLLMSilentWavView(HomeAssistantView):
+    """Serve a minimal silent WAV file for start_conversation.
+
+    start_conversation requires start_message or start_media_id.  When the
+    question is already spoken via separate tts.speak, we use this silent WAV
+    as start_media_id to skip TTS synthesis and go straight to listening.
+    """
+
+    url = "/api/purellm/silence.wav"
+    name = "api:purellm:silence"
+    requires_auth = False
+
+    async def get(self, request: web.Request) -> web.Response:
+        return web.Response(body=_get_silent_wav(), content_type="audio/wav")
+
+
 class PureLLMSnapshotView(HomeAssistantView):
     """Serve camera snapshots saved by the camera tool.
 
@@ -155,6 +215,43 @@ class PureLLMSnapshotView(HomeAssistantView):
         with open(filepath, "rb") as fh:
             data = fh.read()
         return web.Response(body=data, content_type="image/jpeg")
+
+
+async def _wait_for_media_player_idle(
+    hass: HomeAssistant,
+    media_player_entity_id: str,
+    timeout: float = 15.0,
+    poll_interval: float = 0.2,
+) -> None:
+    """Wait for a media player to finish playing and return to idle.
+
+    After tts.speak returns, the audio is still playing on the media player.
+    This polls the media player state until it is no longer 'playing' or
+    until the timeout is reached.
+    """
+    elapsed = 0.0
+    while elapsed < timeout:
+        state = hass.states.get(media_player_entity_id)
+        if state is None:
+            _LOGGER.warning(
+                "ask_and_act: media_player %s not found, proceeding",
+                media_player_entity_id,
+            )
+            return
+        if state.state not in ("playing", "buffering"):
+            _LOGGER.debug(
+                "ask_and_act: media_player %s is %s, proceeding",
+                media_player_entity_id, state.state,
+            )
+            return
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+
+    _LOGGER.warning(
+        "ask_and_act: timed out waiting for media_player %s to finish (state=%s)",
+        media_player_entity_id,
+        hass.states.get(media_player_entity_id).state if hass.states.get(media_player_entity_id) else "unknown",
+    )
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
@@ -278,14 +375,17 @@ def _resolve_tts_entity(hass: HomeAssistant) -> str | None:
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
-    Hybrid approach:
-    1. Store extra_system_prompt context for this satellite (fallback path)
-    2. Speak the question via TTS
-    3. Try start_conversation to enter listening mode automatically
-       - If start_conversation works: satellite speaks, listens, processes
-       - If it fails (e.g. missing wake word provider): user can still respond
-         by pressing the satellite button or saying the wake word — the PureLLM
-         conversation agent picks up the stored context automatically.
+    Flow (matches the original working approach):
+    1. Speak the question via separate tts.speak
+    2. Wait for media player to finish playing
+    3. Wait for satellite to be idle
+    4. start_conversation with a silent WAV as start_media_id (skips TTS
+       synthesis — avoids crash with TTS engines that can't handle empty text)
+       + extra_system_prompt with answer context
+    5. Satellite enters listening mode, user responds, LLM processes
+
+    Also stores context as fallback: if start_conversation fails, the user
+    can respond via button/wake word and PureLLM picks up the stored context.
     """
     satellite_entity_id = call.data["satellite_entity_id"]
     question = call.data["question"]
@@ -302,11 +402,10 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
             "assist_satellite.", "media_player."
         ).replace("_assist_satellite", "_media_player")
 
-    _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s, tts=%s",
-                 question, satellite_entity_id, tts_entity_id)
+    _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s, media_player=%s",
+                 question, satellite_entity_id, media_player_entity_id)
 
-    # Build the extra_system_prompt with embedded answers data for reliable
-    # code-based matching, plus LLM instructions as a fallback.
+    # Build the extra_system_prompt with embedded answers data.
     answers_json = json.dumps(answers)
 
     prompt_parts = [
@@ -340,53 +439,77 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     extra_system_prompt = "\n".join(prompt_parts)
     _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
 
-    # Store context as fallback — if start_conversation's pipeline fails
-    # (e.g. missing wake word provider on ESPHome Voice PE), the user can
-    # still respond by pressing the satellite button or saying the wake word.
-    # PureLLM's conversation agent picks up the stored context automatically.
+    # Store context as fallback — if start_conversation's pipeline fails,
+    # the user can still respond via button/wake word and PureLLM's
+    # conversation agent picks up the stored context automatically.
     store_pending_ask_and_act(hass, satellite_entity_id, extra_system_prompt)
 
-    # Wait for satellite to be idle before starting.
-    await _wait_for_satellite_idle(hass, satellite_entity_id)
-
-    # start_conversation speaks the question (via start_message TTS) and
-    # then tries to enter listening mode.  Use blocking=False so we return
-    # immediately (blocking=True waits for the entire conversation).
-    #
-    # If the satellite's pipeline has a wake word provider issue, the
-    # announcement (question) is still played — only the subsequent
-    # pipeline start fails.  In that case, the user responds manually
-    # (button/wake word) and the stored context (above) handles the rest.
+    # Step 1: Speak the question via TTS
     try:
         await hass.services.async_call(
-            "assist_satellite", "start_conversation",
+            "tts", "speak",
             {
-                "entity_id": satellite_entity_id,
-                "start_message": question,
-                "extra_system_prompt": extra_system_prompt,
-                "preannounce": False,
+                "entity_id": tts_entity_id,
+                "media_player_entity_id": media_player_entity_id,
+                "message": question,
             },
-            blocking=False,
+            blocking=True,
         )
-        _LOGGER.info("ask_and_act: start_conversation fired for %s", satellite_entity_id)
+        _LOGGER.debug("ask_and_act: TTS spoke question")
     except Exception as err:
-        # start_conversation service itself failed (not a pipeline error).
-        # Fall back to TTS to at least speak the question.
-        _LOGGER.warning("ask_and_act: start_conversation failed: %s", err)
+        _LOGGER.error("ask_and_act: TTS failed: %s", err)
+        return {"error": f"TTS failed: {err}"}
+
+    # Step 2: Wait for TTS audio to finish playing on the media player.
+    await _wait_for_media_player_idle(hass, media_player_entity_id)
+
+    # Step 3: Wait for the satellite pipeline to fully finish and return to idle.
+    await _wait_for_satellite_idle(hass, satellite_entity_id)
+
+    # Step 4: start_conversation to enter listening mode.
+    # Use start_media_id with a silent WAV instead of start_message to avoid
+    # TTS synthesis — the question was already spoken in step 1.  The old code
+    # used start_message="" which worked with HA Cloud TTS but crashes with
+    # openai-streaming (can't synthesize empty text).
+    silence_url = "/api/purellm/silence.wav"
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
         try:
             await hass.services.async_call(
-                "tts", "speak",
+                "assist_satellite", "start_conversation",
                 {
-                    "entity_id": tts_entity_id,
-                    "media_player_entity_id": media_player_entity_id,
-                    "message": question,
+                    "entity_id": satellite_entity_id,
+                    "start_media_id": silence_url,
+                    "extra_system_prompt": extra_system_prompt,
+                    "preannounce": False,
                 },
                 blocking=True,
             )
-            _LOGGER.info("ask_and_act: TTS fallback spoke question on %s", media_player_entity_id)
-        except Exception as tts_err:
-            _LOGGER.error("ask_and_act: TTS fallback also failed: %s", tts_err)
-            return {"error": f"start_conversation and TTS both failed: {tts_err}"}
+        except Exception as err:
+            _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
+            return {"error": f"start_conversation failed: {err}"}
+
+        # Verify the satellite actually entered listening mode
+        await asyncio.sleep(0.3)
+        state = hass.states.get(satellite_entity_id)
+        if state and state.state in ("listening", "processing"):
+            _LOGGER.info(
+                "ask_and_act: start_conversation succeeded (attempt %d), satellite is %s",
+                attempt, state.state,
+            )
+            return {"success": True}
+
+        if attempt < max_attempts:
+            _LOGGER.warning(
+                "ask_and_act: satellite still '%s' after start_conversation (attempt %d/%d), retrying…",
+                state.state if state else "unknown", attempt, max_attempts,
+            )
+            await asyncio.sleep(0.5)
+        else:
+            _LOGGER.warning(
+                "ask_and_act: satellite state is '%s' after %d attempts — may not be listening",
+                state.state if state else "unknown", max_attempts,
+            )
 
     return {"success": True}
 
@@ -534,9 +657,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN][TIMER_LISTENER_KEY] = unsub
         _LOGGER.debug("Registered timer.finished event listener")
 
-    # Register snapshot HTTP view (only once per HA instance)
+    # Register HTTP views (only once per HA instance)
     if SNAPSHOT_VIEW_KEY not in hass.data[DOMAIN]:
         hass.http.register_view(PureLLMSnapshotView(hass))
+        hass.http.register_view(PureLLMSilentWavView())
         hass.data[DOMAIN][SNAPSHOT_VIEW_KEY] = True
 
     # Register ask_and_act service (only once per HA instance)
