@@ -43,7 +43,6 @@ ASK_AND_ACT_SCHEMA = vol.Schema({
     vol.Required("satellite_entity_id"): cv.entity_id,
     vol.Required("question"): cv.string,
     vol.Required("answers"): vol.All(cv.ensure_list, [ANSWER_SCHEMA]),
-    vol.Optional("tts_entity_id"): cv.entity_id,  # Optional, auto-detected from preferred pipeline
 })
 
 PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.UPDATE]
@@ -93,187 +92,20 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     return True
 
 
-async def _wait_for_media_player_idle(
-    hass: HomeAssistant,
-    media_player_entity_id: str,
-    timeout: float = 15.0,
-    poll_interval: float = 0.2,
-) -> None:
-    """Wait for a media player to finish playing and return to idle.
-
-    After tts.speak returns, the audio is still playing on the media player.
-    This polls the media player state until it is no longer 'playing' or
-    until the timeout is reached.
-    """
-    elapsed = 0.0
-    while elapsed < timeout:
-        state = hass.states.get(media_player_entity_id)
-        if state is None:
-            _LOGGER.warning(
-                "ask_and_act: media_player %s not found, proceeding",
-                media_player_entity_id,
-            )
-            return
-        if state.state not in ("playing", "buffering"):
-            _LOGGER.debug(
-                "ask_and_act: media_player %s is %s, proceeding",
-                media_player_entity_id, state.state,
-            )
-            return
-        await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
-
-    _LOGGER.warning(
-        "ask_and_act: timed out waiting for media_player %s to finish (state=%s)",
-        media_player_entity_id,
-        hass.states.get(media_player_entity_id).state if hass.states.get(media_player_entity_id) else "unknown",
-    )
-
-
-async def _wait_for_satellite_idle(
-    hass: HomeAssistant,
-    satellite_entity_id: str,
-    timeout: float = 10.0,
-    settle_delay: float = 0.5,
-) -> None:
-    """Wait for the assist satellite to return to idle before starting a new conversation.
-
-    After TTS playback the satellite pipeline may still be winding down
-    (e.g. state 'responding'). Calling start_conversation on a non-idle
-    satellite is silently ignored, so we must wait.
-
-    Uses event listeners instead of polling for reliable detection, and adds
-    a settle delay after idle is reached because the satellite's internal
-    pipeline teardown may still be in progress even after the entity state
-    flips to 'idle'.
-    """
-    # Fast path: already idle
-    state = hass.states.get(satellite_entity_id)
-    if state is None:
-        _LOGGER.warning(
-            "ask_and_act: satellite %s not found, proceeding",
-            satellite_entity_id,
-        )
-        return
-    if state.state == "idle":
-        _LOGGER.debug(
-            "ask_and_act: satellite %s already idle, settling %.1fs",
-            satellite_entity_id, settle_delay,
-        )
-        await asyncio.sleep(settle_delay)
-        return
-
-    # Subscribe to state_changed events for reliable detection
-    idle_event = asyncio.Event()
-
-    @callback
-    def _on_state_change(event: Event) -> None:
-        new_state = event.data.get("new_state")
-        if (
-            event.data.get("entity_id") == satellite_entity_id
-            and new_state is not None
-            and new_state.state == "idle"
-        ):
-            idle_event.set()
-
-    unsub = hass.bus.async_listen("state_changed", _on_state_change)
-    try:
-        # Re-check after subscribing to avoid TOCTOU race
-        state = hass.states.get(satellite_entity_id)
-        if state and state.state == "idle":
-            _LOGGER.debug(
-                "ask_and_act: satellite %s became idle (re-check), settling %.1fs",
-                satellite_entity_id, settle_delay,
-            )
-            await asyncio.sleep(settle_delay)
-            return
-
-        _LOGGER.debug(
-            "ask_and_act: satellite %s in state '%s', waiting for idle…",
-            satellite_entity_id, state.state if state else "unknown",
-        )
-        async with asyncio.timeout(timeout):
-            await idle_event.wait()
-        _LOGGER.debug(
-            "ask_and_act: satellite %s reached idle, settling %.1fs",
-            satellite_entity_id, settle_delay,
-        )
-        await asyncio.sleep(settle_delay)
-    except TimeoutError:
-        _LOGGER.warning(
-            "ask_and_act: timed out waiting for satellite %s to become idle (state=%s)",
-            satellite_entity_id,
-            hass.states.get(satellite_entity_id).state if hass.states.get(satellite_entity_id) else "unknown",
-        )
-    finally:
-        unsub()
-
-
-def _resolve_tts_entity(hass: HomeAssistant) -> str | None:
-    """Resolve the TTS entity from the preferred assist pipeline.
-
-    Queries the preferred voice pipeline for its configured TTS engine
-    and returns the matching entity_id (e.g. 'tts.kokoro').
-    Returns None if the pipeline or TTS engine cannot be determined.
-    """
-    try:
-        from homeassistant.components.assist_pipeline import async_get_pipeline
-
-        # async_get_pipeline(hass, None) returns the preferred pipeline
-        pipeline = async_get_pipeline(hass, pipeline_id=None)
-        if pipeline is None or not pipeline.tts_engine:
-            return None
-
-        tts_engine = pipeline.tts_engine
-        # The tts_engine may already be a full entity_id (tts.kokoro)
-        # or just the engine name (cloud, kokoro, etc.)
-        if hass.states.get(tts_engine):
-            _LOGGER.debug("Resolved TTS entity from preferred pipeline: %s", tts_engine)
-            return tts_engine
-
-        candidate = f"tts.{tts_engine}" if not tts_engine.startswith("tts.") else tts_engine
-        if hass.states.get(candidate):
-            _LOGGER.debug("Resolved TTS entity from preferred pipeline: %s", candidate)
-            return candidate
-
-        _LOGGER.debug("Pipeline TTS engine '%s' has no matching entity", tts_engine)
-    except Exception as err:  # noqa: BLE001
-        _LOGGER.debug("Could not resolve TTS from pipeline: %s", err)
-    return None
-
-
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
-    This service leverages the LLM to:
-    1. Speak question via TTS
-    2. Wait for TTS audio to finish playing
-    3. Listen for response via satellite
-    4. LLM executes the appropriate action based on response
-    5. LLM speaks confirmation
-
-    The LLM handles action execution via its control_device tool.
+    Uses start_conversation with start_message to atomically speak the
+    question and enter listening mode on the satellite.  The LLM then
+    matches the user's response to the provided answers and executes
+    the appropriate action via its control_device tool.
     """
     satellite_entity_id = call.data["satellite_entity_id"]
     question = call.data["question"]
     answers = call.data["answers"]
-    tts_entity_id = call.data.get("tts_entity_id") or _resolve_tts_entity(hass) or "tts.home_assistant_cloud"
-    _LOGGER.debug("ask_and_act: Using TTS entity: %s", tts_entity_id)
 
-    # Derive media_player from satellite entity ID
-    # Pattern: assist_satellite.home_assistant_voice_XXXXXX_assist_satellite
-    #       -> media_player.home_assistant_voice_XXXXXX_media_player
-    satellite_suffix = satellite_entity_id.split(".")[-1]
-    if "_assist_satellite" in satellite_suffix:
-        media_player_suffix = satellite_suffix.replace("_assist_satellite", "_media_player")
-        media_player_entity_id = f"media_player.{media_player_suffix}"
-    else:
-        media_player_entity_id = satellite_entity_id.replace(
-            "assist_satellite.", "media_player."
-        ).replace("_assist_satellite", "_media_player")
-
-    _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s, media_player=%s",
-                 question, satellite_entity_id, media_player_entity_id)
+    _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s",
+                 question, satellite_entity_id)
 
     # Build the extra_system_prompt with embedded answers data for reliable
     # code-based matching, plus LLM instructions as a fallback.
@@ -311,77 +143,26 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     extra_system_prompt = "\n".join(prompt_parts)
     _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
 
-    # Step 1: Speak the question via TTS
+    # Use start_conversation with start_message to speak the question AND
+    # enter listening mode atomically.  Previous approach (separate TTS +
+    # wait + empty start_message) was fragile because of timing issues
+    # between the media player finishing, the satellite pipeline tearing
+    # down, and start_conversation being silently ignored.
     try:
         await hass.services.async_call(
-            "tts", "speak",
+            "assist_satellite", "start_conversation",
             {
-                "entity_id": tts_entity_id,
-                "media_player_entity_id": media_player_entity_id,
-                "message": question,
+                "entity_id": satellite_entity_id,
+                "start_message": question,
+                "extra_system_prompt": extra_system_prompt,
+                "preannounce": False,
             },
             blocking=True,
         )
-        _LOGGER.debug("ask_and_act: TTS spoke question")
+        _LOGGER.info("ask_and_act: start_conversation called with question as start_message")
     except Exception as err:
-        _LOGGER.error("ask_and_act: TTS failed: %s", err)
-        return {"error": f"TTS failed: {err}"}
-
-    # Step 2: Wait for TTS audio to finish playing on the media player.
-    # tts.speak with blocking=True only waits for the audio to be queued,
-    # not for playback to complete. The satellite cannot enter listening mode
-    # while its media player is still actively playing audio.
-    await _wait_for_media_player_idle(hass, media_player_entity_id)
-
-    # Step 2b: Wait for the satellite pipeline to fully finish and return to
-    # idle.  The media player may go idle slightly before the satellite's
-    # internal pipeline state transitions back to "idle".  If we call
-    # start_conversation while the satellite is still in "responding" state
-    # it will be silently ignored.
-    await _wait_for_satellite_idle(hass, satellite_entity_id)
-
-    # Step 3: Listen for response (empty start_message = skip announcement, just listen)
-    # Retry up to 3 times because start_conversation can be silently ignored
-    # if the satellite's internal pipeline has not fully released yet, even
-    # after the entity state shows "idle".
-    max_attempts = 3
-    for attempt in range(1, max_attempts + 1):
-        try:
-            await hass.services.async_call(
-                "assist_satellite", "start_conversation",
-                {
-                    "entity_id": satellite_entity_id,
-                    "start_message": "",
-                    "extra_system_prompt": extra_system_prompt,
-                    "preannounce": False,
-                },
-                blocking=True,
-            )
-        except Exception as err:
-            _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
-            return {"error": f"start_conversation failed: {err}"}
-
-        # Verify the satellite actually entered listening mode
-        await asyncio.sleep(0.3)
-        state = hass.states.get(satellite_entity_id)
-        if state and state.state in ("listening", "processing"):
-            _LOGGER.info(
-                "ask_and_act: start_conversation succeeded (attempt %d), satellite is %s",
-                attempt, state.state,
-            )
-            return {"success": True}
-
-        if attempt < max_attempts:
-            _LOGGER.warning(
-                "ask_and_act: satellite still '%s' after start_conversation (attempt %d/%d), retrying…",
-                state.state if state else "unknown", attempt, max_attempts,
-            )
-            await asyncio.sleep(0.5)
-        else:
-            _LOGGER.warning(
-                "ask_and_act: satellite state is '%s' after %d attempts — may not be listening",
-                state.state if state else "unknown", max_attempts,
-            )
+        _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
+        return {"error": f"start_conversation failed: {err}"}
 
     return {"success": True}
 
