@@ -134,41 +134,79 @@ async def _wait_for_satellite_idle(
     hass: HomeAssistant,
     satellite_entity_id: str,
     timeout: float = 10.0,
-    poll_interval: float = 0.3,
+    settle_delay: float = 0.5,
 ) -> None:
     """Wait for the assist satellite to return to idle before starting a new conversation.
 
     After TTS playback the satellite pipeline may still be winding down
     (e.g. state 'responding'). Calling start_conversation on a non-idle
     satellite is silently ignored, so we must wait.
-    """
-    elapsed = 0.0
-    while elapsed < timeout:
-        state = hass.states.get(satellite_entity_id)
-        if state is None:
-            _LOGGER.warning(
-                "ask_and_act: satellite %s not found, proceeding",
-                satellite_entity_id,
-            )
-            return
-        if state.state == "idle":
-            _LOGGER.debug(
-                "ask_and_act: satellite %s is idle, proceeding",
-                satellite_entity_id,
-            )
-            return
-        _LOGGER.debug(
-            "ask_and_act: satellite %s still in state '%s', waiting…",
-            satellite_entity_id, state.state,
-        )
-        await asyncio.sleep(poll_interval)
-        elapsed += poll_interval
 
-    _LOGGER.warning(
-        "ask_and_act: timed out waiting for satellite %s to become idle (state=%s)",
-        satellite_entity_id,
-        hass.states.get(satellite_entity_id).state if hass.states.get(satellite_entity_id) else "unknown",
-    )
+    Uses event listeners instead of polling for reliable detection, and adds
+    a settle delay after idle is reached because the satellite's internal
+    pipeline teardown may still be in progress even after the entity state
+    flips to 'idle'.
+    """
+    # Fast path: already idle
+    state = hass.states.get(satellite_entity_id)
+    if state is None:
+        _LOGGER.warning(
+            "ask_and_act: satellite %s not found, proceeding",
+            satellite_entity_id,
+        )
+        return
+    if state.state == "idle":
+        _LOGGER.debug(
+            "ask_and_act: satellite %s already idle, settling %.1fs",
+            satellite_entity_id, settle_delay,
+        )
+        await asyncio.sleep(settle_delay)
+        return
+
+    # Subscribe to state_changed events for reliable detection
+    idle_event = asyncio.Event()
+
+    @callback
+    def _on_state_change(event: Event) -> None:
+        new_state = event.data.get("new_state")
+        if (
+            event.data.get("entity_id") == satellite_entity_id
+            and new_state is not None
+            and new_state.state == "idle"
+        ):
+            idle_event.set()
+
+    unsub = hass.bus.async_listen("state_changed", _on_state_change)
+    try:
+        # Re-check after subscribing to avoid TOCTOU race
+        state = hass.states.get(satellite_entity_id)
+        if state and state.state == "idle":
+            _LOGGER.debug(
+                "ask_and_act: satellite %s became idle (re-check), settling %.1fs",
+                satellite_entity_id, settle_delay,
+            )
+            await asyncio.sleep(settle_delay)
+            return
+
+        _LOGGER.debug(
+            "ask_and_act: satellite %s in state '%s', waiting for idle…",
+            satellite_entity_id, state.state if state else "unknown",
+        )
+        async with asyncio.timeout(timeout):
+            await idle_event.wait()
+        _LOGGER.debug(
+            "ask_and_act: satellite %s reached idle, settling %.1fs",
+            satellite_entity_id, settle_delay,
+        )
+        await asyncio.sleep(settle_delay)
+    except TimeoutError:
+        _LOGGER.warning(
+            "ask_and_act: timed out waiting for satellite %s to become idle (state=%s)",
+            satellite_entity_id,
+            hass.states.get(satellite_entity_id).state if hass.states.get(satellite_entity_id) else "unknown",
+        )
+    finally:
+        unsub()
 
 
 def _resolve_tts_entity(hass: HomeAssistant) -> str | None:
@@ -303,22 +341,49 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     await _wait_for_satellite_idle(hass, satellite_entity_id)
 
     # Step 3: Listen for response (empty start_message = skip announcement, just listen)
-    try:
-        await hass.services.async_call(
-            "assist_satellite", "start_conversation",
-            {
-                "entity_id": satellite_entity_id,
-                "start_message": "",
-                "extra_system_prompt": extra_system_prompt,
-                "preannounce": False,
-            },
-            blocking=True,
-        )
-        _LOGGER.info("ask_and_act: start_conversation completed")
-        return {"success": True}
-    except Exception as err:
-        _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
-        return {"error": f"start_conversation failed: {err}"}
+    # Retry up to 3 times because start_conversation can be silently ignored
+    # if the satellite's internal pipeline has not fully released yet, even
+    # after the entity state shows "idle".
+    max_attempts = 3
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await hass.services.async_call(
+                "assist_satellite", "start_conversation",
+                {
+                    "entity_id": satellite_entity_id,
+                    "start_message": "",
+                    "extra_system_prompt": extra_system_prompt,
+                    "preannounce": False,
+                },
+                blocking=True,
+            )
+        except Exception as err:
+            _LOGGER.error("ask_and_act: start_conversation failed: %s", err)
+            return {"error": f"start_conversation failed: {err}"}
+
+        # Verify the satellite actually entered listening mode
+        await asyncio.sleep(0.3)
+        state = hass.states.get(satellite_entity_id)
+        if state and state.state in ("listening", "processing"):
+            _LOGGER.info(
+                "ask_and_act: start_conversation succeeded (attempt %d), satellite is %s",
+                attempt, state.state,
+            )
+            return {"success": True}
+
+        if attempt < max_attempts:
+            _LOGGER.warning(
+                "ask_and_act: satellite still '%s' after start_conversation (attempt %d/%d), retrying…",
+                state.state if state else "unknown", attempt, max_attempts,
+            )
+            await asyncio.sleep(0.5)
+        else:
+            _LOGGER.warning(
+                "ask_and_act: satellite state is '%s' after %d attempts — may not be listening",
+                state.state if state else "unknown", max_attempts,
+            )
+
+    return {"success": True}
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
