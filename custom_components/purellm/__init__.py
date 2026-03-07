@@ -101,12 +101,20 @@ async def _wait_for_media_player_idle(
 ) -> None:
     """Wait for a media player to finish playing and return to idle.
 
-    After tts.speak returns, the audio is still playing on the media player.
-    This polls the media player state until it is no longer 'playing' or
-    until the timeout is reached.
+    After tts.speak returns, the audio is only *queued* — the media player
+    has not started playing yet.  We must first wait for playback to START
+    (state becomes 'playing' or 'buffering'), then wait for it to FINISH
+    (state leaves 'playing'/'buffering').  Without the first phase the
+    function returns immediately (state is still 'idle') and
+    start_conversation fires while TTS audio is about to play, preventing
+    the satellite from entering listening mode.
     """
+    # Phase 1: Wait for playback to START (up to 5 seconds).
+    # tts.speak(blocking=True) only guarantees the audio is queued;
+    # the media player may still be 'idle' for a brief moment.
+    start_timeout = 5.0
     elapsed = 0.0
-    while elapsed < timeout:
+    while elapsed < start_timeout:
         state = hass.states.get(media_player_entity_id)
         if state is None:
             _LOGGER.warning(
@@ -114,9 +122,31 @@ async def _wait_for_media_player_idle(
                 media_player_entity_id,
             )
             return
+        if state.state in ("playing", "buffering"):
+            _LOGGER.debug(
+                "ask_and_act: media_player %s started playing after %.1fs",
+                media_player_entity_id, elapsed,
+            )
+            break
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+    else:
+        _LOGGER.warning(
+            "ask_and_act: media_player %s never started playing (state=%s), proceeding",
+            media_player_entity_id,
+            hass.states.get(media_player_entity_id).state if hass.states.get(media_player_entity_id) else "unknown",
+        )
+        return
+
+    # Phase 2: Wait for playback to FINISH.
+    elapsed = 0.0
+    while elapsed < timeout:
+        state = hass.states.get(media_player_entity_id)
+        if state is None:
+            return
         if state.state not in ("playing", "buffering"):
             _LOGGER.debug(
-                "ask_and_act: media_player %s is %s, proceeding",
+                "ask_and_act: media_player %s finished playing (state=%s)",
                 media_player_entity_id, state.state,
             )
             return
