@@ -43,7 +43,7 @@ ASK_AND_ACT_SCHEMA = vol.Schema({
     vol.Required("satellite_entity_id"): cv.entity_id,
     vol.Required("question"): cv.string,
     vol.Required("answers"): vol.All(cv.ensure_list, [ANSWER_SCHEMA]),
-    vol.Optional("tts_entity_id"): cv.entity_id,  # Optional, defaults to tts.home_assistant_cloud
+    vol.Optional("tts_entity_id"): cv.entity_id,  # Optional, auto-detected from preferred pipeline
 })
 
 PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.UPDATE]
@@ -130,6 +130,39 @@ async def _wait_for_media_player_idle(
     )
 
 
+def _resolve_tts_entity(hass: HomeAssistant) -> str | None:
+    """Resolve the TTS entity from the preferred assist pipeline.
+
+    Queries the preferred voice pipeline for its configured TTS engine
+    and returns the matching entity_id (e.g. 'tts.kokoro').
+    Returns None if the pipeline or TTS engine cannot be determined.
+    """
+    try:
+        from homeassistant.components.assist_pipeline import async_get_pipeline
+
+        # async_get_pipeline(hass, None) returns the preferred pipeline
+        pipeline = async_get_pipeline(hass, pipeline_id=None)
+        if pipeline is None or not pipeline.tts_engine:
+            return None
+
+        tts_engine = pipeline.tts_engine
+        # The tts_engine may already be a full entity_id (tts.kokoro)
+        # or just the engine name (cloud, kokoro, etc.)
+        if hass.states.get(tts_engine):
+            _LOGGER.debug("Resolved TTS entity from preferred pipeline: %s", tts_engine)
+            return tts_engine
+
+        candidate = f"tts.{tts_engine}" if not tts_engine.startswith("tts.") else tts_engine
+        if hass.states.get(candidate):
+            _LOGGER.debug("Resolved TTS entity from preferred pipeline: %s", candidate)
+            return candidate
+
+        _LOGGER.debug("Pipeline TTS engine '%s' has no matching entity", tts_engine)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Could not resolve TTS from pipeline: %s", err)
+    return None
+
+
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
@@ -145,7 +178,8 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     satellite_entity_id = call.data["satellite_entity_id"]
     question = call.data["question"]
     answers = call.data["answers"]
-    tts_entity_id = call.data.get("tts_entity_id", "tts.home_assistant_cloud")
+    tts_entity_id = call.data.get("tts_entity_id") or _resolve_tts_entity(hass) or "tts.home_assistant_cloud"
+    _LOGGER.debug("ask_and_act: Using TTS entity: %s", tts_entity_id)
 
     # Derive media_player from satellite entity ID
     # Pattern: assist_satellite.home_assistant_voice_XXXXXX_assist_satellite
