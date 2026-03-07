@@ -340,7 +340,10 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     # it will be silently ignored.
     await _wait_for_satellite_idle(hass, satellite_entity_id)
 
-    # Step 3: Listen for response (empty start_message = skip announcement, just listen)
+    # Step 3: Listen for response.
+    # Do NOT pass start_message (even "") — an empty string causes HA to
+    # synthesize TTS for "", which produces invalid WAV and crashes the pipeline.
+    # Omitting start_message entirely skips TTS and goes straight to listening.
     # Retry up to 3 times because start_conversation can be silently ignored
     # if the satellite's internal pipeline has not fully released yet, even
     # after the entity state shows "idle".
@@ -351,7 +354,6 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
                 "assist_satellite", "start_conversation",
                 {
                     "entity_id": satellite_entity_id,
-                    "start_message": "",
                     "extra_system_prompt": extra_system_prompt,
                     "preannounce": False,
                 },
