@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 from typing import Any
 
 import voluptuous as vol
@@ -51,10 +52,139 @@ PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.UPDATE]
 # Key for storing service registration
 SERVICE_REGISTERED_KEY = "ask_and_act_service_registered"
 
+# Key for storing pending ask_and_act context (fallback when start_conversation
+# fails due to pipeline issues like missing wake word provider).
+# Maps satellite_entity_id -> {"extra_system_prompt": str, "timestamp": float}
+PENDING_ASK_AND_ACT_KEY = "pending_ask_and_act"
+
 # Key for storing the timer listener unsub function
 TIMER_LISTENER_KEY = "timer_finished_listener"
 
 SNAPSHOT_VIEW_KEY = "snapshot_view_registered"
+
+
+# Timeout for pending ask_and_act context (seconds). If the user doesn't
+# respond within this window, the stored context is discarded.
+PENDING_ASK_AND_ACT_TIMEOUT = 60.0
+
+
+def store_pending_ask_and_act(
+    hass: HomeAssistant,
+    satellite_entity_id: str,
+    extra_system_prompt: str,
+) -> None:
+    """Store ask_and_act context so the conversation agent can pick it up.
+
+    This is the fallback path: if start_conversation fails (e.g. due to a
+    missing wake word provider), the user can still respond by pressing the
+    satellite button or saying the wake word.  The PureLLM conversation agent
+    checks for pending context and injects it as extra_system_prompt.
+    """
+    hass.data[DOMAIN].setdefault(PENDING_ASK_AND_ACT_KEY, {})[satellite_entity_id] = {
+        "extra_system_prompt": extra_system_prompt,
+        "timestamp": time.time(),
+    }
+    _LOGGER.debug(
+        "ask_and_act: stored pending context for %s", satellite_entity_id,
+    )
+
+
+def consume_pending_ask_and_act(
+    hass: HomeAssistant,
+    device_id: str | None,
+) -> str | None:
+    """Consume and return pending ask_and_act context for a device.
+
+    Called by the conversation agent when processing a new message.
+    Maps device_id -> satellite entity, then pops the stored context.
+    Returns the extra_system_prompt if found and not expired, else None.
+    """
+    pending = hass.data.get(DOMAIN, {}).get(PENDING_ASK_AND_ACT_KEY)
+    if not pending or not device_id:
+        return None
+
+    # Map device_id to satellite_entity_id by checking the entity registry
+    from homeassistant.helpers import entity_registry as er
+    ent_reg = er.async_get(hass)
+
+    # Find all assist_satellite entities belonging to this device
+    for entity in er.async_entries_for_device(ent_reg, device_id):
+        if entity.entity_id in pending:
+            entry = pending.pop(entity.entity_id)
+            elapsed = time.time() - entry["timestamp"]
+            if elapsed > PENDING_ASK_AND_ACT_TIMEOUT:
+                _LOGGER.debug(
+                    "ask_and_act: pending context for %s expired (%.0fs)",
+                    entity.entity_id, elapsed,
+                )
+                return None
+            _LOGGER.info(
+                "ask_and_act: consumed pending context for %s (waited %.1fs)",
+                entity.entity_id, elapsed,
+            )
+            return entry["extra_system_prompt"]
+
+    return None
+
+
+def _generate_silent_wav() -> bytes:
+    """Generate a minimal 0.5 second silent WAV file (16 kHz, 16-bit, mono).
+
+    Used as start_media_id for start_conversation to skip TTS synthesis
+    (which crashes with some TTS engines on empty strings) while still
+    satisfying the 'must contain start_message or start_media_id' validation.
+    """
+    import struct
+    sample_rate = 16000
+    num_channels = 1
+    bits_per_sample = 16
+    duration_samples = sample_rate // 2  # 0.5 seconds
+    data_size = duration_samples * num_channels * (bits_per_sample // 8)
+    # RIFF header
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + data_size,  # file size - 8
+        b"WAVE",
+        b"fmt ",
+        16,  # chunk size
+        1,  # PCM format
+        num_channels,
+        sample_rate,
+        sample_rate * num_channels * (bits_per_sample // 8),  # byte rate
+        num_channels * (bits_per_sample // 8),  # block align
+        bits_per_sample,
+        b"data",
+        data_size,
+    )
+    return header + b"\x00" * data_size
+
+
+# Cache the silent WAV so we don't regenerate it every time.
+_SILENT_WAV: bytes | None = None
+
+
+def _get_silent_wav() -> bytes:
+    global _SILENT_WAV
+    if _SILENT_WAV is None:
+        _SILENT_WAV = _generate_silent_wav()
+    return _SILENT_WAV
+
+
+class PureLLMSilentWavView(HomeAssistantView):
+    """Serve a minimal silent WAV file for start_conversation.
+
+    start_conversation requires start_message or start_media_id.  When the
+    question is already spoken via separate tts.speak, we use this silent WAV
+    as start_media_id to skip TTS synthesis and go straight to listening.
+    """
+
+    url = "/api/purellm/silence.wav"
+    name = "api:purellm:silence"
+    requires_auth = False
+
+    async def get(self, request: web.Request) -> web.Response:
+        return web.Response(body=_get_silent_wav(), content_type="audio/wav")
 
 
 class PureLLMSnapshotView(HomeAssistantView):
@@ -85,12 +215,6 @@ class PureLLMSnapshotView(HomeAssistantView):
         with open(filepath, "rb") as fh:
             data = fh.read()
         return web.Response(body=data, content_type="image/jpeg")
-
-
-async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
-    """Set up the PureLLM component."""
-    hass.data.setdefault(DOMAIN, {})
-    return True
 
 
 async def _wait_for_media_player_idle(
@@ -128,6 +252,12 @@ async def _wait_for_media_player_idle(
         media_player_entity_id,
         hass.states.get(media_player_entity_id).state if hass.states.get(media_player_entity_id) else "unknown",
     )
+
+
+async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
+    """Set up the PureLLM component."""
+    hass.data.setdefault(DOMAIN, {})
+    return True
 
 
 async def _wait_for_satellite_idle(
@@ -245,24 +375,24 @@ def _resolve_tts_entity(hass: HomeAssistant) -> str | None:
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
-    This service leverages the LLM to:
-    1. Speak question via TTS
-    2. Wait for TTS audio to finish playing
-    3. Listen for response via satellite
-    4. LLM executes the appropriate action based on response
-    5. LLM speaks confirmation
+    Flow (matches the original working approach):
+    1. Speak the question via separate tts.speak
+    2. Wait for media player to finish playing
+    3. Wait for satellite to be idle
+    4. start_conversation with a silent WAV as start_media_id (skips TTS
+       synthesis — avoids crash with TTS engines that can't handle empty text)
+       + extra_system_prompt with answer context
+    5. Satellite enters listening mode, user responds, LLM processes
 
-    The LLM handles action execution via its control_device tool.
+    Also stores context as fallback: if start_conversation fails, the user
+    can respond via button/wake word and PureLLM picks up the stored context.
     """
     satellite_entity_id = call.data["satellite_entity_id"]
     question = call.data["question"]
     answers = call.data["answers"]
     tts_entity_id = call.data.get("tts_entity_id") or _resolve_tts_entity(hass) or "tts.home_assistant_cloud"
-    _LOGGER.debug("ask_and_act: Using TTS entity: %s", tts_entity_id)
 
     # Derive media_player from satellite entity ID
-    # Pattern: assist_satellite.home_assistant_voice_XXXXXX_assist_satellite
-    #       -> media_player.home_assistant_voice_XXXXXX_media_player
     satellite_suffix = satellite_entity_id.split(".")[-1]
     if "_assist_satellite" in satellite_suffix:
         media_player_suffix = satellite_suffix.replace("_assist_satellite", "_media_player")
@@ -275,9 +405,7 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s, media_player=%s",
                  question, satellite_entity_id, media_player_entity_id)
 
-    # Build the extra_system_prompt with embedded answers data for reliable
-    # code-based matching, plus LLM instructions as a fallback.
-    # Serialize answers for the conversation handler to parse and execute directly.
+    # Build the extra_system_prompt with embedded answers data.
     answers_json = json.dumps(answers)
 
     prompt_parts = [
@@ -311,16 +439,39 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     extra_system_prompt = "\n".join(prompt_parts)
     _LOGGER.debug("ask_and_act: Generated prompt:\n%s", extra_system_prompt)
 
-    # Wait for the satellite pipeline to be idle before starting.
+    # Store context as fallback — if start_conversation's pipeline fails,
+    # the user can still respond via button/wake word and PureLLM's
+    # conversation agent picks up the stored context automatically.
+    store_pending_ask_and_act(hass, satellite_entity_id, extra_system_prompt)
+
+    # Step 1: Speak the question via TTS
+    try:
+        await hass.services.async_call(
+            "tts", "speak",
+            {
+                "entity_id": tts_entity_id,
+                "media_player_entity_id": media_player_entity_id,
+                "message": question,
+            },
+            blocking=True,
+        )
+        _LOGGER.debug("ask_and_act: TTS spoke question")
+    except Exception as err:
+        _LOGGER.error("ask_and_act: TTS failed: %s", err)
+        return {"error": f"TTS failed: {err}"}
+
+    # Step 2: Wait for TTS audio to finish playing on the media player.
+    await _wait_for_media_player_idle(hass, media_player_entity_id)
+
+    # Step 3: Wait for the satellite pipeline to fully finish and return to idle.
     await _wait_for_satellite_idle(hass, satellite_entity_id)
 
-    # Use start_conversation with start_message to atomically speak the
-    # question and enter listening mode.  This avoids the race condition of
-    # separate TTS + start_conversation calls.  start_message must be
-    # non-empty (empty string produces invalid WAV and crashes the pipeline).
-    # Retry up to 3 times because start_conversation can be silently ignored
-    # if the satellite's internal pipeline has not fully released yet, even
-    # after the entity state shows "idle".
+    # Step 4: start_conversation to enter listening mode.
+    # Use start_media_id with a silent WAV instead of start_message to avoid
+    # TTS synthesis — the question was already spoken in step 1.  The old code
+    # used start_message="" which worked with HA Cloud TTS but crashes with
+    # openai-streaming (can't synthesize empty text).
+    silence_url = "/api/purellm/silence.wav"
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
@@ -328,7 +479,7 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
                 "assist_satellite", "start_conversation",
                 {
                     "entity_id": satellite_entity_id,
-                    "start_message": question,
+                    "start_media_id": silence_url,
                     "extra_system_prompt": extra_system_prompt,
                     "preannounce": False,
                 },
@@ -506,9 +657,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN][TIMER_LISTENER_KEY] = unsub
         _LOGGER.debug("Registered timer.finished event listener")
 
-    # Register snapshot HTTP view (only once per HA instance)
+    # Register HTTP views (only once per HA instance)
     if SNAPSHOT_VIEW_KEY not in hass.data[DOMAIN]:
         hass.http.register_view(PureLLMSnapshotView(hass))
+        hass.http.register_view(PureLLMSilentWavView())
         hass.data[DOMAIN][SNAPSHOT_VIEW_KEY] = True
 
     # Register ask_and_act service (only once per HA instance)
