@@ -67,6 +67,11 @@ async def get_calendar_events(
             end_time = now + timedelta(days=365)
             max_results = 1
             period_desc = "next birthday"
+        elif query_type == "holiday":
+            start_time = now
+            end_time = now + timedelta(days=365)
+            max_results = 10
+            period_desc = "upcoming holidays"
         else:
             start_time = now
             end_time = now + timedelta(days=365)
@@ -83,12 +88,26 @@ async def get_calendar_events(
             all_calendar_entities = [s.entity_id for s in all_states if s.entity_id.startswith("calendar.")]
             _LOGGER.info("No calendars configured, auto-discovered: %s", all_calendar_entities)
 
-        # Filter to birthday calendar only if query_type is "birthday"
+        # Filter to specific calendar types based on query
         if query_type == "birthday":
             calendar_list = [c for c in all_calendar_entities if "birthday" in c.lower()]
             if not calendar_list:
                 calendar_list = all_calendar_entities
             _LOGGER.info("Birthday query - using calendars: %s", calendar_list)
+        elif query_type == "holiday":
+            # Holiday integration calendars typically contain country/region names
+            # e.g. calendar.united_states_fl, calendar.united_states, etc.
+            holiday_keywords = ["holiday", "united_states", "united_kingdom", "canada", "mexico",
+                                "france", "germany", "spain", "italy", "brazil", "australia",
+                                "india", "japan", "china", "national", "federal"]
+            calendar_list = [
+                c for c in all_calendar_entities
+                if any(kw in c.lower() for kw in holiday_keywords)
+            ]
+            if not calendar_list:
+                # Fallback: exclude known non-holiday calendars (birthdays, personal)
+                calendar_list = all_calendar_entities
+            _LOGGER.info("Holiday query - using calendars: %s", calendar_list)
         else:
             calendar_list = all_calendar_entities
 
@@ -151,12 +170,27 @@ async def get_calendar_events(
                             sort_key = now + timedelta(days=9999)
 
                         is_birthday = "birthday" in cal_entity.lower()
+                        is_holiday = any(
+                            kw in cal_entity.lower()
+                            for kw in ["holiday", "united_states", "united_kingdom", "canada",
+                                        "mexico", "france", "germany", "spain", "italy",
+                                        "brazil", "australia", "india", "japan", "china",
+                                        "national", "federal"]
+                        )
+
+                        if is_birthday:
+                            cal_type = "birthdays"
+                        elif is_holiday:
+                            cal_type = "holidays"
+                        else:
+                            cal_type = "main"
 
                         all_events.append({
                             "title": event_summary,
                             "time": time_str,
                             "is_birthday": is_birthday,
-                            "calendar": "birthdays" if is_birthday else "main",
+                            "is_holiday": is_holiday,
+                            "calendar": cal_type,
                             "_sort_key": sort_key
                         })
                 else:
@@ -175,7 +209,7 @@ async def get_calendar_events(
             return {
                 "query_type": query_type,
                 "period": period_desc,
-                "message": f"No events or birthdays found for {period_desc}",
+                "message": f"No events found for {period_desc}",
                 "events": []
             }
 

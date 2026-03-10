@@ -76,6 +76,7 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
     "calendar": [
         "calendar", " events", "schedule", "appointment", "birthday",
         "what's on my", "whats on my", "what do i have",
+        "holiday", "holidays", "next holiday",
     ],
     "places": [
         "nearest ", "closest ", "find a ",
