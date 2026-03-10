@@ -545,7 +545,7 @@ async def control_device(
             close_script = matched_voice_script.get("close_script", "")
             trigger_name = matched_voice_script.get("trigger", "").title()
 
-            if action in ("open", "turn_on", "toggle", "mute", "unmute") and open_script:
+            if action in ("open", "turn_on", "toggle", "mute", "unmute", "trigger") and open_script:
                 entities_to_control.append((open_script, trigger_name))
             elif action in ("close", "turn_off") and close_script:
                 entities_to_control.append((close_script, trigger_name))
