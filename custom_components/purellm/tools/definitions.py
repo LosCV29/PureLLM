@@ -128,8 +128,14 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     # ===== CALENDAR =====
     if config.enable_calendar and config.calendar_entities:
         tools.append(_tool(
-            "get_calendar_events", "Get calendar events.",
-            {"days_ahead": {"type": "integer"}}
+            "get_calendar_events", "Get calendar events, birthdays, or holidays.",
+            {
+                "query_type": {
+                    "type": "string",
+                    "enum": ["upcoming", "today", "tomorrow", "week", "month", "birthday", "holiday"],
+                    "description": "Type of calendar query. Use 'holiday' for holiday-related questions."
+                }
+            }
         ))
 
     # ===== CAMERAS =====
