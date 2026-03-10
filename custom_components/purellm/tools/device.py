@@ -377,6 +377,7 @@ async def control_device(
         "activate": "turn_on",
         "run": "turn_on",
         "execute": "turn_on",
+        "launch": "trigger",
     }
     action = action_aliases.get(action, action)
 
@@ -401,9 +402,9 @@ async def control_device(
         },
         "vacuum": {"turn_on": "start", "start": "start", "turn_off": "return_to_base", "stop": "stop", "dock": "return_to_base", "locate": "locate"},
         "scene": {"turn_on": "turn_on"},
-        "script": {"turn_on": "turn_on", "turn_off": "turn_off", "open": "turn_on", "close": "turn_on", "run": "turn_on", "execute": "turn_on", "mute": "turn_on", "unmute": "turn_on", "toggle": "turn_on"},
+        "script": {"turn_on": "turn_on", "turn_off": "turn_off", "open": "turn_on", "close": "turn_on", "run": "turn_on", "execute": "turn_on", "mute": "turn_on", "unmute": "turn_on", "toggle": "turn_on", "trigger": "turn_on"},
         "input_boolean": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"},
-        "automation": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"},
+        "automation": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle", "trigger": "trigger"},
         "button": {"turn_on": "press", "press": "press"},
         "siren": {"turn_on": "turn_on", "turn_off": "turn_off"},
         "humidifier": {"turn_on": "turn_on", "turn_off": "turn_off"},
@@ -422,6 +423,7 @@ async def control_device(
         "volume_up": "turned up", "volume_down": "turned down",
         "volume_set": "set volume for", "volume_mute": "muted/unmuted",
         "set_temperature": "set temperature for", "set_hvac_mode": "set mode for",
+        "trigger": "launched",
     }
 
     color_map = {
