@@ -204,9 +204,9 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     ))
 
     # ===== DEVICE CONTROL (always enabled) =====
-    device_desc = "Control devices (lights, switches, locks, fans, blinds, covers, media_player, scripts, automations). For specific device commands (TV pause, etc) or launching/running exposed scripts and automations. PREFER this tool for any device the user has named/aliased. When user says 'launch X', use action=launch with the device name — this triggers the automation/script. Only include params user explicitly requested."
+    device_desc = "Control devices (lights, switches, locks, fans, blinds, covers, media_player, scripts, automations). For specific device commands (TV pause, etc) or launching/running exposed scripts and automations. When user says 'launch X', use action=launch with the EXACT device name the user said — do NOT substitute a different device. Only include params user explicitly requested."
     if _exposed_names:
-        device_desc += f" Known devices (user aliases — always match these first): {', '.join(_exposed_names[:50])}."
+        device_desc += f" Known devices (user aliases — use ONLY when the user's words clearly match one of these; pass the user's original words as-is if no close match): {', '.join(_exposed_names[:50])}."
     tools.append(_tool(
         "control_device",
         device_desc,
