@@ -204,7 +204,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     ))
 
     # ===== DEVICE CONTROL (always enabled) =====
-    device_desc = "Control devices (lights, switches, locks, fans, blinds, covers, media_player, scripts). For specific device commands (TV pause, etc) or launching/running exposed scripts. PREFER this tool for any device the user has named/aliased. When user says 'launch X', use domain=script action=turn_on. Only include params user explicitly requested."
+    device_desc = "Control devices (lights, switches, locks, fans, blinds, covers, media_player, scripts, automations). For specific device commands (TV pause, etc) or launching/running exposed scripts and automations. PREFER this tool for any device the user has named/aliased. When user says 'launch X', use domain=script or domain=automation with action=turn_on. Only include params user explicitly requested."
     if _exposed_names:
         device_desc += f" Known devices (user aliases — always match these first): {', '.join(_exposed_names[:50])}."
     tools.append(_tool(
@@ -215,7 +215,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
             "entity_id": {"type": "string"},
             "entity_ids": {"type": "array", "items": {"type": "string"}},
             "area": {"type": "string", "description": "Area name (instead of device)"},
-            "domain": {"type": "string", "enum": ["light", "switch", "lock", "cover", "fan", "media_player", "climate", "vacuum", "scene", "script", "all"]},
+            "domain": {"type": "string", "enum": ["light", "switch", "lock", "cover", "fan", "media_player", "climate", "vacuum", "scene", "script", "automation", "all"]},
             "action": {"type": "string", "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "set_hvac_mode", "start", "dock", "locate", "return_home", "activate"]},
             "brightness": {"type": "integer"},
             "color": {"type": "string"},
