@@ -94,6 +94,7 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
     ],
     "device": [
         "turn on", "turn off", "toggle",
+        "launch ",
         "lights", "light on", "light off",
         "lock", "unlock",
         " fan", "switch",
