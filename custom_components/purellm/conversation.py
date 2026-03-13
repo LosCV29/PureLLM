@@ -6,6 +6,7 @@ through the LLM pipeline with tool calling and STREAMING TTS support.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -171,6 +172,10 @@ from .const import (
     DEFAULT_CAMERA_RTSP_URLS,
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
+    CONF_VOICE_REPLY_TTS_URL,
+    CONF_VOICE_REPLY_TTS_VOICE,
+    DEFAULT_VOICE_REPLY_TTS_URL,
+    DEFAULT_VOICE_REPLY_TTS_VOICE,
     DEFAULT_API_KEY,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
@@ -393,6 +398,10 @@ class PureLLMConversationEntity(ConversationEntity):
         self.notify_on_restaurants = config.get(CONF_NOTIFY_ON_RESTAURANTS, DEFAULT_NOTIFY_ON_RESTAURANTS)
         self.notify_on_camera = config.get(CONF_NOTIFY_ON_CAMERA, DEFAULT_NOTIFY_ON_CAMERA)
         self.notify_on_search = config.get(CONF_NOTIFY_ON_SEARCH, DEFAULT_NOTIFY_ON_SEARCH)
+
+        # Voice reply (TTS pre-caching)
+        self.voice_reply_tts_url = (config.get(CONF_VOICE_REPLY_TTS_URL, DEFAULT_VOICE_REPLY_TTS_URL) or "").strip()
+        self.voice_reply_tts_voice = config.get(CONF_VOICE_REPLY_TTS_VOICE, DEFAULT_VOICE_REPLY_TTS_VOICE)
 
         # JSON list parser helper
         def _parse_json_list(key, default):
@@ -1049,6 +1058,28 @@ class PureLLMConversationEntity(ConversationEntity):
         response = intent.IntentResponse(language=user_input.language)
         tts_text = _normalize_for_tts(final_response) if final_response else "No response."
         response.async_set_speech(tts_text)
+
+        # --- Voice Reply: pre-cache TTS audio ---
+        # Call the Wyoming Chatterbox bridge's /precache endpoint with the
+        # exact text that will reach Wyoming via the pipeline's TTS step.
+        # By the time HA asks Wyoming for TTS, the audio is already generated
+        # and cached — Wyoming responds in <100ms instead of 3-5s.
+        # This eliminates the LED gap: the PE stays in "replying" state because
+        # the pipeline TTS step completes almost instantly.
+        if self.voice_reply_tts_url and tts_text and tts_text != "OK.":
+            cache_key = hashlib.sha256(tts_text.encode()).hexdigest()
+            try:
+                async with self._session.post(
+                    f"{self.voice_reply_tts_url}/precache",
+                    json={"text": tts_text, "key": cache_key},
+                    timeout=90,
+                ) as precache_resp:
+                    if precache_resp.status == 200:
+                        _LOGGER.info("Voice reply: pre-cached TTS audio (%d chars, key=%s)", len(tts_text), cache_key[:8])
+                    else:
+                        _LOGGER.warning("Voice reply: precache returned %d", precache_resp.status)
+            except Exception as err:
+                _LOGGER.warning("Voice reply: precache failed (falling back to normal TTS): %s", err)
 
         return conversation.ConversationResult(
             response=response,
