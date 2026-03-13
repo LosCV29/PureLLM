@@ -115,6 +115,11 @@ from .const import (
     # SofaBaton Activities
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
+    # Voice Reply
+    CONF_VOICE_REPLY_TTS_URL,
+    CONF_VOICE_REPLY_TTS_VOICE,
+    DEFAULT_VOICE_REPLY_TTS_URL,
+    DEFAULT_VOICE_REPLY_TTS_VOICE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -385,6 +390,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "voice_scripts": "Voice Scripts",
                 "sofabaton": "SofaBaton Activities",
                 "music_rooms": "Music Room Mapping",
+                "voice_reply": "Voice Reply (TTS Pre-Cache)",
                 "notifications": "Notification Settings",
                 "api_keys": "API Keys",
                 "location": "Location Settings",
@@ -1101,6 +1107,41 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
+                }
+            ),
+        )
+
+    async def async_step_voice_reply(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle Voice Reply (TTS pre-cache) configuration.
+
+        When configured, PureLLM pre-generates TTS audio during the conversation
+        step so Wyoming serves it instantly — eliminating the LED timeout gap
+        on Voice PE devices with slow TTS engines like Chatterbox.
+        """
+        if user_input is not None:
+            new_options = {**self._entry.options, **user_input}
+            return self.async_create_entry(title="", data=new_options)
+
+        current = {**self._entry.data, **self._entry.options}
+
+        return self.async_show_form(
+            step_id="voice_reply",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_VOICE_REPLY_TTS_URL,
+                        default=current.get(CONF_VOICE_REPLY_TTS_URL, DEFAULT_VOICE_REPLY_TTS_URL),
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.URL,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_VOICE_REPLY_TTS_VOICE,
+                        default=current.get(CONF_VOICE_REPLY_TTS_VOICE, DEFAULT_VOICE_REPLY_TTS_VOICE),
+                    ): str,
                 }
             ),
         )

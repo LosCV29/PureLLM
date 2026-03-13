@@ -237,6 +237,17 @@ CONF_SOFABATON_ACTIVITIES: Final = "sofabaton_activities"
 DEFAULT_SOFABATON_ACTIVITIES: Final = "[]"
 
 # =============================================================================
+# VOICE REPLY - Pre-cache TTS audio to eliminate LED gap
+# =============================================================================
+CONF_VOICE_REPLY_TTS_URL: Final = "voice_reply_tts_url"
+CONF_VOICE_REPLY_TTS_VOICE: Final = "voice_reply_tts_voice"
+
+# Empty URL = disabled. Set to the Wyoming Chatterbox bridge HTTP endpoint
+# (e.g. http://192.168.68.72:10202) to enable TTS pre-caching.
+DEFAULT_VOICE_REPLY_TTS_URL: Final = ""
+DEFAULT_VOICE_REPLY_TTS_VOICE: Final = "alloy"
+
+# =============================================================================
 # API TIMEOUT - Shared timeout for external API calls
 # =============================================================================
 API_TIMEOUT: Final = 15  # seconds
