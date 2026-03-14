@@ -131,9 +131,14 @@ def _time_to_words(match: re.Match) -> str:
 # Matches times like "2:27 PM", "12:05 am", "1:00 PM"
 _TIME_RE = re.compile(r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm|a\.m\.|p\.m\.)\b')
 
+# Matches score-like patterns: "112-105", "3-2", "21-17"
+_SCORE_RE = re.compile(r'\b(\d{1,3})\s*[-–—]\s*(\d{1,3})\b')
+
 def _normalize_for_tts(text: str) -> str:
     """Normalize text for better TTS pronunciation."""
-    return _TIME_RE.sub(_time_to_words, text)
+    text = _TIME_RE.sub(_time_to_words, text)
+    text = _SCORE_RE.sub(r'\1 to \2', text)
+    return text
 
 
 def _clean_for_match(text: str) -> str:
