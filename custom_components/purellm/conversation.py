@@ -96,15 +96,6 @@ _LANG_CODE_TO_NAME: dict[str, str] = {
 # while preserving apostrophes needed for "that's all", "i'm good", etc.
 _PUNCT_RE = re.compile(r"[^\w\s']")
 
-# Matches number-hyphen-number ranges like "12-14", "5-7", "100-200"
-# so TTS reads "12 through 14" instead of "12 minus 14".
-_NUM_RANGE_RE = re.compile(r"(\d+)\s*[-–—]\s*(\d+)")
-
-
-def _normalize_for_tts(text: str) -> str:
-    """Normalize LLM output for TTS clarity."""
-    return _NUM_RANGE_RE.sub(r"\1 through \2", text)
-
 
 def _clean_for_match(text: str) -> str:
     """Normalize user text for dismissal matching.
@@ -1056,8 +1047,7 @@ class PureLLMConversationEntity(ConversationEntity):
             )
 
         response = intent.IntentResponse(language=user_input.language)
-        tts_text = _normalize_for_tts(final_response) if final_response else "No response."
-        response.async_set_speech(tts_text)
+        response.async_set_speech(final_response or "No response.")
 
         # --- Voice Reply: pre-cache TTS audio ---
         # Call the Wyoming Chatterbox bridge's /precache endpoint with the
