@@ -138,6 +138,10 @@ def _normalize_for_tts(text: str) -> str:
     """Normalize text for better TTS pronunciation."""
     text = _TIME_RE.sub(_time_to_words, text)
     text = _SCORE_RE.sub(r'\1 to \2', text)
+    # Normalize degree symbols so TTS doesn't mangle them
+    text = text.replace("°F", " degrees Fahrenheit")
+    text = text.replace("°C", " degrees Celsius")
+    text = text.replace("°", " degrees")
     return text
 
 
