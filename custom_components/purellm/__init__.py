@@ -673,10 +673,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if SILENCE_WAV_KEY not in hass.data[DOMAIN]:
         media_dir = hass.config.path("media")
         silence_path = os.path.join(media_dir, "purellm_silence.wav")
-        try:
+
+        def _write_silence_wav() -> None:
             os.makedirs(media_dir, exist_ok=True)
             with open(silence_path, "wb") as f:
                 f.write(_get_silent_wav())
+
+        try:
+            await hass.async_add_executor_job(_write_silence_wav)
             _LOGGER.debug("Wrote silent WAV to %s", silence_path)
         except OSError as err:
             _LOGGER.warning("Could not write silent WAV to media dir: %s", err)
