@@ -97,6 +97,45 @@ _LANG_CODE_TO_NAME: dict[str, str] = {
 _PUNCT_RE = re.compile(r"[^\w\s']")
 
 
+# --- TTS text normalization ---
+# Maps digit strings to spoken words for time normalization.
+_ONES = ["", "one", "two", "three", "four", "five", "six", "seven",
+         "eight", "nine", "ten", "eleven", "twelve", "thirteen",
+         "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+_TENS = ["", "", "twenty", "thirty", "forty", "fifty"]
+
+def _number_to_words(n: int) -> str:
+    """Convert an integer 0-59 to spoken English."""
+    if n == 0:
+        return "oh"
+    if n < 20:
+        return _ONES[n]
+    return _TENS[n // 10] + (" " + _ONES[n % 10] if n % 10 else "")
+
+def _time_to_words(match: re.Match) -> str:
+    """Convert a 'H:MM AM/PM' time match to spoken words."""
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    period = match.group(3).upper().replace(".", "")  # AM/PM
+    hour_word = _ONES[hour] if hour < 20 else _number_to_words(hour)
+    if minute == 0:
+        minute_word = "o'clock"
+    elif minute < 10:
+        minute_word = "oh " + _ONES[minute]
+    else:
+        minute_word = _number_to_words(minute)
+    # Space out AM/PM so TTS pronounces each letter
+    period_spoken = " ".join(period)  # "AM" -> "A M"
+    return f"{hour_word} {minute_word} {period_spoken}"
+
+# Matches times like "2:27 PM", "12:05 am", "1:00 PM"
+_TIME_RE = re.compile(r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm|a\.m\.|p\.m\.)\b')
+
+def _normalize_for_tts(text: str) -> str:
+    """Normalize text for better TTS pronunciation."""
+    return _TIME_RE.sub(_time_to_words, text)
+
+
 def _clean_for_match(text: str) -> str:
     """Normalize user text for dismissal matching.
 
@@ -1047,7 +1086,7 @@ class PureLLMConversationEntity(ConversationEntity):
             )
 
         response = intent.IntentResponse(language=user_input.language)
-        tts_text = final_response or "No response."
+        tts_text = _normalize_for_tts(final_response) if final_response else "No response."
         response.async_set_speech(tts_text)
 
         # --- Voice Reply: pre-cache TTS audio ---
