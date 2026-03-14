@@ -1047,7 +1047,8 @@ class PureLLMConversationEntity(ConversationEntity):
             )
 
         response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(final_response or "No response.")
+        tts_text = final_response or "No response."
+        response.async_set_speech(tts_text)
 
         # --- Voice Reply: pre-cache TTS audio ---
         # Call the Wyoming Chatterbox bridge's /precache endpoint with the
