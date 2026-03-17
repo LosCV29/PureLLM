@@ -149,7 +149,13 @@ def _pcm_to_wav(pcm: bytes) -> bytes:
 
 async def _generate_single(chatterbox_url: str, voice: str, text: str) -> bytes:
     """Call Chatterbox TTS API and return raw PCM audio."""
-    async with httpx.AsyncClient() as client:
+    # Create SSL context in executor to avoid blocking the event loop
+    # (httpx loads verify certificates synchronously on client init)
+    loop = asyncio.get_running_loop()
+    client = await loop.run_in_executor(
+        None, lambda: httpx.AsyncClient(timeout=90.0)
+    )
+    async with client:
         resp = await client.post(
             f"{chatterbox_url}/v1/audio/speech",
             json={
@@ -158,7 +164,6 @@ async def _generate_single(chatterbox_url: str, voice: str, text: str) -> bytes:
                 "model": "chatterbox",
                 "speed": 1.0,
             },
-            timeout=90.0,
         )
         resp.raise_for_status()
         return extract_pcm(resp.content)
