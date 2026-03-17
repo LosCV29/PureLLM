@@ -5,21 +5,22 @@ Runs TWO servers:
   1. Wyoming TCP server on port 10201 — speaks the Wyoming protocol for HA
   2. HTTP server on port 10202 — accepts POST /precache from PureLLM
 
-Flow:
+Flow (fire-and-forget from PureLLM):
   PureLLM gets LLM response text
-    → POST /precache {"text": "...", "key": "<sha256>"} to port 10202
-    → This server splits text into sentences, generates each via Chatterbox,
-      concatenates PCM with inter-sentence silence, stores keyed by hash
-    → PureLLM returns text to HA pipeline
+    → Immediately returns response to HA pipeline
+    → Concurrently POST /precache {"text": "...", "key": "<sha256>"} to port 10202
+    → This server splits text into sentences, generates ALL in parallel via
+      Chatterbox, concatenates PCM with inter-sentence silence, stores by hash
     → HA asks Wyoming (port 10201) for TTS on same text
     → Wyoming handler: cache HIT → responds in <100ms
-    → PE gets audio instantly, LED stays on, no gap
+    → If pre-cache is still in progress, Wyoming WAITS for it (generation lock)
+      instead of starting a duplicate generation
+    → PE gets audio, LED stays on, no gap
 
 Sentence chunking: Chatterbox generation scales superlinearly with text length.
 A 10-word sentence generates in ~1s, but a 30-word block takes ~4s. By splitting
-into sentences and generating each one separately, total generation time drops
-because each chunk is faster. A small silence gap between sentences provides
-natural pacing.
+into sentences and generating ALL concurrently via asyncio.gather, total
+generation time equals the slowest single sentence (~1-2s) instead of the sum.
 
 Cache entries expire after 120s to prevent memory leaks from orphaned entries.
 """
@@ -130,8 +131,10 @@ def split_sentences(text: str) -> list[str]:
 
 # ---------------------------------------------------------------------------
 # Audio cache: {sha256_hex: {"pcm": bytes, "ts": float}}
+# Generation locks: {sha256_hex: asyncio.Event} — set when generation completes
 # ---------------------------------------------------------------------------
 AUDIO_CACHE: dict[str, dict] = {}
+GENERATION_LOCKS: dict[str, asyncio.Event] = {}
 
 
 def _purge_expired() -> None:
@@ -201,10 +204,12 @@ async def generate_chatterbox(text: str) -> bytes:
 
 
 async def generate_chunked(text: str) -> bytes:
-    """Split text into sentences, generate each, concatenate with silence gaps.
+    """Split text into sentences, generate ALL in parallel, concatenate with gaps.
 
     Chatterbox generation time scales superlinearly with text length, so
     generating shorter sentences individually is faster than one big block.
+    Generating them in parallel via asyncio.gather means total time equals
+    the slowest sentence (~1-2s) instead of the sum of all sentences.
     A 150ms silence gap between sentences provides natural pacing.
     """
     sentences = split_sentences(text)
@@ -214,28 +219,27 @@ async def generate_chunked(text: str) -> bytes:
         _LOGGER.info("Chunked: single sentence, generating directly")
         return await generate_chatterbox(text)
 
-    _LOGGER.info("Chunked: split into %d sentences: %s",
+    _LOGGER.info("Chunked: split into %d sentences (parallel): %s",
                  len(sentences),
                  [s[:40] + "..." if len(s) > 40 else s for s in sentences])
 
-    pcm_parts: list[bytes] = []
     t0 = time.time()
 
-    for i, sentence in enumerate(sentences):
-        st = time.time()
-        pcm = await generate_chatterbox(sentence)
-        elapsed = time.time() - st
-        _LOGGER.info("Chunked: sentence %d/%d generated in %.1fs (%d bytes)",
-                     i + 1, len(sentences), elapsed, len(pcm))
-        pcm_parts.append(pcm)
+    # Generate all sentences in parallel
+    pcm_results = await asyncio.gather(
+        *(generate_chatterbox(sentence) for sentence in sentences)
+    )
 
-        # Add silence gap between sentences (not after the last one)
-        if i < len(sentences) - 1:
+    # Interleave PCM with silence gaps
+    pcm_parts: list[bytes] = []
+    for i, pcm in enumerate(pcm_results):
+        pcm_parts.append(pcm)
+        if i < len(pcm_results) - 1:
             pcm_parts.append(SENTENCE_GAP)
 
     total_pcm = b"".join(pcm_parts)
     total_time = time.time() - t0
-    _LOGGER.info("Chunked: total generation %.1fs for %d sentences (%d bytes)",
+    _LOGGER.info("Chunked: total generation %.1fs for %d sentences (%d bytes, parallel)",
                  total_time, len(sentences), len(total_pcm))
     return total_pcm
 
@@ -244,7 +248,7 @@ async def generate_chunked(text: str) -> bytes:
 # Wyoming protocol handler
 # ---------------------------------------------------------------------------
 class ChatterboxHandler(AsyncEventHandler):
-    """Handle Wyoming TTS events with cache-first lookup."""
+    """Handle Wyoming TTS events with cache-first lookup + generation lock awareness."""
 
     async def handle_event(self, event: Event) -> bool:
         _LOGGER.info("Event: %s", event.type)
@@ -261,14 +265,29 @@ class ChatterboxHandler(AsyncEventHandler):
             # Purge expired entries on each request
             _purge_expired()
 
-            # Check cache
             cache_key = hashlib.sha256(text.encode()).hexdigest()
-            cached = AUDIO_CACHE.pop(cache_key, None)
 
             try:
+                # Check if pre-cache already completed
+                cached = AUDIO_CACHE.get(cache_key)
                 if cached:
                     pcm = cached["pcm"]
+                    # Remove from cache (one-time use)
+                    AUDIO_CACHE.pop(cache_key, None)
                     _LOGGER.info("Cache HIT (%s) — serving instantly", cache_key[:8])
+                elif cache_key in GENERATION_LOCKS:
+                    # Pre-cache is still generating — wait for it instead of
+                    # starting a duplicate generation
+                    _LOGGER.info("Cache PENDING (%s) — waiting for in-progress generation", cache_key[:8])
+                    lock = GENERATION_LOCKS[cache_key]
+                    await asyncio.wait_for(lock.wait(), timeout=90.0)
+                    cached = AUDIO_CACHE.pop(cache_key, None)
+                    if cached:
+                        pcm = cached["pcm"]
+                        _LOGGER.info("Cache HIT after wait (%s) — serving", cache_key[:8])
+                    else:
+                        _LOGGER.warning("Cache MISS after wait (%s) — generating fresh", cache_key[:8])
+                        pcm = await generate_chunked(text)
                 else:
                     _LOGGER.info("Cache MISS (%s) — calling Chatterbox", cache_key[:8])
                     pcm = await generate_chunked(text)
@@ -315,7 +334,9 @@ async def handle_precache(request: web.Request) -> web.Response:
     Body: {"text": "...", "key": "<optional sha256>"}
     If key is omitted, it's computed from text.
 
-    Uses sentence chunking for faster generation.
+    Uses parallel sentence chunking for faster generation.
+    Sets a generation lock so Wyoming can wait for in-progress generation
+    instead of starting a duplicate.
     """
     try:
         data = await request.json()
@@ -333,6 +354,17 @@ async def handle_precache(request: web.Request) -> web.Response:
         _LOGGER.info("Precache: already cached (%s)", key[:8])
         return web.json_response({"key": key, "cached": True, "source": "existing"})
 
+    # Check if generation is already in progress (prevent duplicate work)
+    if key in GENERATION_LOCKS:
+        _LOGGER.info("Precache: generation already in progress (%s), waiting", key[:8])
+        lock = GENERATION_LOCKS[key]
+        await asyncio.wait_for(lock.wait(), timeout=90.0)
+        return web.json_response({"key": key, "cached": True, "source": "existing"})
+
+    # Set generation lock so Wyoming handler can wait instead of duplicating
+    lock = asyncio.Event()
+    GENERATION_LOCKS[key] = lock
+
     _LOGGER.info("Precache: generating audio for '%s' (%s)", text[:60], key[:8])
     try:
         pcm = await generate_chunked(text)
@@ -342,6 +374,10 @@ async def handle_precache(request: web.Request) -> web.Response:
     except Exception as e:
         _LOGGER.error("Precache: generation failed: %s", e)
         return web.json_response({"error": str(e)}, status=500)
+    finally:
+        # Signal any waiters and clean up the lock
+        lock.set()
+        GENERATION_LOCKS.pop(key, None)
 
 
 async def handle_health(request: web.Request) -> web.Response:
@@ -349,6 +385,7 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.json_response({
         "status": "ok",
         "cache_entries": len(AUDIO_CACHE),
+        "pending_generations": len(GENERATION_LOCKS),
     })
 
 

@@ -439,8 +439,11 @@ class PureLLMConversationEntity(ConversationEntity):
         self.notify_on_search = config.get(CONF_NOTIFY_ON_SEARCH, DEFAULT_NOTIFY_ON_SEARCH)
 
         # Voice reply (TTS pre-caching)
+        # "builtin" = use the in-process PureLLM TTS platform (no Wyoming bridge needed)
+        # URL = use the external Wyoming bridge HTTP precache endpoint
         self.voice_reply_tts_url = (config.get(CONF_VOICE_REPLY_TTS_URL, DEFAULT_VOICE_REPLY_TTS_URL) or "").strip()
         self.voice_reply_tts_voice = config.get(CONF_VOICE_REPLY_TTS_VOICE, DEFAULT_VOICE_REPLY_TTS_VOICE)
+        self._builtin_tts = self.voice_reply_tts_url.lower() == "builtin"
 
         # JSON list parser helper
         def _parse_json_list(key, default):
@@ -1098,27 +1101,46 @@ class PureLLMConversationEntity(ConversationEntity):
         tts_text = _normalize_for_tts(final_response) if final_response else "No response."
         response.async_set_speech(tts_text)
 
-        # --- Voice Reply: pre-cache TTS audio ---
-        # Call the Wyoming Chatterbox bridge's /precache endpoint with the
-        # exact text that will reach Wyoming via the pipeline's TTS step.
-        # By the time HA asks Wyoming for TTS, the audio is already generated
-        # and cached — Wyoming responds in <100ms instead of 3-5s.
-        # This eliminates the LED gap: the PE stays in "replying" state because
-        # the pipeline TTS step completes almost instantly.
+        # --- Voice Reply: fire-and-forget TTS pre-cache ---
+        # Kick off TTS generation in the background so we return the response
+        # to HA immediately. The TTS platform (builtin or Wyoming bridge) will
+        # have the audio cached (or nearly ready) by the time HA's pipeline
+        # TTS step asks for it.
         if self.voice_reply_tts_url and tts_text and tts_text != "OK.":
             cache_key = hashlib.sha256(tts_text.encode()).hexdigest()
-            try:
-                async with self._session.post(
-                    f"{self.voice_reply_tts_url}/precache",
-                    json={"text": tts_text, "key": cache_key},
-                    timeout=90,
-                ) as precache_resp:
-                    if precache_resp.status == 200:
-                        _LOGGER.info("Voice reply: pre-cached TTS audio (%d chars, key=%s)", len(tts_text), cache_key[:8])
-                    else:
-                        _LOGGER.warning("Voice reply: precache returned %d", precache_resp.status)
-            except Exception as err:
-                _LOGGER.warning("Voice reply: precache failed (falling back to normal TTS): %s", err)
+
+            if self._builtin_tts:
+                # Built-in mode: pre-generate directly into the in-process cache
+                # used by tts.py — zero network overhead
+                async def _precache_builtin() -> None:
+                    try:
+                        tts_entity = self.hass.data.get("purellm", {}).get("tts_entity")
+                        if tts_entity:
+                            await tts_entity.precache(tts_text)
+                            _LOGGER.info("Voice reply: built-in pre-cache done (%d chars, key=%s)", len(tts_text), cache_key[:8])
+                        else:
+                            _LOGGER.warning("Voice reply: built-in TTS entity not found")
+                    except Exception as err:
+                        _LOGGER.warning("Voice reply: built-in pre-cache failed: %s", err)
+
+                asyncio.create_task(_precache_builtin())
+            else:
+                # External Wyoming bridge mode: POST to HTTP precache endpoint
+                async def _precache_bridge() -> None:
+                    try:
+                        async with self._session.post(
+                            f"{self.voice_reply_tts_url}/precache",
+                            json={"text": tts_text, "key": cache_key},
+                            timeout=90,
+                        ) as precache_resp:
+                            if precache_resp.status == 200:
+                                _LOGGER.info("Voice reply: pre-cached TTS audio (%d chars, key=%s)", len(tts_text), cache_key[:8])
+                            else:
+                                _LOGGER.warning("Voice reply: precache returned %d", precache_resp.status)
+                    except Exception as err:
+                        _LOGGER.warning("Voice reply: precache failed (falling back to normal TTS): %s", err)
+
+                asyncio.create_task(_precache_bridge())
 
         return conversation.ConversationResult(
             response=response,
