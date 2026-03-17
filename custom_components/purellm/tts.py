@@ -150,26 +150,39 @@ def _pcm_to_wav(pcm: bytes) -> bytes:
     return buf.getvalue()
 
 
+# Reusable httpx client — avoids SSL/connection setup overhead per sentence.
+# Keyed by chatterbox_url so we get one client per backend.
+_HTTP_CLIENTS: dict[str, httpx.AsyncClient] = {}
+
+
+def _get_client(chatterbox_url: str) -> httpx.AsyncClient:
+    """Return a reusable httpx client for the given Chatterbox backend."""
+    client = _HTTP_CLIENTS.get(chatterbox_url)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(timeout=90.0)
+        _HTTP_CLIENTS[chatterbox_url] = client
+    return client
+
+
 async def _generate_single(chatterbox_url: str, voice: str, text: str) -> bytes:
     """Call Chatterbox TTS API and return raw PCM audio."""
-    # Create SSL context in executor to avoid blocking the event loop
-    # (httpx loads verify certificates synchronously on client init)
-    loop = asyncio.get_running_loop()
-    client = await loop.run_in_executor(
-        None, lambda: httpx.AsyncClient(timeout=90.0)
+    t0 = time.time()
+    _LOGGER.info("TTS API call START: %.40s…", text)
+    client = _get_client(chatterbox_url)
+    resp = await client.post(
+        f"{chatterbox_url}/v1/audio/speech",
+        json={
+            "input": text,
+            "voice": voice,
+            "model": "chatterbox",
+            "speed": 1.0,
+        },
     )
-    async with client:
-        resp = await client.post(
-            f"{chatterbox_url}/v1/audio/speech",
-            json={
-                "input": text,
-                "voice": voice,
-                "model": "chatterbox",
-                "speed": 1.0,
-            },
-        )
-        resp.raise_for_status()
-        return extract_pcm(resp.content)
+    resp.raise_for_status()
+    pcm = extract_pcm(resp.content)
+    elapsed = time.time() - t0
+    _LOGGER.info("TTS API call DONE:  %.40s… → %.1fs (%d bytes PCM)", text, elapsed, len(pcm))
+    return pcm
 
 
 async def generate_chunked(chatterbox_url: str, voice: str, text: str) -> bytes:
@@ -185,7 +198,11 @@ async def generate_chunked(chatterbox_url: str, voice: str, text: str) -> bytes:
         return await _generate_single(chatterbox_url, voice, text)
 
     n = len(sentences)
-    _LOGGER.info("TTS: pipelined generation of %d sentences", n)
+    _LOGGER.info(
+        "TTS: pipelined generation of %d sentences: %s",
+        n,
+        [s[:40] + "…" if len(s) > 40 else s for s in sentences],
+    )
     t0 = time.time()
 
     # Pre-launch first batch of tasks
@@ -198,6 +215,7 @@ async def generate_chunked(chatterbox_url: str, voice: str, text: str) -> bytes:
     pcm_parts: list[bytes] = []
     for i in range(n):
         pcm = await tasks.pop(i)
+        _LOGGER.info("TTS: sentence %d/%d collected (%.1fs elapsed)", i + 1, n, time.time() - t0)
         pcm_parts.append(pcm)
         if i < n - 1:
             pcm_parts.append(SENTENCE_GAP)
@@ -210,8 +228,8 @@ async def generate_chunked(chatterbox_url: str, voice: str, text: str) -> bytes:
             )
 
     total_pcm = b"".join(pcm_parts)
-    _LOGGER.info("TTS: pipelined generation done in %.1fs (%d bytes)",
-                 time.time() - t0, len(total_pcm))
+    _LOGGER.info("TTS: pipelined generation done in %.1fs (%d bytes, %d sentences)",
+                 time.time() - t0, len(total_pcm), n)
     return total_pcm
 
 
@@ -276,6 +294,7 @@ class PureLLMTTSEntity(TextToSpeechEntity):
         options: dict[str, Any] | None = None,
     ) -> TtsAudioType:
         """Generate TTS audio — serve from cache if available."""
+        t0 = time.time()
         _purge_expired()
 
         cache_key = hashlib.sha256(message.encode()).hexdigest()
@@ -283,37 +302,42 @@ class PureLLMTTSEntity(TextToSpeechEntity):
         # Check cache first (pre-populated by conversation.py)
         cached = AUDIO_CACHE.pop(cache_key, None)
         if cached:
-            _LOGGER.info("TTS: cache HIT (%s) — serving instantly", cache_key[:8])
+            _LOGGER.info("TTS get_audio: cache HIT (%s) — serving instantly (%.3fs)", cache_key[:8], time.time() - t0)
             return ("wav", _pcm_to_wav(cached["pcm"]))
 
         # Check if generation is in progress (fire-and-forget from conversation.py)
         lock = GENERATION_LOCKS.get(cache_key)
         if lock:
-            _LOGGER.info("TTS: waiting for in-progress generation (%s)", cache_key[:8])
+            _LOGGER.info("TTS get_audio: waiting for in-progress generation (%s)", cache_key[:8])
             try:
                 await asyncio.wait_for(lock.wait(), timeout=90.0)
             except asyncio.TimeoutError:
-                _LOGGER.warning("TTS: generation lock timed out (%s)", cache_key[:8])
+                _LOGGER.warning("TTS get_audio: generation lock timed out (%s) after %.1fs", cache_key[:8], time.time() - t0)
             cached = AUDIO_CACHE.pop(cache_key, None)
             if cached:
-                _LOGGER.info("TTS: cache HIT after wait (%s)", cache_key[:8])
+                _LOGGER.info("TTS get_audio: cache HIT after wait (%s) — %.1fs total", cache_key[:8], time.time() - t0)
                 return ("wav", _pcm_to_wav(cached["pcm"]))
 
         # Cache miss — generate fresh
-        _LOGGER.info("TTS: cache MISS (%s) — generating", cache_key[:8])
+        _LOGGER.info("TTS get_audio: cache MISS (%s) — generating fresh", cache_key[:8])
         pcm = await generate_chunked(self._chatterbox_url, self._voice, message)
+        _LOGGER.info("TTS get_audio: fresh generation done (%s) — %.1fs total", cache_key[:8], time.time() - t0)
         return ("wav", _pcm_to_wav(pcm))
 
     async def precache(self, text: str) -> str:
         """Pre-generate TTS and store in cache. Returns the cache key."""
+        t0 = time.time()
         cache_key = hashlib.sha256(text.encode()).hexdigest()
+        _LOGGER.info("TTS precache START (%s): %d chars — %.60s…", cache_key[:8], len(text), text)
 
         if cache_key in AUDIO_CACHE:
+            _LOGGER.info("TTS precache: already cached (%s) — %.3fs", cache_key[:8], time.time() - t0)
             return cache_key
 
         if cache_key in GENERATION_LOCKS:
-            # Already generating — just wait
+            _LOGGER.info("TTS precache: already generating (%s), waiting…", cache_key[:8])
             await asyncio.wait_for(GENERATION_LOCKS[cache_key].wait(), timeout=90.0)
+            _LOGGER.info("TTS precache: wait done (%s) — %.1fs", cache_key[:8], time.time() - t0)
             return cache_key
 
         lock = asyncio.Event()
@@ -321,6 +345,7 @@ class PureLLMTTSEntity(TextToSpeechEntity):
         try:
             pcm = await generate_chunked(self._chatterbox_url, self._voice, text)
             AUDIO_CACHE[cache_key] = {"pcm": pcm, "ts": time.time()}
+            _LOGGER.info("TTS precache DONE (%s): %.1fs total, %d bytes PCM", cache_key[:8], time.time() - t0, len(pcm))
         finally:
             lock.set()
             GENERATION_LOCKS.pop(cache_key, None)

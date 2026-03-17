@@ -192,21 +192,36 @@ def extract_pcm(wav_bytes: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 # Call Chatterbox API → return PCM bytes (single text block)
 # ---------------------------------------------------------------------------
+# Reusable httpx client — avoids connection setup overhead per sentence.
+_HTTP_CLIENT: httpx.AsyncClient | None = None
+
+
+def _get_client() -> httpx.AsyncClient:
+    """Return a reusable httpx client."""
+    global _HTTP_CLIENT
+    if _HTTP_CLIENT is None or _HTTP_CLIENT.is_closed:
+        _HTTP_CLIENT = httpx.AsyncClient(timeout=90.0)
+    return _HTTP_CLIENT
+
+
 async def generate_chatterbox(text: str) -> bytes:
     """Call Chatterbox TTS API and return raw PCM audio."""
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            f"{CHATTERBOX_URL}/v1/audio/speech",
-            json={
-                "input": text,
-                "voice": VOICE,
-                "model": "chatterbox",
-                "speed": 1.0,
-            },
-            timeout=90.0,
-        )
-        resp.raise_for_status()
-        return extract_pcm(resp.content)
+    t0 = time.time()
+    _LOGGER.info("Chatterbox API START: %.40s…", text)
+    client = _get_client()
+    resp = await client.post(
+        f"{CHATTERBOX_URL}/v1/audio/speech",
+        json={
+            "input": text,
+            "voice": VOICE,
+            "model": "chatterbox",
+            "speed": 1.0,
+        },
+    )
+    resp.raise_for_status()
+    pcm = extract_pcm(resp.content)
+    _LOGGER.info("Chatterbox API DONE:  %.40s… → %.1fs (%d bytes)", text, time.time() - t0, len(pcm))
+    return pcm
 
 
 async def generate_chunked(text: str) -> bytes:

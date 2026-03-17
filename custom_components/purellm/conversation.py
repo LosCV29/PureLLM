@@ -1109,6 +1109,7 @@ class PureLLMConversationEntity(ConversationEntity):
         # and TTS would still be generating — defeating the whole purpose.
         if self.voice_reply_tts_url and tts_text and tts_text != "OK.":
             cache_key = hashlib.sha256(tts_text.encode()).hexdigest()
+            _tts_t0 = time.time()
 
             if self._builtin_tts:
                 # Built-in mode: pre-generate directly into the in-process cache
@@ -1117,7 +1118,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     tts_entity = self.hass.data.get("purellm", {}).get("tts_entity")
                     if tts_entity:
                         await tts_entity.precache(tts_text)
-                        _LOGGER.info("Voice reply: built-in pre-cache done (%d chars, key=%s)", len(tts_text), cache_key[:8])
+                        _LOGGER.info("Voice reply: built-in pre-cache done in %.1fs (%d chars, key=%s)", time.time() - _tts_t0, len(tts_text), cache_key[:8])
                     else:
                         _LOGGER.warning("Voice reply: built-in TTS entity not found")
                 except Exception as err:
