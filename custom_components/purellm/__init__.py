@@ -47,7 +47,7 @@ ASK_AND_ACT_SCHEMA = vol.Schema({
     vol.Optional("tts_entity_id"): cv.entity_id,  # Optional, auto-detected from preferred pipeline
 })
 
-PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.UPDATE]
+PLATFORMS: list[Platform] = [Platform.CONVERSATION, Platform.UPDATE, Platform.TTS]
 
 # Key for storing service registration
 SERVICE_REGISTERED_KEY = "ask_and_act_service_registered"

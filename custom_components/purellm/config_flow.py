@@ -118,8 +118,10 @@ from .const import (
     # Voice Reply
     CONF_VOICE_REPLY_TTS_URL,
     CONF_VOICE_REPLY_TTS_VOICE,
+    CONF_CHATTERBOX_URL,
     DEFAULT_VOICE_REPLY_TTS_URL,
     DEFAULT_VOICE_REPLY_TTS_VOICE,
+    DEFAULT_CHATTERBOX_URL,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -1133,14 +1135,14 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_VOICE_REPLY_TTS_URL,
                         default=current.get(CONF_VOICE_REPLY_TTS_URL, DEFAULT_VOICE_REPLY_TTS_URL),
-                    ): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.URL,
-                        )
-                    ),
+                    ): str,
                     vol.Optional(
                         CONF_VOICE_REPLY_TTS_VOICE,
                         default=current.get(CONF_VOICE_REPLY_TTS_VOICE, DEFAULT_VOICE_REPLY_TTS_VOICE),
+                    ): str,
+                    vol.Optional(
+                        CONF_CHATTERBOX_URL,
+                        default=current.get(CONF_CHATTERBOX_URL, DEFAULT_CHATTERBOX_URL),
                     ): str,
                 }
             ),
