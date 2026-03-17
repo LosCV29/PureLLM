@@ -246,7 +246,7 @@ CONF_CHATTERBOX_URL: Final = "chatterbox_url"
 # Empty URL = disabled. Set to "builtin" for in-process TTS platform,
 # or a Wyoming bridge HTTP endpoint (e.g. http://192.168.68.72:10202).
 DEFAULT_VOICE_REPLY_TTS_URL: Final = ""
-DEFAULT_VOICE_REPLY_TTS_VOICE: Final = "alloy"
+DEFAULT_VOICE_REPLY_TTS_VOICE: Final = "Alice"
 DEFAULT_CHATTERBOX_URL: Final = "http://host.docker.internal:8004"
 
 # =============================================================================
