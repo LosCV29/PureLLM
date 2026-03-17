@@ -79,6 +79,9 @@ SENTENCE_GAP_MS = 150
 SENTENCE_GAP_BYTES = SAMPLE_RATE * SAMPLE_WIDTH * SENTENCE_GAP_MS // 1000
 SENTENCE_GAP = b"\x00" * SENTENCE_GAP_BYTES
 
+# Max sentences to generate concurrently (prevents overwhelming the GPU)
+PARALLEL_SENTENCES = 2
+
 _ABBREV = r"(?<!\bMr)(?<!\bMrs)(?<!\bDr)(?<!\bSt)(?<!\bNo)(?<!\bvs)"
 _SENTENCE_RE = re.compile(_ABBREV + r'([.!?])\s+', re.IGNORECASE)
 MIN_SENTENCE_LEN = 15
@@ -170,27 +173,44 @@ async def _generate_single(chatterbox_url: str, voice: str, text: str) -> bytes:
 
 
 async def generate_chunked(chatterbox_url: str, voice: str, text: str) -> bytes:
-    """Split text into sentences, generate ALL in parallel, concatenate."""
+    """Split text into sentences, generate with sliding-window parallelism.
+
+    Uses PARALLEL_SENTENCES concurrent requests to keep the GPU busy
+    without overwhelming it (the GPU serializes inference anyway, so
+    blasting N requests doesn't help and can hurt throughput).
+    """
     sentences = split_sentences(text)
 
     if len(sentences) <= 1:
         return await _generate_single(chatterbox_url, voice, text)
 
-    _LOGGER.info("TTS: parallel generation of %d sentences", len(sentences))
+    n = len(sentences)
+    _LOGGER.info("TTS: pipelined generation of %d sentences", n)
     t0 = time.time()
 
-    pcm_results = await asyncio.gather(
-        *(_generate_single(chatterbox_url, voice, s) for s in sentences)
-    )
+    # Pre-launch first batch of tasks
+    tasks: dict[int, asyncio.Task] = {}
+    for i in range(min(PARALLEL_SENTENCES, n)):
+        tasks[i] = asyncio.create_task(
+            _generate_single(chatterbox_url, voice, sentences[i])
+        )
 
     pcm_parts: list[bytes] = []
-    for i, pcm in enumerate(pcm_results):
+    for i in range(n):
+        pcm = await tasks.pop(i)
         pcm_parts.append(pcm)
-        if i < len(pcm_results) - 1:
+        if i < n - 1:
             pcm_parts.append(SENTENCE_GAP)
 
+        # Launch next sentence in the sliding window
+        next_i = i + PARALLEL_SENTENCES
+        if next_i < n:
+            tasks[next_i] = asyncio.create_task(
+                _generate_single(chatterbox_url, voice, sentences[next_i])
+            )
+
     total_pcm = b"".join(pcm_parts)
-    _LOGGER.info("TTS: parallel generation done in %.1fs (%d bytes)",
+    _LOGGER.info("TTS: pipelined generation done in %.1fs (%d bytes)",
                  time.time() - t0, len(total_pcm))
     return total_pcm
 

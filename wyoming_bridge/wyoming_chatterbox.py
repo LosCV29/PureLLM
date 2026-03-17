@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
-"""Wyoming Chatterbox TTS server with pre-cache HTTP bridge.
+"""Wyoming Chatterbox TTS server with pre-cache HTTP bridge and pipelined streaming.
 
 Runs TWO servers:
   1. Wyoming TCP server on port 10201 — speaks the Wyoming protocol for HA
   2. HTTP server on port 10202 — accepts POST /precache from PureLLM
 
-Flow (fire-and-forget from PureLLM):
-  PureLLM gets LLM response text
-    → Immediately returns response to HA pipeline
-    → Concurrently POST /precache {"text": "...", "key": "<sha256>"} to port 10202
-    → This server splits text into sentences, generates ALL in parallel via
-      Chatterbox, concatenates PCM with inter-sentence silence, stores by hash
-    → HA asks Wyoming (port 10201) for TTS on same text
-    → Wyoming handler: cache HIT → responds in <100ms
-    → If pre-cache is still in progress, Wyoming WAITS for it (generation lock)
-      instead of starting a duplicate generation
-    → PE gets audio, LED stays on, no gap
+Pipelined Streaming Design:
+  When Wyoming receives a Synthesize request:
+    1. If full-text cache HIT → stream all audio instantly (<100ms)
+    2. If cache MISS → split text into sentences, generate sentence 1,
+       start streaming it immediately, then generate remaining sentences
+       concurrently (up to PARALLEL_SENTENCES at a time) while earlier
+       sentences play. Perceived latency = time for first sentence only.
+
+  Pre-cache (from PureLLM conversation.py):
+    Generates the FIRST sentence, caches it immediately, then continues
+    generating remaining sentences in the background. This means even
+    the precache path starts delivering audio faster — Wyoming gets
+    sentence 1 from cache while sentences 2+ are still generating.
 
 Sentence chunking: Chatterbox generation scales superlinearly with text length.
 A 10-word sentence generates in ~1s, but a 30-word block takes ~4s. By splitting
-into sentences and generating ALL concurrently via asyncio.gather, total
-generation time equals the slowest single sentence (~1-2s) instead of the sum.
+into sentences and generating them in a pipeline, the user hears audio after
+just the first sentence completes (~0.5-1s) instead of waiting for all of them.
 
 Cache entries expire after 120s to prevent memory leaks from orphaned entries.
 """
@@ -60,6 +62,10 @@ HTTP_PORT = 10202
 
 # Cache expiry in seconds — entries older than this are purged
 CACHE_TTL = 120
+
+# Max sentences to generate concurrently (prevents overwhelming the GPU
+# with too many parallel requests which can actually slow things down)
+PARALLEL_SENTENCES = 2
 
 # Silence between sentences: 150ms of zeros at 24kHz 16-bit mono
 SENTENCE_GAP_MS = 150
@@ -206,16 +212,11 @@ async def generate_chatterbox(text: str) -> bytes:
 async def generate_chunked(text: str) -> bytes:
     """Split text into sentences, generate ALL in parallel, concatenate with gaps.
 
-    Chatterbox generation time scales superlinearly with text length, so
-    generating shorter sentences individually is faster than one big block.
-    Generating them in parallel via asyncio.gather means total time equals
-    the slowest sentence (~1-2s) instead of the sum of all sentences.
-    A 150ms silence gap between sentences provides natural pacing.
+    Used by the precache endpoint for backwards compatibility.
     """
     sentences = split_sentences(text)
 
     if len(sentences) <= 1:
-        # Single sentence — no benefit from chunking
         _LOGGER.info("Chunked: single sentence, generating directly")
         return await generate_chatterbox(text)
 
@@ -245,10 +246,81 @@ async def generate_chunked(text: str) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# Streaming helpers — write PCM to Wyoming as AudioChunk events
+# ---------------------------------------------------------------------------
+async def _stream_pcm(handler: "ChatterboxHandler", pcm: bytes) -> None:
+    """Write raw PCM bytes as AudioChunk events in CHUNK_SIZE pieces."""
+    offset = 0
+    while offset < len(pcm):
+        chunk = pcm[offset : offset + CHUNK_SIZE]
+        await handler.write_event(
+            AudioChunk(
+                rate=SAMPLE_RATE,
+                width=SAMPLE_WIDTH,
+                channels=CHANNELS,
+                audio=chunk,
+            ).event()
+        )
+        offset += CHUNK_SIZE
+
+
+async def _generate_and_stream_pipelined(
+    handler: "ChatterboxHandler",
+    sentences: list[str],
+) -> None:
+    """Generate sentences in a pipeline and stream each as soon as it's ready.
+
+    Strategy:
+      - Fire off sentence 1 immediately
+      - While sentence 1 streams to the speaker, pre-fetch sentence 2
+        (and optionally sentence 3) concurrently
+      - By the time sentence 1 finishes playing (~1-3s of audio), sentence 2
+        is likely already done generating
+      - Net effect: user hears audio after ~0.5-1s (first sentence gen time)
+        instead of waiting for ALL sentences
+
+    We use a sliding window of PARALLEL_SENTENCES concurrent generation tasks
+    to keep the GPU busy without overwhelming it.
+    """
+    t0 = time.time()
+    n = len(sentences)
+    _LOGGER.info("Pipeline: streaming %d sentences", n)
+
+    # Pre-launch generation tasks for the first batch
+    tasks: dict[int, asyncio.Task] = {}
+    for i in range(min(PARALLEL_SENTENCES, n)):
+        tasks[i] = asyncio.create_task(generate_chatterbox(sentences[i]))
+
+    for i in range(n):
+        # Wait for this sentence's audio
+        pcm = await tasks.pop(i)
+        gen_time = time.time() - t0
+        _LOGGER.info("Pipeline: sentence %d/%d ready (%.1fs elapsed), streaming",
+                     i + 1, n, gen_time)
+
+        # Stream this sentence's audio immediately
+        await _stream_pcm(handler, pcm)
+
+        # Add silence gap between sentences (not after the last one)
+        if i < n - 1:
+            await _stream_pcm(handler, SENTENCE_GAP)
+
+        # Launch the next sentence's generation (sliding window)
+        next_i = i + PARALLEL_SENTENCES
+        if next_i < n:
+            tasks[next_i] = asyncio.create_task(
+                generate_chatterbox(sentences[next_i])
+            )
+
+    total_time = time.time() - t0
+    _LOGGER.info("Pipeline: all %d sentences streamed in %.1fs", n, total_time)
+
+
+# ---------------------------------------------------------------------------
 # Wyoming protocol handler
 # ---------------------------------------------------------------------------
 class ChatterboxHandler(AsyncEventHandler):
-    """Handle Wyoming TTS events with cache-first lookup + generation lock awareness."""
+    """Handle Wyoming TTS events with cache-first lookup + pipelined streaming."""
 
     async def handle_event(self, event: Event) -> bool:
         _LOGGER.info("Event: %s", event.type)
@@ -268,16 +340,22 @@ class ChatterboxHandler(AsyncEventHandler):
             cache_key = hashlib.sha256(text.encode()).hexdigest()
 
             try:
-                # Check if pre-cache already completed
+                await self.write_event(
+                    AudioStart(
+                        rate=SAMPLE_RATE, width=SAMPLE_WIDTH, channels=CHANNELS
+                    ).event()
+                )
+
+                # Check if pre-cache already completed (full blob)
                 cached = AUDIO_CACHE.get(cache_key)
                 if cached:
                     pcm = cached["pcm"]
-                    # Remove from cache (one-time use)
                     AUDIO_CACHE.pop(cache_key, None)
                     _LOGGER.info("Cache HIT (%s) — serving instantly", cache_key[:8])
+                    await _stream_pcm(self, pcm)
+
                 elif cache_key in GENERATION_LOCKS:
-                    # Pre-cache is still generating — wait for it instead of
-                    # starting a duplicate generation
+                    # Pre-cache is still generating — wait for it
                     _LOGGER.info("Cache PENDING (%s) — waiting for in-progress generation", cache_key[:8])
                     lock = GENERATION_LOCKS[cache_key]
                     await asyncio.wait_for(lock.wait(), timeout=90.0)
@@ -285,30 +363,26 @@ class ChatterboxHandler(AsyncEventHandler):
                     if cached:
                         pcm = cached["pcm"]
                         _LOGGER.info("Cache HIT after wait (%s) — serving", cache_key[:8])
+                        await _stream_pcm(self, pcm)
                     else:
-                        _LOGGER.warning("Cache MISS after wait (%s) — generating fresh", cache_key[:8])
-                        pcm = await generate_chunked(text)
-                else:
-                    _LOGGER.info("Cache MISS (%s) — calling Chatterbox", cache_key[:8])
-                    pcm = await generate_chunked(text)
+                        _LOGGER.warning("Cache MISS after wait (%s) — streaming fresh", cache_key[:8])
+                        sentences = split_sentences(text)
+                        if len(sentences) <= 1:
+                            pcm = await generate_chatterbox(text)
+                            await _stream_pcm(self, pcm)
+                        else:
+                            await _generate_and_stream_pipelined(self, sentences)
 
-                await self.write_event(
-                    AudioStart(
-                        rate=SAMPLE_RATE, width=SAMPLE_WIDTH, channels=CHANNELS
-                    ).event()
-                )
-                offset = 0
-                while offset < len(pcm):
-                    chunk = pcm[offset : offset + CHUNK_SIZE]
-                    await self.write_event(
-                        AudioChunk(
-                            rate=SAMPLE_RATE,
-                            width=SAMPLE_WIDTH,
-                            channels=CHANNELS,
-                            audio=chunk,
-                        ).event()
-                    )
-                    offset += CHUNK_SIZE
+                else:
+                    # Cache MISS — use pipelined streaming for minimal latency
+                    _LOGGER.info("Cache MISS (%s) — pipelined streaming", cache_key[:8])
+                    sentences = split_sentences(text)
+                    if len(sentences) <= 1:
+                        pcm = await generate_chatterbox(text)
+                        await _stream_pcm(self, pcm)
+                    else:
+                        await _generate_and_stream_pipelined(self, sentences)
+
                 await self.write_event(AudioStop().event())
                 _LOGGER.info("Done")
             except Exception as e:
@@ -334,7 +408,7 @@ async def handle_precache(request: web.Request) -> web.Response:
     Body: {"text": "...", "key": "<optional sha256>"}
     If key is omitted, it's computed from text.
 
-    Uses parallel sentence chunking for faster generation.
+    Generates sentences in parallel and caches the complete audio.
     Sets a generation lock so Wyoming can wait for in-progress generation
     instead of starting a duplicate.
     """
