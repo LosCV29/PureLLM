@@ -1127,18 +1127,35 @@ class PureLLMConversationEntity(ConversationEntity):
             else:
                 # External Wyoming bridge mode: POST to HTTP precache endpoint
                 async def _precache_bridge() -> None:
+                    import aiohttp
+
+                    url = f"{self.voice_reply_tts_url}/precache"
                     try:
                         async with self._session.post(
-                            f"{self.voice_reply_tts_url}/precache",
+                            url,
                             json={"text": tts_text, "key": cache_key},
-                            timeout=90,
+                            timeout=aiohttp.ClientTimeout(total=90),
                         ) as precache_resp:
                             if precache_resp.status == 200:
                                 _LOGGER.info("Voice reply: pre-cached TTS audio (%d chars, key=%s)", len(tts_text), cache_key[:8])
                             else:
-                                _LOGGER.warning("Voice reply: precache returned %d", precache_resp.status)
+                                body = await precache_resp.text()
+                                _LOGGER.warning(
+                                    "Voice reply: precache returned %d from %s: %s",
+                                    precache_resp.status, url, body[:200],
+                                )
+                    except asyncio.TimeoutError:
+                        _LOGGER.warning("Voice reply: precache timed out after 90s (%s)", url)
+                    except aiohttp.ClientError as err:
+                        _LOGGER.warning(
+                            "Voice reply: precache connection failed (%s: %s) — is the TTS bridge running at %s?",
+                            type(err).__name__, err, self.voice_reply_tts_url,
+                        )
                     except Exception as err:
-                        _LOGGER.warning("Voice reply: precache failed (falling back to normal TTS): %s", err)
+                        _LOGGER.warning(
+                            "Voice reply: precache failed (%s: %s), falling back to normal TTS",
+                            type(err).__name__, err,
+                        )
 
                 asyncio.create_task(_precache_bridge())
 
