@@ -152,14 +152,20 @@ def _pcm_to_wav(pcm: bytes) -> bytes:
 
 # Reusable httpx client — avoids SSL/connection setup overhead per sentence.
 # Keyed by chatterbox_url so we get one client per backend.
+# The client must be created via _get_client() (async) because httpx loads
+# SSL verify certs synchronously — doing it on the event loop triggers HA's
+# blocking-call detector.
 _HTTP_CLIENTS: dict[str, httpx.AsyncClient] = {}
 
 
-def _get_client(chatterbox_url: str) -> httpx.AsyncClient:
-    """Return a reusable httpx client for the given Chatterbox backend."""
+async def _get_client(chatterbox_url: str) -> httpx.AsyncClient:
+    """Return a reusable httpx client, creating in executor if needed."""
     client = _HTTP_CLIENTS.get(chatterbox_url)
     if client is None or client.is_closed:
-        client = httpx.AsyncClient(timeout=90.0)
+        loop = asyncio.get_running_loop()
+        client = await loop.run_in_executor(
+            None, lambda: httpx.AsyncClient(timeout=90.0)
+        )
         _HTTP_CLIENTS[chatterbox_url] = client
     return client
 
@@ -168,7 +174,7 @@ async def _generate_single(chatterbox_url: str, voice: str, text: str) -> bytes:
     """Call Chatterbox TTS API and return raw PCM audio."""
     t0 = time.time()
     _LOGGER.info("TTS API call START: %.40s…", text)
-    client = _get_client(chatterbox_url)
+    client = await _get_client(chatterbox_url)
     resp = await client.post(
         f"{chatterbox_url}/v1/audio/speech",
         json={
