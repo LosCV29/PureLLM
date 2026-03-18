@@ -139,6 +139,23 @@ def extract_pcm(wav_bytes: bytes) -> bytes:
         return wav_bytes[44:]
 
 
+async def _wait_for_media_idle(
+    hass: HomeAssistant,
+    media_player_entity_id: str,
+    timeout: float = 30.0,
+    poll_interval: float = 0.3,
+) -> None:
+    """Wait for a media player to finish playing before queuing next sentence."""
+    elapsed = 0.0
+    while elapsed < timeout:
+        state = hass.states.get(media_player_entity_id)
+        if state is None or state.state not in ("playing", "buffering"):
+            return
+        await asyncio.sleep(poll_interval)
+        elapsed += poll_interval
+    _LOGGER.warning("TTS streaming: media player %s still playing after %.0fs", media_player_entity_id, timeout)
+
+
 def _pcm_to_wav(pcm: bytes) -> bytes:
     """Wrap raw PCM bytes in a WAV container."""
     buf = io.BytesIO()
@@ -357,3 +374,120 @@ class PureLLMTTSEntity(TextToSpeechEntity):
             GENERATION_LOCKS.pop(cache_key, None)
 
         return cache_key
+
+    async def precache_streaming(
+        self,
+        text: str,
+        hass: HomeAssistant,
+        device_id: str | None = None,
+    ) -> str:
+        """Pre-generate FIRST sentence only, then play the rest in background.
+
+        This dramatically reduces time-to-first-audio for multi-sentence
+        responses.  The first sentence is cached under the full text's hash
+        so HA's pipeline TTS step picks it up instantly.  Remaining sentences
+        are generated and played via tts.speak in a background task.
+
+        Falls back to regular precache() for single-sentence text or when
+        device_id is unavailable (non-voice interactions).
+        """
+        sentences = split_sentences(text)
+        cache_key = hashlib.sha256(text.encode()).hexdigest()
+
+        # Single sentence or no device → regular path
+        if len(sentences) <= 1 or not device_id:
+            return await self.precache(text)
+
+        # Already cached (e.g. duplicate request)
+        if cache_key in AUDIO_CACHE:
+            return cache_key
+
+        t0 = time.time()
+        _LOGGER.info(
+            "TTS precache_streaming START (%s): %d sentences, first='%.50s…'",
+            cache_key[:8], len(sentences), sentences[0],
+        )
+
+        # Generate only the first sentence
+        first_pcm = await _generate_single(
+            self._chatterbox_url, self._voice, sentences[0]
+        )
+        AUDIO_CACHE[cache_key] = {"pcm": first_pcm, "ts": time.time()}
+        _LOGGER.info(
+            "TTS precache_streaming: first sentence cached in %.1fs (%s)",
+            time.time() - t0, cache_key[:8],
+        )
+
+        # Fire background task for remaining sentences
+        remaining = sentences[1:]
+        hass.async_create_task(
+            self._play_remaining_sentences(hass, remaining, device_id),
+            f"purellm_tts_stream_{cache_key[:8]}",
+        )
+
+        return cache_key
+
+    async def _play_remaining_sentences(
+        self,
+        hass: HomeAssistant,
+        sentences: list[str],
+        device_id: str,
+    ) -> None:
+        """Generate and play remaining sentences in background via tts.speak."""
+        from homeassistant.helpers import entity_registry as er
+
+        # Resolve media_player entity for this device
+        registry = er.async_get(hass)
+        media_player_entity_id: str | None = None
+        for entry in er.async_entries_for_device(registry, device_id):
+            if entry.domain == "media_player":
+                media_player_entity_id = entry.entity_id
+                break
+
+        if not media_player_entity_id:
+            _LOGGER.warning(
+                "TTS streaming: no media_player found for device %s, "
+                "remaining %d sentences will not play",
+                device_id, len(sentences),
+            )
+            return
+
+        tts_entity_id = self.entity_id
+        _LOGGER.info(
+            "TTS streaming: playing %d remaining sentences on %s via %s",
+            len(sentences), media_player_entity_id, tts_entity_id,
+        )
+
+        for i, sentence in enumerate(sentences):
+            try:
+                # Pre-generate audio and cache it so async_get_tts_audio hits cache
+                pcm = await _generate_single(
+                    self._chatterbox_url, self._voice, sentence
+                )
+                sent_key = hashlib.sha256(sentence.encode()).hexdigest()
+                AUDIO_CACHE[sent_key] = {"pcm": pcm, "ts": time.time()}
+
+                # Wait for previous audio to finish before playing next
+                await _wait_for_media_idle(hass, media_player_entity_id)
+
+                # Play via tts.speak — will hit our cache
+                await hass.services.async_call(
+                    "tts", "speak",
+                    {
+                        "entity_id": tts_entity_id,
+                        "media_player_entity_id": media_player_entity_id,
+                        "message": sentence,
+                    },
+                    blocking=True,
+                )
+                _LOGGER.info(
+                    "TTS streaming: sentence %d/%d played",
+                    i + 2, len(sentences) + 1,
+                )
+            except Exception:
+                _LOGGER.warning(
+                    "TTS streaming: failed on sentence %d/%d",
+                    i + 2, len(sentences) + 1,
+                    exc_info=True,
+                )
+                break
