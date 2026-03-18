@@ -1112,13 +1112,16 @@ class PureLLMConversationEntity(ConversationEntity):
             _tts_t0 = time.time()
 
             if self._builtin_tts:
-                # Built-in mode: pre-generate directly into the in-process cache
-                # used by tts.py — zero network overhead
+                # Built-in mode: streaming pre-cache — generate first sentence
+                # only, return fast, play remaining sentences in background.
                 try:
                     tts_entity = self.hass.data.get("purellm", {}).get("tts_entity")
                     if tts_entity:
-                        await tts_entity.precache(tts_text)
-                        _LOGGER.info("Voice reply: built-in pre-cache done in %.1fs (%d chars, key=%s)", time.time() - _tts_t0, len(tts_text), cache_key[:8])
+                        device_id = getattr(user_input, "device_id", None)
+                        await tts_entity.precache_streaming(
+                            tts_text, self.hass, device_id
+                        )
+                        _LOGGER.info("Voice reply: streaming pre-cache done in %.1fs (%d chars, key=%s)", time.time() - _tts_t0, len(tts_text), cache_key[:8])
                     else:
                         _LOGGER.warning("Voice reply: built-in TTS entity not found")
                 except Exception as err:
