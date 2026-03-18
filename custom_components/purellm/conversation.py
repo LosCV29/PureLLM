@@ -108,10 +108,10 @@ def _clean_for_match(text: str) -> str:
 def _normalize_for_tts(text: str) -> str:
     """Normalize text for TTS pronunciation clarity.
 
-    ElevenLabs custom voices can mispronounce 'degrees' as 'degurs'.
-    Use phonetic respelling to force correct pronunciation.
+    ElevenLabs custom voices mispronounce 'degrees' — just drop the word
+    since temperature context makes it redundant.
     """
-    return text.replace(" degrees", " deh-grees")
+    return text.replace(" degrees", "")
 
 
 from homeassistant.components import conversation
