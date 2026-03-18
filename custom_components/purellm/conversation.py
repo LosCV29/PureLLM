@@ -97,54 +97,6 @@ _LANG_CODE_TO_NAME: dict[str, str] = {
 _PUNCT_RE = re.compile(r"[^\w\s']")
 
 
-# --- TTS text normalization ---
-# Maps digit strings to spoken words for time normalization.
-_ONES = ["", "one", "two", "three", "four", "five", "six", "seven",
-         "eight", "nine", "ten", "eleven", "twelve", "thirteen",
-         "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
-_TENS = ["", "", "twenty", "thirty", "forty", "fifty"]
-
-def _number_to_words(n: int) -> str:
-    """Convert an integer 0-59 to spoken English."""
-    if n == 0:
-        return "oh"
-    if n < 20:
-        return _ONES[n]
-    return _TENS[n // 10] + (" " + _ONES[n % 10] if n % 10 else "")
-
-def _time_to_words(match: re.Match) -> str:
-    """Convert a 'H:MM AM/PM' time match to spoken words."""
-    hour = int(match.group(1))
-    minute = int(match.group(2))
-    period = match.group(3).upper().replace(".", "")  # AM/PM
-    hour_word = _ONES[hour] if hour < 20 else _number_to_words(hour)
-    if minute == 0:
-        minute_word = "o'clock"
-    elif minute < 10:
-        minute_word = "oh " + _ONES[minute]
-    else:
-        minute_word = _number_to_words(minute)
-    # Space out AM/PM so TTS pronounces each letter
-    period_spoken = " ".join(period)  # "AM" -> "A M"
-    return f"{hour_word} {minute_word} {period_spoken}"
-
-# Matches times like "2:27 PM", "12:05 am", "1:00 PM"
-_TIME_RE = re.compile(r'\b(\d{1,2}):(\d{2})\s*(AM|PM|am|pm|a\.m\.|p\.m\.)\b')
-
-# Matches score-like patterns: "112-105", "3-2", "21-17"
-_SCORE_RE = re.compile(r'\b(\d{1,3})\s*[-–—]\s*(\d{1,3})\b')
-
-def _normalize_for_tts(text: str) -> str:
-    """Normalize text for better TTS pronunciation."""
-    text = _TIME_RE.sub(_time_to_words, text)
-    text = _SCORE_RE.sub(r'\1 to \2', text)
-    # Normalize degree symbols so TTS doesn't mangle them
-    text = text.replace("°F", " degrees Fahrenheit")
-    text = text.replace("°C", " degrees Celsius")
-    text = text.replace("°", " degrees")
-    return text
-
-
 def _clean_for_match(text: str) -> str:
     """Normalize user text for dismissal matching.
 
@@ -211,10 +163,6 @@ from .const import (
     DEFAULT_CAMERA_RTSP_URLS,
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
-    CONF_VOICE_REPLY_TTS_URL,
-    CONF_VOICE_REPLY_TTS_VOICE,
-    DEFAULT_VOICE_REPLY_TTS_URL,
-    DEFAULT_VOICE_REPLY_TTS_VOICE,
     DEFAULT_API_KEY,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
@@ -437,13 +385,6 @@ class PureLLMConversationEntity(ConversationEntity):
         self.notify_on_restaurants = config.get(CONF_NOTIFY_ON_RESTAURANTS, DEFAULT_NOTIFY_ON_RESTAURANTS)
         self.notify_on_camera = config.get(CONF_NOTIFY_ON_CAMERA, DEFAULT_NOTIFY_ON_CAMERA)
         self.notify_on_search = config.get(CONF_NOTIFY_ON_SEARCH, DEFAULT_NOTIFY_ON_SEARCH)
-
-        # Voice reply (TTS pre-caching)
-        # "builtin" = use the in-process PureLLM TTS platform (no Wyoming bridge needed)
-        # URL = use the external Wyoming bridge HTTP precache endpoint
-        self.voice_reply_tts_url = (config.get(CONF_VOICE_REPLY_TTS_URL, DEFAULT_VOICE_REPLY_TTS_URL) or "").strip()
-        self.voice_reply_tts_voice = config.get(CONF_VOICE_REPLY_TTS_VOICE, DEFAULT_VOICE_REPLY_TTS_VOICE)
-        self._builtin_tts = self.voice_reply_tts_url.lower() == "builtin"
 
         # JSON list parser helper
         def _parse_json_list(key, default):
@@ -775,42 +716,8 @@ class PureLLMConversationEntity(ConversationEntity):
                 "Sentence trigger matched for '%s', returning automation response",
                 user_input.text.strip(),
             )
-            tts_text = _normalize_for_tts(trigger_response)
             response = intent.IntentResponse(language=user_input.language)
-            response.async_set_speech(tts_text)
-
-            # Pre-cache TTS so the voice pipeline serves audio with the
-            # correct voice.  Without this, HA's pipeline generates TTS
-            # on-the-fly and may use a different engine/voice (e.g. the
-            # Chatterbox server default instead of the configured voice).
-            if self.voice_reply_tts_url and tts_text and tts_text != "OK.":
-                if self._builtin_tts:
-                    try:
-                        tts_entity = self.hass.data.get("purellm", {}).get("tts_entity")
-                        if tts_entity:
-                            device_id = getattr(user_input, "device_id", None)
-                            await tts_entity.precache_streaming(
-                                tts_text, self.hass, device_id
-                            )
-                    except Exception as err:
-                        _LOGGER.warning("Voice reply (trigger): built-in pre-cache failed: %s", err)
-                else:
-                    import aiohttp
-
-                    cache_key = hashlib.sha256(tts_text.encode()).hexdigest()
-                    url = f"{self.voice_reply_tts_url}/precache"
-                    try:
-                        async with self._session.post(
-                            url,
-                            json={"text": tts_text, "key": cache_key},
-                            timeout=aiohttp.ClientTimeout(total=90),
-                        ) as precache_resp:
-                            if precache_resp.status != 200:
-                                body = await precache_resp.text()
-                                _LOGGER.warning("Voice reply (trigger): precache returned %d: %s", precache_resp.status, body[:200])
-                    except Exception as err:
-                        _LOGGER.warning("Voice reply (trigger): precache failed: %s", err)
-
+            response.async_set_speech(trigger_response)
             return conversation.ConversationResult(
                 response=response,
                 conversation_id=user_input.conversation_id or str(uuid.uuid4()),
@@ -1132,65 +1039,7 @@ class PureLLMConversationEntity(ConversationEntity):
             )
 
         response = intent.IntentResponse(language=user_input.language)
-        tts_text = _normalize_for_tts(final_response) if final_response else "No response."
-        response.async_set_speech(tts_text)
-
-        # --- Voice Reply: pre-cache TTS audio BEFORE returning ---
-        # We MUST await TTS generation inline so the conversation step does not
-        # complete until audio is cached.  This keeps the Voice PE LED in the
-        # "replying" state the entire time.  If we returned early (fire-and-
-        # forget), HA would finish the conversation step, the LED would drop,
-        # and TTS would still be generating — defeating the whole purpose.
-        if self.voice_reply_tts_url and tts_text and tts_text != "OK.":
-            cache_key = hashlib.sha256(tts_text.encode()).hexdigest()
-            _tts_t0 = time.time()
-
-            if self._builtin_tts:
-                # Built-in mode: streaming pre-cache — generate first sentence
-                # only, return fast, play remaining sentences in background.
-                try:
-                    tts_entity = self.hass.data.get("purellm", {}).get("tts_entity")
-                    if tts_entity:
-                        device_id = getattr(user_input, "device_id", None)
-                        await tts_entity.precache_streaming(
-                            tts_text, self.hass, device_id
-                        )
-                        _LOGGER.info("Voice reply: streaming pre-cache done in %.1fs (%d chars, key=%s)", time.time() - _tts_t0, len(tts_text), cache_key[:8])
-                    else:
-                        _LOGGER.warning("Voice reply: built-in TTS entity not found")
-                except Exception as err:
-                    _LOGGER.warning("Voice reply: built-in pre-cache failed: %s", err)
-            else:
-                # External Wyoming bridge mode: POST to HTTP precache endpoint
-                import aiohttp
-
-                url = f"{self.voice_reply_tts_url}/precache"
-                try:
-                    async with self._session.post(
-                        url,
-                        json={"text": tts_text, "key": cache_key},
-                        timeout=aiohttp.ClientTimeout(total=90),
-                    ) as precache_resp:
-                        if precache_resp.status == 200:
-                            _LOGGER.info("Voice reply: pre-cached TTS audio (%d chars, key=%s)", len(tts_text), cache_key[:8])
-                        else:
-                            body = await precache_resp.text()
-                            _LOGGER.warning(
-                                "Voice reply: precache returned %d from %s: %s",
-                                precache_resp.status, url, body[:200],
-                            )
-                except asyncio.TimeoutError:
-                    _LOGGER.warning("Voice reply: precache timed out after 90s (%s)", url)
-                except aiohttp.ClientError as err:
-                    _LOGGER.warning(
-                        "Voice reply: precache connection failed (%s: %s) — is the TTS bridge running at %s?",
-                        type(err).__name__, err, self.voice_reply_tts_url,
-                    )
-                except Exception as err:
-                    _LOGGER.warning(
-                        "Voice reply: precache failed (%s: %s), falling back to normal TTS",
-                        type(err).__name__, err,
-                    )
+        response.async_set_speech(final_response if final_response else "No response.")
 
         return conversation.ConversationResult(
             response=response,
