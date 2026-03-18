@@ -775,8 +775,42 @@ class PureLLMConversationEntity(ConversationEntity):
                 "Sentence trigger matched for '%s', returning automation response",
                 user_input.text.strip(),
             )
+            tts_text = _normalize_for_tts(trigger_response)
             response = intent.IntentResponse(language=user_input.language)
-            response.async_set_speech(trigger_response)
+            response.async_set_speech(tts_text)
+
+            # Pre-cache TTS so the voice pipeline serves audio with the
+            # correct voice.  Without this, HA's pipeline generates TTS
+            # on-the-fly and may use a different engine/voice (e.g. the
+            # Chatterbox server default instead of the configured voice).
+            if self.voice_reply_tts_url and tts_text and tts_text != "OK.":
+                if self._builtin_tts:
+                    try:
+                        tts_entity = self.hass.data.get("purellm", {}).get("tts_entity")
+                        if tts_entity:
+                            device_id = getattr(user_input, "device_id", None)
+                            await tts_entity.precache_streaming(
+                                tts_text, self.hass, device_id
+                            )
+                    except Exception as err:
+                        _LOGGER.warning("Voice reply (trigger): built-in pre-cache failed: %s", err)
+                else:
+                    import aiohttp
+
+                    cache_key = hashlib.sha256(tts_text.encode()).hexdigest()
+                    url = f"{self.voice_reply_tts_url}/precache"
+                    try:
+                        async with self._session.post(
+                            url,
+                            json={"text": tts_text, "key": cache_key},
+                            timeout=aiohttp.ClientTimeout(total=90),
+                        ) as precache_resp:
+                            if precache_resp.status != 200:
+                                body = await precache_resp.text()
+                                _LOGGER.warning("Voice reply (trigger): precache returned %d: %s", precache_resp.status, body[:200])
+                    except Exception as err:
+                        _LOGGER.warning("Voice reply (trigger): precache failed: %s", err)
+
             return conversation.ConversationResult(
                 response=response,
                 conversation_id=user_input.conversation_id or str(uuid.uuid4()),
