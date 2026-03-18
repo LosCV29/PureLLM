@@ -344,12 +344,19 @@ async def _wait_for_satellite_idle(
         unsub()
 
 
+def _is_entity_available(hass: HomeAssistant, entity_id: str) -> bool:
+    """Check that an entity exists AND is not unavailable/unknown."""
+    state = hass.states.get(entity_id)
+    return state is not None and state.state not in ("unavailable", "unknown")
+
+
 def _resolve_tts_entity(hass: HomeAssistant) -> str | None:
     """Resolve the TTS entity from the preferred assist pipeline.
 
     Queries the preferred voice pipeline for its configured TTS engine
     and returns the matching entity_id (e.g. 'tts.kokoro').
-    Returns None if the pipeline or TTS engine cannot be determined.
+    Returns None if the pipeline or TTS engine cannot be determined,
+    or if the resolved entity is unavailable.
     """
     try:
         from homeassistant.components.assist_pipeline import async_get_pipeline
@@ -362,16 +369,19 @@ def _resolve_tts_entity(hass: HomeAssistant) -> str | None:
         tts_engine = pipeline.tts_engine
         # The tts_engine may already be a full entity_id (tts.kokoro)
         # or just the engine name (cloud, kokoro, etc.)
-        if hass.states.get(tts_engine):
+        if _is_entity_available(hass, tts_engine):
             _LOGGER.debug("Resolved TTS entity from preferred pipeline: %s", tts_engine)
             return tts_engine
 
         candidate = f"tts.{tts_engine}" if not tts_engine.startswith("tts.") else tts_engine
-        if hass.states.get(candidate):
+        if _is_entity_available(hass, candidate):
             _LOGGER.debug("Resolved TTS entity from preferred pipeline: %s", candidate)
             return candidate
 
-        _LOGGER.debug("Pipeline TTS engine '%s' has no matching entity", tts_engine)
+        _LOGGER.warning(
+            "Pipeline TTS engine '%s' is unavailable or not found — falling back",
+            tts_engine,
+        )
     except Exception as err:  # noqa: BLE001
         _LOGGER.debug("Could not resolve TTS from pipeline: %s", err)
     return None
@@ -396,6 +406,19 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     question = call.data["question"]
     answers = call.data["answers"]
     tts_entity_id = call.data.get("tts_entity_id") or _resolve_tts_entity(hass) or "tts.home_assistant_cloud"
+    _LOGGER.info("ask_and_act: resolved TTS entity: %s", tts_entity_id)
+
+    # Resolve the preferred pipeline ID so start_conversation uses it
+    # instead of the satellite's own (possibly stale) pipeline config.
+    preferred_pipeline_id = None
+    try:
+        from homeassistant.components.assist_pipeline import async_get_pipeline
+        preferred_pipeline = async_get_pipeline(hass, pipeline_id=None)
+        if preferred_pipeline:
+            preferred_pipeline_id = preferred_pipeline.id
+            _LOGGER.debug("ask_and_act: using preferred pipeline: %s", preferred_pipeline_id)
+    except Exception:
+        pass
 
     # Derive media_player from satellite entity ID
     satellite_suffix = satellite_entity_id.split(".")[-1]
@@ -479,14 +502,17 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
-            await hass.services.async_call(
-                "assist_satellite", "start_conversation",
-                {
+            start_conv_data = {
                     "entity_id": satellite_entity_id,
                     "start_media_id": SILENCE_MEDIA_ID,
                     "extra_system_prompt": extra_system_prompt,
                     "preannounce": False,
-                },
+                }
+            if preferred_pipeline_id:
+                start_conv_data["pipeline_id"] = preferred_pipeline_id
+            await hass.services.async_call(
+                "assist_satellite", "start_conversation",
+                start_conv_data,
                 blocking=True,
             )
         except Exception as err:
@@ -576,17 +602,21 @@ async def _announce_timer_finished(
     # Try TTS first
     if target_player and hass.services.has_service("tts", "speak"):
         try:
-            # Get available TTS engines
-            tts_entities = [
-                s.entity_id for s in hass.states.async_all()
-                if s.entity_id.startswith("tts.")
-            ]
+            # Get available TTS engines (skip unavailable/stale entities)
+            tts_entity = _resolve_tts_entity(hass)
+            if not tts_entity:
+                tts_entities = [
+                    s.entity_id for s in hass.states.async_all()
+                    if s.entity_id.startswith("tts.")
+                    and s.state not in ("unavailable", "unknown")
+                ]
+                tts_entity = tts_entities[0] if tts_entities else None
 
-            if tts_entities:
+            if tts_entity:
                 await hass.services.async_call(
                     "tts", "speak",
                     {
-                        "entity_id": tts_entities[0],
+                        "entity_id": tts_entity,
                         "media_player_entity_id": target_player,
                         "message": message,
                     },
