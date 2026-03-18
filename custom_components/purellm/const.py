@@ -237,19 +237,6 @@ CONF_SOFABATON_ACTIVITIES: Final = "sofabaton_activities"
 DEFAULT_SOFABATON_ACTIVITIES: Final = "[]"
 
 # =============================================================================
-# VOICE REPLY - Pre-cache TTS audio to eliminate LED gap
-# =============================================================================
-CONF_VOICE_REPLY_TTS_URL: Final = "voice_reply_tts_url"
-CONF_VOICE_REPLY_TTS_VOICE: Final = "voice_reply_tts_voice"
-CONF_CHATTERBOX_URL: Final = "chatterbox_url"
-
-# Empty URL = disabled. Set to "builtin" for in-process TTS platform,
-# or a Wyoming bridge HTTP endpoint (e.g. http://192.168.68.72:10202).
-DEFAULT_VOICE_REPLY_TTS_URL: Final = ""
-DEFAULT_VOICE_REPLY_TTS_VOICE: Final = "Sir_David.mp3"
-DEFAULT_CHATTERBOX_URL: Final = "http://host.docker.internal:8004"
-
-# =============================================================================
 # API TIMEOUT - Shared timeout for external API calls
 # =============================================================================
 API_TIMEOUT: Final = 15  # seconds
