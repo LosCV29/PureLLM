@@ -105,6 +105,15 @@ def _clean_for_match(text: str) -> str:
     return " ".join(_PUNCT_RE.sub("", text.lower()).split())
 
 
+def _normalize_for_tts(text: str) -> str:
+    """Normalize text for TTS pronunciation clarity.
+
+    ElevenLabs custom voices can mispronounce 'degrees' as 'degurs'.
+    Use phonetic respelling to force correct pronunciation.
+    """
+    return text.replace(" degrees", " deh-grees")
+
+
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ChatLog, ConversationEntity
 from homeassistant.config_entries import ConfigEntry
@@ -717,7 +726,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 user_input.text.strip(),
             )
             response = intent.IntentResponse(language=user_input.language)
-            response.async_set_speech(trigger_response)
+            response.async_set_speech(_normalize_for_tts(trigger_response))
             return conversation.ConversationResult(
                 response=response,
                 conversation_id=user_input.conversation_id or str(uuid.uuid4()),
@@ -808,7 +817,7 @@ class PureLLMConversationEntity(ConversationEntity):
         )
 
         response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(response_text)
+        response.async_set_speech(_normalize_for_tts(response_text))
         return conversation.ConversationResult(
             response=response,
             conversation_id=conversation_id,
@@ -1039,7 +1048,8 @@ class PureLLMConversationEntity(ConversationEntity):
             )
 
         response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(final_response if final_response else "No response.")
+        speech_text = _normalize_for_tts(final_response) if final_response else "No response."
+        response.async_set_speech(speech_text)
 
         return conversation.ConversationResult(
             response=response,
