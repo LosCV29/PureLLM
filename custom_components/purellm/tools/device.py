@@ -294,6 +294,8 @@ async def control_device(
     arguments: dict[str, Any],
     hass: "HomeAssistant",
     voice_scripts: list[dict[str, str]] | None = None,
+    device_id: str | None = None,
+    room_player_mapping: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Control smart home devices.
 
@@ -313,6 +315,8 @@ async def control_device(
         arguments: Tool arguments
         hass: Home Assistant instance
         voice_scripts: List of voice script configs with trigger, open_script, close_script, sensor
+        device_id: Device ID of the satellite that issued the voice command
+        room_player_mapping: Room to media player entity mapping
 
     Returns:
         Control result dict
@@ -368,6 +372,29 @@ async def control_device(
 
     if not action:
         return {"error": "No action specified."}
+
+    # Satellite-aware volume resolution: when the user says generic volume
+    # commands like "set the volume to 50" or "turn the volume up" without
+    # specifying a particular device, resolve to the satellite's own
+    # media_player entity (the speaker they're talking to).
+    _GENERIC_SPEAKER_NAMES = {
+        "speaker", "the speaker", "this speaker", "my speaker",
+        "volume", "the volume", "voice volume", "speaker volume",
+    }
+    if (action in ("set_volume", "volume_up", "volume_down")
+            and device_name.lower().strip() in _GENERIC_SPEAKER_NAMES
+            and not direct_entity_id
+            and not entity_ids_list
+            and device_id):
+        from .timer import get_player_for_device
+        resolved_player = get_player_for_device(hass, device_id, room_player_mapping)
+        if resolved_player:
+            _LOGGER.info(
+                "Satellite volume resolution: device_id=%s -> %s",
+                device_id, resolved_player,
+            )
+            direct_entity_id = resolved_player
+            device_name = ""
 
     # Normalize actions
     # "run", "execute", "open", "close" support scripts like "open the garage"
