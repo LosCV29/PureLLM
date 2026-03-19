@@ -146,12 +146,16 @@ class PureLLMElevenLabsTTS(TextToSpeechEntity):
         output_format = config.get(CONF_ELEVENLABS_OUTPUT_FORMAT, DEFAULT_ELEVENLABS_OUTPUT_FORMAT)
 
         # Build voice_settings with every parameter
+        # Clamp speed to API-enforced range (0.7–1.2) regardless of stored value
+        raw_speed = float(config.get(CONF_ELEVENLABS_SPEED, DEFAULT_ELEVENLABS_SPEED))
+        speed = max(0.7, min(1.2, raw_speed))
+
         voice_settings = {
             "stability": float(config.get(CONF_ELEVENLABS_STABILITY, DEFAULT_ELEVENLABS_STABILITY)),
             "similarity_boost": float(config.get(CONF_ELEVENLABS_SIMILARITY, DEFAULT_ELEVENLABS_SIMILARITY)),
             "style": float(config.get(CONF_ELEVENLABS_STYLE, DEFAULT_ELEVENLABS_STYLE)),
             "use_speaker_boost": bool(config.get(CONF_ELEVENLABS_SPEAKER_BOOST, DEFAULT_ELEVENLABS_SPEAKER_BOOST)),
-            "speed": float(config.get(CONF_ELEVENLABS_SPEED, DEFAULT_ELEVENLABS_SPEED)),
+            "speed": speed,
         }
 
         payload = {

@@ -1,6 +1,7 @@
 """Config flow for PureLLM integration."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -1127,6 +1128,61 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             ),
         )
 
+    async def _fetch_elevenlabs_models(self, api_key: str) -> list[dict]:
+        """Fetch available models from ElevenLabs API.
+
+        Returns list of {"model_id": ..., "name": ...} dicts, or empty list on failure.
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.elevenlabs.io/v1/models",
+                    headers={"xi-api-key": api_key},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    if response.status != 200:
+                        _LOGGER.warning("ElevenLabs models fetch: HTTP %s", response.status)
+                        return []
+                    data = await response.json()
+                    # API returns a list of model objects
+                    models = []
+                    for model in data:
+                        model_id = model.get("model_id", "")
+                        name = model.get("name", model_id)
+                        if model_id and model.get("can_do_text_to_speech", True):
+                            models.append({"model_id": model_id, "name": name})
+                    return models
+        except Exception as err:
+            _LOGGER.warning("ElevenLabs models fetch failed: %s", err)
+            return []
+
+    async def _fetch_elevenlabs_voices(self, api_key: str) -> list[dict]:
+        """Fetch user's voices from ElevenLabs API.
+
+        Returns list of {"voice_id": ..., "name": ...} dicts, or empty list on failure.
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    "https://api.elevenlabs.io/v1/voices",
+                    headers={"xi-api-key": api_key},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    if response.status != 200:
+                        _LOGGER.warning("ElevenLabs voices fetch: HTTP %s", response.status)
+                        return []
+                    data = await response.json()
+                    voices = []
+                    for voice in data.get("voices", []):
+                        voice_id = voice.get("voice_id", "")
+                        name = voice.get("name", voice_id)
+                        if voice_id:
+                            voices.append({"voice_id": voice_id, "name": name})
+                    return voices
+        except Exception as err:
+            _LOGGER.warning("ElevenLabs voices fetch failed: %s", err)
+            return []
+
     async def async_step_elevenlabs(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
@@ -1134,6 +1190,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
 
         Exposes every ElevenLabs API parameter: API key, voice ID, model,
         stability, similarity boost, style, speaker boost, speed, and output format.
+        Dynamically fetches available models and voices from the API.
         """
         errors = {}
 
@@ -1154,7 +1211,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                             if response.status == 401:
                                 errors["base"] = "elevenlabs_invalid_api_key"
                             elif response.status == 404:
-                                # Voice not found — could be wrong ID or not in user's library
                                 errors["base"] = "elevenlabs_voice_not_found"
                             elif response.status != 200:
                                 _LOGGER.warning(
@@ -1162,22 +1218,67 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                                 )
                 except Exception as err:
                     _LOGGER.warning("ElevenLabs validation failed: %s", err)
-                    # Allow saving even if validation fails (network issue)
 
             if not errors:
-                # Clean up the input
                 user_input[CONF_ELEVENLABS_API_KEY] = el_api_key
                 user_input[CONF_ELEVENLABS_VOICE_ID] = el_voice_id
                 new_options = {**self._entry.options, **user_input}
                 return self.async_create_entry(title="", data=new_options)
 
         current = {**self._entry.data, **self._entry.options}
+        current_api_key = current.get(CONF_ELEVENLABS_API_KEY, DEFAULT_ELEVENLABS_API_KEY)
+        current_voice_id = current.get(CONF_ELEVENLABS_VOICE_ID, DEFAULT_ELEVENLABS_VOICE_ID)
+        current_model = current.get(CONF_ELEVENLABS_MODEL, DEFAULT_ELEVENLABS_MODEL)
 
-        # Build model selector options
-        model_options = [
-            selector.SelectOptionDict(value=m, label=m)
-            for m in ELEVENLABS_MODELS
-        ]
+        # Dynamically fetch models and voices if API key is available
+        el_models = []
+        el_voices = []
+        if current_api_key:
+            el_models, el_voices = await asyncio.gather(
+                self._fetch_elevenlabs_models(current_api_key),
+                self._fetch_elevenlabs_voices(current_api_key),
+            )
+
+        # Build model selector — dynamic from API, fallback to static list
+        if el_models:
+            model_options = [
+                selector.SelectOptionDict(value=m["model_id"], label=f"{m['name']} ({m['model_id']})")
+                for m in el_models
+            ]
+            # Ensure current model is in list
+            model_ids = [m["model_id"] for m in el_models]
+            if current_model and current_model not in model_ids:
+                model_options.insert(0, selector.SelectOptionDict(value=current_model, label=current_model))
+        else:
+            model_options = [
+                selector.SelectOptionDict(value=m, label=m)
+                for m in ELEVENLABS_MODELS
+            ]
+
+        # Build voice selector — dynamic from API if available
+        if el_voices:
+            voice_options = [
+                selector.SelectOptionDict(value=v["voice_id"], label=f"{v['name']} ({v['voice_id'][:8]}...)")
+                for v in el_voices
+            ]
+            # Ensure current voice is in list
+            voice_ids = [v["voice_id"] for v in el_voices]
+            if current_voice_id and current_voice_id not in voice_ids:
+                voice_options.insert(0, selector.SelectOptionDict(value=current_voice_id, label=current_voice_id))
+            voice_selector = selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=voice_options,
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                    custom_value=True,
+                )
+            )
+        else:
+            # No API key yet — just a text field
+            voice_selector = selector.TextSelector(
+                selector.TextSelectorConfig(
+                    type=selector.TextSelectorType.TEXT,
+                )
+            )
 
         # Build output format selector options
         format_options = [
@@ -1192,7 +1293,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 {
                     vol.Optional(
                         CONF_ELEVENLABS_API_KEY,
-                        default=current.get(CONF_ELEVENLABS_API_KEY, DEFAULT_ELEVENLABS_API_KEY),
+                        default=current_api_key,
                     ): selector.TextSelector(
                         selector.TextSelectorConfig(
                             type=selector.TextSelectorType.PASSWORD,
@@ -1200,15 +1301,11 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         CONF_ELEVENLABS_VOICE_ID,
-                        default=current.get(CONF_ELEVENLABS_VOICE_ID, DEFAULT_ELEVENLABS_VOICE_ID),
-                    ): selector.TextSelector(
-                        selector.TextSelectorConfig(
-                            type=selector.TextSelectorType.TEXT,
-                        )
-                    ),
+                        default=current_voice_id,
+                    ): voice_selector,
                     vol.Optional(
                         CONF_ELEVENLABS_MODEL,
-                        default=current.get(CONF_ELEVENLABS_MODEL, DEFAULT_ELEVENLABS_MODEL),
+                        default=current_model,
                     ): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=model_options,
@@ -1221,8 +1318,8 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                         default=current.get(CONF_ELEVENLABS_SPEED, DEFAULT_ELEVENLABS_SPEED),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(
-                            min=0.25,
-                            max=4.0,
+                            min=0.7,
+                            max=1.2,
                             step=0.05,
                             mode=selector.NumberSelectorMode.SLIDER,
                         )
