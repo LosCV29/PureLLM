@@ -136,7 +136,8 @@
           "elevenlabs_similarity": "Similarity Boost (0 = diverse, 1 = close to original)",
           "elevenlabs_style": "Style Exaggeration (0 = none, 1 = maximum — adds latency)",
           "elevenlabs_speaker_boost": "Speaker Boost (enhances voice clarity)",
-          "elevenlabs_output_format": "Output Format"
+          "elevenlabs_output_format": "Output Format",
+          "elevenlabs_text_normalization": "Text Normalization (auto = let API decide, on = always normalize, off = skip)"
         }
       },
       "notifications": {

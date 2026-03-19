@@ -31,6 +31,7 @@ from .const import (
     CONF_ELEVENLABS_SPEAKER_BOOST,
     CONF_ELEVENLABS_SPEED,
     CONF_ELEVENLABS_OUTPUT_FORMAT,
+    CONF_ELEVENLABS_TEXT_NORMALIZATION,
     DEFAULT_ELEVENLABS_API_KEY,
     DEFAULT_ELEVENLABS_VOICE_ID,
     DEFAULT_ELEVENLABS_MODEL,
@@ -40,6 +41,7 @@ from .const import (
     DEFAULT_ELEVENLABS_SPEAKER_BOOST,
     DEFAULT_ELEVENLABS_SPEED,
     DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
+    DEFAULT_ELEVENLABS_TEXT_NORMALIZATION,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -119,6 +121,7 @@ class PureLLMElevenLabsTTS(TextToSpeechEntity):
             "use_speaker_boost": config.get(CONF_ELEVENLABS_SPEAKER_BOOST, DEFAULT_ELEVENLABS_SPEAKER_BOOST),
             "speed": config.get(CONF_ELEVENLABS_SPEED, DEFAULT_ELEVENLABS_SPEED),
             "output_format": config.get(CONF_ELEVENLABS_OUTPUT_FORMAT, DEFAULT_ELEVENLABS_OUTPUT_FORMAT),
+            "text_normalization": config.get(CONF_ELEVENLABS_TEXT_NORMALIZATION, DEFAULT_ELEVENLABS_TEXT_NORMALIZATION),
         }
 
     async def async_get_tts_audio(
@@ -160,10 +163,15 @@ class PureLLMElevenLabsTTS(TextToSpeechEntity):
             "speed": speed,
         }
 
+        text_normalization = config.get(
+            CONF_ELEVENLABS_TEXT_NORMALIZATION, DEFAULT_ELEVENLABS_TEXT_NORMALIZATION
+        )
+
         payload = {
             "text": message,
             "model_id": model_id,
             "voice_settings": voice_settings,
+            "apply_text_normalization": text_normalization,
         }
 
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format={output_format}"

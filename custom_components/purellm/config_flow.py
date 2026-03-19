@@ -126,6 +126,7 @@ from .const import (
     CONF_ELEVENLABS_SPEAKER_BOOST,
     CONF_ELEVENLABS_SPEED,
     CONF_ELEVENLABS_OUTPUT_FORMAT,
+    CONF_ELEVENLABS_TEXT_NORMALIZATION,
     DEFAULT_ELEVENLABS_API_KEY,
     DEFAULT_ELEVENLABS_VOICE_ID,
     DEFAULT_ELEVENLABS_MODEL,
@@ -135,8 +136,10 @@ from .const import (
     DEFAULT_ELEVENLABS_SPEAKER_BOOST,
     DEFAULT_ELEVENLABS_SPEED,
     DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
+    DEFAULT_ELEVENLABS_TEXT_NORMALIZATION,
     ELEVENLABS_MODELS,
     ELEVENLABS_OUTPUT_FORMATS,
+    ELEVENLABS_TEXT_NORMALIZATION_MODES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -1367,6 +1370,18 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     ): selector.SelectSelector(
                         selector.SelectSelectorConfig(
                             options=format_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ELEVENLABS_TEXT_NORMALIZATION,
+                        default=current.get(CONF_ELEVENLABS_TEXT_NORMALIZATION, DEFAULT_ELEVENLABS_TEXT_NORMALIZATION),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(value=m, label=m)
+                                for m in ELEVENLABS_TEXT_NORMALIZATION_MODES
+                            ],
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
