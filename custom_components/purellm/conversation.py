@@ -111,10 +111,10 @@ def _normalize_for_tts(text: str) -> str:
     ElevenLabs custom voices mispronounce certain words badly.
     Use phonetic respelling or SSML-style workarounds to force correct output.
     """
-    text = text.replace(" degrees", " deh-grees")
-    text = text.replace(" o'clock", " oh clock")
-    text = text.replace(" O'clock", " oh clock")
-    text = text.replace(" O'Clock", " oh clock")
+    text = text.replace(" degrees", " dee grees")
+    text = text.replace(" o'clock", " oclock")
+    text = text.replace(" O'clock", " Oclock")
+    text = text.replace(" O'Clock", " Oclock")
     return text
 
 
