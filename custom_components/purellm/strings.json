@@ -131,7 +131,7 @@
           "elevenlabs_api_key": "ElevenLabs API Key",
           "elevenlabs_voice_id": "Voice ID (from My Voices → Copy Voice ID)",
           "elevenlabs_model": "Model",
-          "elevenlabs_speed": "Speed (0.25 = slow, 1.0 = normal, 4.0 = fast)",
+          "elevenlabs_speed": "Speed (0.7 = slow, 1.0 = normal, 1.2 = fast)",
           "elevenlabs_stability": "Stability (0 = variable/expressive, 1 = stable/consistent)",
           "elevenlabs_similarity": "Similarity Boost (0 = diverse, 1 = close to original)",
           "elevenlabs_style": "Style Exaggeration (0 = none, 1 = maximum — adds latency)",
