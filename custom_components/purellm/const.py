@@ -256,6 +256,7 @@ CONF_ELEVENLABS_STYLE: Final = "elevenlabs_style"
 CONF_ELEVENLABS_SPEAKER_BOOST: Final = "elevenlabs_speaker_boost"
 CONF_ELEVENLABS_SPEED: Final = "elevenlabs_speed"
 CONF_ELEVENLABS_OUTPUT_FORMAT: Final = "elevenlabs_output_format"
+CONF_ELEVENLABS_TEXT_NORMALIZATION: Final = "elevenlabs_text_normalization"
 
 DEFAULT_ELEVENLABS_API_KEY: Final = ""
 DEFAULT_ELEVENLABS_VOICE_ID: Final = ""
@@ -266,6 +267,13 @@ DEFAULT_ELEVENLABS_STYLE: Final = 0.0
 DEFAULT_ELEVENLABS_SPEAKER_BOOST: Final = True
 DEFAULT_ELEVENLABS_SPEED: Final = 1.0
 DEFAULT_ELEVENLABS_OUTPUT_FORMAT: Final = "mp3_44100_128"
+DEFAULT_ELEVENLABS_TEXT_NORMALIZATION: Final = "auto"
+
+ELEVENLABS_TEXT_NORMALIZATION_MODES: Final = [
+    "auto",
+    "on",
+    "off",
+]
 
 ELEVENLABS_MODELS: Final = [
     "eleven_turbo_v2_5",
