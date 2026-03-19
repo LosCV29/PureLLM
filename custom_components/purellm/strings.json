@@ -19,7 +19,9 @@
       }
     },
     "error": {
-      "cannot_connect": "Cannot connect to the API. Check your URL and API key."
+      "cannot_connect": "Cannot connect to the API. Check your URL and API key.",
+      "elevenlabs_invalid_api_key": "Invalid ElevenLabs API key. Check your key at elevenlabs.io.",
+      "elevenlabs_voice_not_found": "Voice ID not found. Make sure the voice is added to your ElevenLabs account (My Voices)."
     }
   },
   "options": {
@@ -33,6 +35,7 @@
           "voice_scripts": "Voice Scripts",
           "sofabaton": "SofaBaton Activities",
           "music_rooms": "Music Room Mapping",
+          "elevenlabs": "ElevenLabs TTS",
           "notifications": "Notification Settings",
           "api_keys": "External API Keys",
           "location": "Location Settings",
@@ -119,6 +122,21 @@
           "room_player": "Media Player",
           "room_name": "Room Name (e.g., living room, kitchen)",
           "action": "Action"
+        }
+      },
+      "elevenlabs": {
+        "title": "ElevenLabs TTS Voice Settings",
+        "description": "Configure ElevenLabs text-to-speech with full voice parameter control. Enter your API key and voice ID, then adjust every voice setting including speed. After saving, select 'PureLLM ElevenLabs TTS' as your TTS engine in the Assist pipeline.",
+        "data": {
+          "elevenlabs_api_key": "ElevenLabs API Key",
+          "elevenlabs_voice_id": "Voice ID (from My Voices → Copy Voice ID)",
+          "elevenlabs_model": "Model",
+          "elevenlabs_speed": "Speed (0.25 = slow, 1.0 = normal, 4.0 = fast)",
+          "elevenlabs_stability": "Stability (0 = variable/expressive, 1 = stable/consistent)",
+          "elevenlabs_similarity": "Similarity Boost (0 = diverse, 1 = close to original)",
+          "elevenlabs_style": "Style Exaggeration (0 = none, 1 = maximum — adds latency)",
+          "elevenlabs_speaker_boost": "Speaker Boost (enhances voice clarity)",
+          "elevenlabs_output_format": "Output Format"
         }
       },
       "notifications": {
