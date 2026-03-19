@@ -373,12 +373,12 @@ async def control_device(
     if not action:
         return {"error": "No action specified."}
 
-    # Satellite-aware volume resolution: when the user says generic volume
-    # commands like "set the volume to 50" or "turn the volume up" without
-    # specifying a particular device, resolve to the satellite's own
-    # media_player entity (the speaker they're talking to).
+    # Satellite-aware volume resolution: when the user says "your volume"
+    # style commands (e.g. "raise your volume", "set your volume to 50"),
+    # resolve to the satellite's own media_player entity.
     _GENERIC_SPEAKER_NAMES = {
         "speaker", "the speaker", "this speaker", "my speaker",
+        "your speaker", "your volume",
         "volume", "the volume", "voice volume", "speaker volume",
     }
     if (action in ("set_volume", "volume_up", "volume_down")
