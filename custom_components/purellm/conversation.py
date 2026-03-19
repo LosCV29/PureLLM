@@ -592,6 +592,86 @@ class PureLLMConversationEntity(ConversationEntity):
 
         return []
 
+    # Regex for "your volume" short-circuit.
+    # Captures optional percentage value from utterances like:
+    #   "set your volume to 100"  /  "set your volume to 50 percent"
+    #   "raise your volume"  /  "lower your volume"  /  "turn up your volume"
+    _SATELLITE_VOL_SET = re.compile(
+        r"(?:set|change)\s+(?:your|the\s+speaker(?:'?s)?)\s+volume\s+(?:to|at)\s+(\d{1,3})",
+        re.IGNORECASE,
+    )
+    _SATELLITE_VOL_UP = re.compile(
+        r"(?:raise|increase|turn\s+up|louder)\s+(?:your|the\s+speaker(?:'?s)?)\s+volume"
+        r"|(?:your|the\s+speaker(?:'?s)?)\s+volume\s+up",
+        re.IGNORECASE,
+    )
+    _SATELLITE_VOL_DOWN = re.compile(
+        r"(?:lower|decrease|turn\s+down|quieter|reduce)\s+(?:your|the\s+speaker(?:'?s)?)\s+volume"
+        r"|(?:your|the\s+speaker(?:'?s)?)\s+volume\s+down",
+        re.IGNORECASE,
+    )
+
+    async def _try_satellite_volume_shortcircuit(
+        self,
+        user_text: str,
+        user_input: conversation.ConversationInput,
+        conversation_id: str,
+    ) -> conversation.ConversationResult | None:
+        """Short-circuit 'your volume' commands to the satellite speaker.
+
+        Local LLMs often misinterpret 'your volume' as referring to another
+        media player (e.g. PS5).  This bypasses the LLM and calls
+        control_device directly with device='speaker'.
+        """
+        from .tools import device as device_tool
+
+        text = user_text.strip()
+
+        m_set = self._SATELLITE_VOL_SET.search(text)
+        if m_set:
+            vol = min(int(m_set.group(1)), 100)
+            action, args = "set_volume", {"volume": vol}
+            speech = f"Volume set to {vol}%."
+        elif self._SATELLITE_VOL_UP.search(text):
+            action, args = "volume_up", {}
+            speech = "Volume up."
+        elif self._SATELLITE_VOL_DOWN.search(text):
+            action, args = "volume_down", {}
+            speech = "Volume down."
+        else:
+            return None
+
+        device_id = (
+            self._current_user_input.device_id
+            if self._current_user_input else None
+        )
+
+        _LOGGER.info(
+            "Satellite volume short-circuit: '%s' → %s %s (device_id=%s)",
+            user_text, action, args, device_id,
+        )
+
+        try:
+            result = await device_tool.control_device(
+                {"device": "speaker", "action": action, **args},
+                self.hass,
+                self.voice_scripts,
+                device_id=device_id,
+                room_player_mapping=self.room_player_mapping,
+            )
+            _LOGGER.info("Satellite volume short-circuit result: %s", result)
+        except Exception as err:
+            _LOGGER.error("Satellite volume short-circuit failed: %s", err)
+            speech = "Sorry, I couldn't adjust the volume."
+
+        response = intent.IntentResponse(language=user_input.language)
+        response.async_set_speech(speech)
+        return conversation.ConversationResult(
+            response=response,
+            conversation_id=conversation_id,
+            continue_conversation=False,
+        )
+
     def _save_conversation_turn(
         self,
         conversation_id: str,
@@ -946,6 +1026,16 @@ class PureLLMConversationEntity(ConversationEntity):
                 conversation_id=conversation_id,
                 continue_conversation=False,
             )
+
+        # --- Short-circuit "your volume" commands ---
+        # Local LLMs often misinterpret "your volume" as referring to another
+        # device (e.g. PS5) instead of the satellite speaker.  Bypass the LLM
+        # entirely and call control_device directly with device="speaker".
+        satellite_vol_result = await self._try_satellite_volume_shortcircuit(
+            user_text, user_input, conversation_id
+        )
+        if satellite_vol_result is not None:
+            return satellite_vol_result
 
         self._current_user_text = user_text  # For tool handlers that need original utterance
 
