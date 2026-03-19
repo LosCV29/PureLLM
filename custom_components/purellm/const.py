@@ -245,6 +245,50 @@ CONF_SOFABATON_ACTIVITIES: Final = "sofabaton_activities"
 DEFAULT_SOFABATON_ACTIVITIES: Final = "[]"
 
 # =============================================================================
+# ELEVENLABS TTS SETTINGS
+# =============================================================================
+CONF_ELEVENLABS_API_KEY: Final = "elevenlabs_api_key"
+CONF_ELEVENLABS_VOICE_ID: Final = "elevenlabs_voice_id"
+CONF_ELEVENLABS_MODEL: Final = "elevenlabs_model"
+CONF_ELEVENLABS_STABILITY: Final = "elevenlabs_stability"
+CONF_ELEVENLABS_SIMILARITY: Final = "elevenlabs_similarity"
+CONF_ELEVENLABS_STYLE: Final = "elevenlabs_style"
+CONF_ELEVENLABS_SPEAKER_BOOST: Final = "elevenlabs_speaker_boost"
+CONF_ELEVENLABS_SPEED: Final = "elevenlabs_speed"
+CONF_ELEVENLABS_OUTPUT_FORMAT: Final = "elevenlabs_output_format"
+
+DEFAULT_ELEVENLABS_API_KEY: Final = ""
+DEFAULT_ELEVENLABS_VOICE_ID: Final = ""
+DEFAULT_ELEVENLABS_MODEL: Final = "eleven_turbo_v2_5"
+DEFAULT_ELEVENLABS_STABILITY: Final = 0.5
+DEFAULT_ELEVENLABS_SIMILARITY: Final = 0.75
+DEFAULT_ELEVENLABS_STYLE: Final = 0.0
+DEFAULT_ELEVENLABS_SPEAKER_BOOST: Final = True
+DEFAULT_ELEVENLABS_SPEED: Final = 1.0
+DEFAULT_ELEVENLABS_OUTPUT_FORMAT: Final = "mp3_44100_128"
+
+ELEVENLABS_MODELS: Final = [
+    "eleven_turbo_v2_5",
+    "eleven_multilingual_v2",
+    "eleven_turbo_v2",
+    "eleven_monolingual_v1",
+    "eleven_flash_v2_5",
+    "eleven_flash_v2",
+]
+
+ELEVENLABS_OUTPUT_FORMATS: Final = [
+    "mp3_44100_128",
+    "mp3_44100_64",
+    "mp3_44100_32",
+    "mp3_22050_32",
+    "pcm_16000",
+    "pcm_22050",
+    "pcm_24000",
+    "pcm_44100",
+    "ulaw_8000",
+]
+
+# =============================================================================
 # API TIMEOUT - Shared timeout for external API calls
 # =============================================================================
 API_TIMEOUT: Final = 15  # seconds

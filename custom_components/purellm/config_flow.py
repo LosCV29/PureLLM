@@ -115,6 +115,27 @@ from .const import (
     # SofaBaton Activities
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
+    # ElevenLabs TTS
+    CONF_ELEVENLABS_API_KEY,
+    CONF_ELEVENLABS_VOICE_ID,
+    CONF_ELEVENLABS_MODEL,
+    CONF_ELEVENLABS_STABILITY,
+    CONF_ELEVENLABS_SIMILARITY,
+    CONF_ELEVENLABS_STYLE,
+    CONF_ELEVENLABS_SPEAKER_BOOST,
+    CONF_ELEVENLABS_SPEED,
+    CONF_ELEVENLABS_OUTPUT_FORMAT,
+    DEFAULT_ELEVENLABS_API_KEY,
+    DEFAULT_ELEVENLABS_VOICE_ID,
+    DEFAULT_ELEVENLABS_MODEL,
+    DEFAULT_ELEVENLABS_STABILITY,
+    DEFAULT_ELEVENLABS_SIMILARITY,
+    DEFAULT_ELEVENLABS_STYLE,
+    DEFAULT_ELEVENLABS_SPEAKER_BOOST,
+    DEFAULT_ELEVENLABS_SPEED,
+    DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
+    ELEVENLABS_MODELS,
+    ELEVENLABS_OUTPUT_FORMATS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -385,6 +406,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "voice_scripts": "Voice Scripts",
                 "sofabaton": "SofaBaton Activities",
                 "music_rooms": "Music Room Mapping",
+                "elevenlabs": "ElevenLabs TTS",
                 "notifications": "Notification Settings",
                 "api_keys": "API Keys",
                 "location": "Location Settings",
@@ -1098,6 +1120,156 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                                 selector.SelectOptionDict(value="update", label="Update Selected"),
                                 selector.SelectOptionDict(value="delete", label="Delete Selected"),
                             ],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_elevenlabs(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Handle ElevenLabs TTS voice settings.
+
+        Exposes every ElevenLabs API parameter: API key, voice ID, model,
+        stability, similarity boost, style, speaker boost, speed, and output format.
+        """
+        errors = {}
+
+        if user_input is not None:
+            # Validate API key + voice ID if both provided
+            el_api_key = user_input.get(CONF_ELEVENLABS_API_KEY, "").strip()
+            el_voice_id = user_input.get(CONF_ELEVENLABS_VOICE_ID, "").strip()
+
+            if el_api_key and el_voice_id:
+                # Quick validation: test the API key by fetching voice info
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            f"https://api.elevenlabs.io/v1/voices/{el_voice_id}",
+                            headers={"xi-api-key": el_api_key},
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        ) as response:
+                            if response.status == 401:
+                                errors["base"] = "elevenlabs_invalid_api_key"
+                            elif response.status == 404:
+                                # Voice not found — could be wrong ID or not in user's library
+                                errors["base"] = "elevenlabs_voice_not_found"
+                            elif response.status != 200:
+                                _LOGGER.warning(
+                                    "ElevenLabs validation: HTTP %s", response.status
+                                )
+                except Exception as err:
+                    _LOGGER.warning("ElevenLabs validation failed: %s", err)
+                    # Allow saving even if validation fails (network issue)
+
+            if not errors:
+                # Clean up the input
+                user_input[CONF_ELEVENLABS_API_KEY] = el_api_key
+                user_input[CONF_ELEVENLABS_VOICE_ID] = el_voice_id
+                new_options = {**self._entry.options, **user_input}
+                return self.async_create_entry(title="", data=new_options)
+
+        current = {**self._entry.data, **self._entry.options}
+
+        # Build model selector options
+        model_options = [
+            selector.SelectOptionDict(value=m, label=m)
+            for m in ELEVENLABS_MODELS
+        ]
+
+        # Build output format selector options
+        format_options = [
+            selector.SelectOptionDict(value=f, label=f)
+            for f in ELEVENLABS_OUTPUT_FORMATS
+        ]
+
+        return self.async_show_form(
+            step_id="elevenlabs",
+            errors=errors,
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_ELEVENLABS_API_KEY,
+                        default=current.get(CONF_ELEVENLABS_API_KEY, DEFAULT_ELEVENLABS_API_KEY),
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.PASSWORD,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ELEVENLABS_VOICE_ID,
+                        default=current.get(CONF_ELEVENLABS_VOICE_ID, DEFAULT_ELEVENLABS_VOICE_ID),
+                    ): selector.TextSelector(
+                        selector.TextSelectorConfig(
+                            type=selector.TextSelectorType.TEXT,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ELEVENLABS_MODEL,
+                        default=current.get(CONF_ELEVENLABS_MODEL, DEFAULT_ELEVENLABS_MODEL),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=model_options,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                            custom_value=True,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ELEVENLABS_SPEED,
+                        default=current.get(CONF_ELEVENLABS_SPEED, DEFAULT_ELEVENLABS_SPEED),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.25,
+                            max=4.0,
+                            step=0.05,
+                            mode=selector.NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ELEVENLABS_STABILITY,
+                        default=current.get(CONF_ELEVENLABS_STABILITY, DEFAULT_ELEVENLABS_STABILITY),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0,
+                            max=1.0,
+                            step=0.05,
+                            mode=selector.NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ELEVENLABS_SIMILARITY,
+                        default=current.get(CONF_ELEVENLABS_SIMILARITY, DEFAULT_ELEVENLABS_SIMILARITY),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0,
+                            max=1.0,
+                            step=0.05,
+                            mode=selector.NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ELEVENLABS_STYLE,
+                        default=current.get(CONF_ELEVENLABS_STYLE, DEFAULT_ELEVENLABS_STYLE),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0,
+                            max=1.0,
+                            step=0.05,
+                            mode=selector.NumberSelectorMode.SLIDER,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ELEVENLABS_SPEAKER_BOOST,
+                        default=current.get(CONF_ELEVENLABS_SPEAKER_BOOST, DEFAULT_ELEVENLABS_SPEAKER_BOOST),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_ELEVENLABS_OUTPUT_FORMAT,
+                        default=current.get(CONF_ELEVENLABS_OUTPUT_FORMAT, DEFAULT_ELEVENLABS_OUTPUT_FORMAT),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=format_options,
                             mode=selector.SelectSelectorMode.DROPDOWN,
                         )
                     ),
