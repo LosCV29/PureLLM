@@ -184,7 +184,7 @@ class PureLLMElevenLabsTTS(TextToSpeechEntity):
         _LOGGER.debug(
             "ElevenLabs TTS: voice=%s model=%s speed=%.2f stability=%.2f similarity=%.2f style=%.2f boost=%s format=%s",
             voice_id, model_id,
-            voice_settings["speed"],
+            speed,
             voice_settings["stability"],
             voice_settings["similarity_boost"],
             voice_settings["style"],
