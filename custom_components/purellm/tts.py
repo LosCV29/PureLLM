@@ -44,11 +44,13 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-# Map output format prefixes to MIME content types
+# Map output format prefixes to ffmpeg-compatible format names.
+# HA's TTS system passes this value as the `-f` flag to ffmpeg,
+# so it must be a format name (e.g. "mp3"), NOT a MIME type.
 _FORMAT_TO_CONTENT_TYPE = {
-    "mp3": "audio/mpeg",
-    "pcm": "audio/pcm",
-    "ulaw": "audio/basic",
+    "mp3": "mp3",
+    "pcm": "s16le",
+    "ulaw": "mulaw",
 }
 
 
