@@ -29,7 +29,9 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "what's playing", "whats playing", "now playing",
         " album", " artist", " song ", " track ",
         "music", "transfer to the", "transfer to my",
-        "music volume", "turn up the music", "turn down the music",
+        "music volume", "the music volume",
+        "raise the music", "lower the music",
+        "turn up the music", "turn down the music",
     ],
     "weather": [
         "weather", " rain", "raining", "forecast",
@@ -110,6 +112,7 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "pause the", "resume the", "mute the", "unmute the",
         "volume up", "volume down",
         "set volume", "set the volume", "speaker volume", "voice volume",
+        "your volume", "raise your", "lower your",
     ],
     "device_status": [
         "is the ", "is my ", "status of",
