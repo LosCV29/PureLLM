@@ -500,6 +500,9 @@ class MusicController:
                 return await self._transfer(all_players, target_players, room)
             elif action == "shuffle":
                 return await self._shuffle(query, room, target_players)
+            elif action in ("volume_up", "volume_down", "set_volume"):
+                volume = arguments.get("volume")
+                return await self._volume(action, all_players, target_players, volume)
             else:
                 return {"error": f"Unknown action: {action}"}
 
@@ -1198,6 +1201,53 @@ class MusicController:
                 "room": self._get_room_name(playing)
             }
         return {"message": "No music currently playing"}
+
+    async def _volume(self, action: str, all_players: list[str], target_players: list[str] | None, volume: int | None) -> dict:
+        """Control music volume on active or specified player."""
+        _LOGGER.info("Volume control: action=%s, volume=%s", action, volume)
+
+        # If specific room was requested, use that player
+        players_to_check = target_players if target_players else all_players
+
+        # Find the active (playing/paused) player
+        active_player = None
+        for pid in players_to_check:
+            state = self._hass.states.get(pid)
+            if state and state.state in ("playing", "paused"):
+                active_player = pid
+                break
+
+        if not active_player:
+            # Fall back to first target player if specified, otherwise error
+            if target_players:
+                active_player = target_players[0]
+            else:
+                return {"error": "No music is currently playing. To control speaker voice volume, say 'set speaker volume to' followed by a number."}
+
+        if action == "set_volume" and volume is not None:
+            vol_level = max(0, min(100, volume)) / 100.0
+            await self._hass.services.async_call(
+                "media_player", "volume_set",
+                {"entity_id": active_player, "volume_level": vol_level},
+                blocking=True,
+            )
+            return {"status": "volume_set", "response_text": f"Volume set to {volume} percent in {self._get_room_name(active_player)}"}
+        elif action == "volume_up":
+            await self._hass.services.async_call(
+                "media_player", "volume_up",
+                {"entity_id": active_player},
+                blocking=True,
+            )
+            return {"status": "volume_up", "response_text": f"Volume up in {self._get_room_name(active_player)}"}
+        elif action == "volume_down":
+            await self._hass.services.async_call(
+                "media_player", "volume_down",
+                {"entity_id": active_player},
+                blocking=True,
+            )
+            return {"status": "volume_down", "response_text": f"Volume down in {self._get_room_name(active_player)}"}
+
+        return {"error": f"Unknown volume action: {action}"}
 
     async def _transfer(self, all_players: list[str], target_players: list[str], room: str) -> dict:
         """Transfer music to another room."""

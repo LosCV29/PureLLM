@@ -1644,7 +1644,9 @@ class PureLLMConversationEntity(ConversationEntity):
                     self._current_user_query, self.format_temp
                 ),
                 "control_device": lambda: device_tool.control_device(
-                    arguments, self.hass, self.voice_scripts
+                    arguments, self.hass, self.voice_scripts,
+                    device_id=self._current_user_input.device_id if self._current_user_input else None,
+                    room_player_mapping=self.room_player_mapping,
                 ),
                 "control_timer": lambda: timer_tool.control_timer(
                     arguments, self.hass,
