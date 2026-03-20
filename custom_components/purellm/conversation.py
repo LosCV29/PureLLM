@@ -279,6 +279,9 @@ class PureLLMConversationEntity(ConversationEntity):
         # Current user_input for tool execution
         self._current_user_input: conversation.ConversationInput | None = None
 
+        # Current satellite room — resolved per-request from device_id → HA area
+        self._current_satellite_room: str | None = None
+
         # Conversation history storage: {conversation_id: {"messages": [...], "last_access": timestamp}}
         self._conversation_history: dict[str, dict[str, Any]] = {}
 
@@ -536,6 +539,54 @@ class PureLLMConversationEntity(ConversationEntity):
         """Track API usage."""
         if api_name in self._api_calls:
             self._api_calls[api_name] += 1
+
+    def _resolve_satellite_room(self, device_id: str | None) -> str | None:
+        """Resolve the satellite device_id to a Home Assistant area name.
+
+        Uses the HA device registry to look up the area assigned to the
+        satellite device.  Falls back to fuzzy-matching the device name
+        against the room_player_mapping keys.
+
+        Returns the area/room name (str) or None.
+        """
+        if not device_id:
+            return None
+
+        try:
+            from homeassistant.helpers import device_registry as dr
+            from homeassistant.helpers import area_registry as ar
+
+            dev_reg = dr.async_get(self.hass)
+            device = dev_reg.async_get(device_id)
+            if not device:
+                return None
+
+            # Primary: device has an area_id assigned in HA
+            if device.area_id:
+                area_reg = ar.async_get(self.hass)
+                area = area_reg.async_get_area(device.area_id)
+                if area:
+                    _LOGGER.debug(
+                        "Satellite room resolved via area registry: device_id=%s → area='%s'",
+                        device_id, area.name,
+                    )
+                    return area.name
+
+            # Fallback: match device name against room_player_mapping keys
+            if self.room_player_mapping and device.name:
+                device_name_lower = device.name.lower()
+                for room in self.room_player_mapping:
+                    if room.lower() in device_name_lower or device_name_lower in room.lower():
+                        _LOGGER.debug(
+                            "Satellite room resolved via name matching: device_id=%s, name='%s' → room='%s'",
+                            device_id, device.name, room,
+                        )
+                        return room
+
+        except Exception as err:
+            _LOGGER.debug("Could not resolve satellite room for device_id=%s: %s", device_id, err)
+
+        return None
 
     def _get_effective_system_prompt(self) -> str:
         """Get system prompt with current date."""
@@ -1028,6 +1079,9 @@ class PureLLMConversationEntity(ConversationEntity):
 
         self._current_user_text = user_text  # For tool handlers that need original utterance
 
+        # Resolve which room/area the satellite is in — used for "here"/"this room" context
+        self._current_satellite_room = self._resolve_satellite_room(user_input.device_id)
+
         all_tools = self._build_tools()
         intents = classify_intent(user_text)
         tools = filter_tools_by_intent(all_tools, intents)
@@ -1039,6 +1093,18 @@ class PureLLMConversationEntity(ConversationEntity):
         lang_code = (user_input.language or "en").split("-")[0].lower()
         lang_name = _LANG_CODE_TO_NAME.get(lang_code, "English")
         system_prompt = f"Respond in {lang_name} only.\n\n{system_prompt}"
+
+        # Inject satellite room context so the LLM knows where "here" is.
+        # This enables commands like "turn on the lights in here" or
+        # "play music in this room" without the user naming the room.
+        if self._current_satellite_room:
+            system_prompt += (
+                f"\n\nROOM CONTEXT: The user is speaking from the {self._current_satellite_room}. "
+                f"When they say \"here\", \"in here\", \"this room\", or \"in this room\", "
+                f"they mean the {self._current_satellite_room}. "
+                f"Use area=\"{self._current_satellite_room}\" for device control and "
+                f"room=\"{self._current_satellite_room}\" for music in this room."
+            )
 
         # Append extra_system_prompt if provided (from start_conversation)
         if extra_system_prompt:
@@ -1671,6 +1737,59 @@ class PureLLMConversationEntity(ConversationEntity):
     # Tool Execution
     # =========================================================================
 
+    # ------------------------------------------------------------------
+    # Room-context-aware tool helpers
+    # ------------------------------------------------------------------
+    _HERE_PHRASES = frozenset({
+        "here", "this room", "in here", "in this room", "current room",
+    })
+
+    async def _execute_control_device(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Execute control_device with satellite room context.
+
+        If the LLM passes an area value that means "here" (e.g. "here",
+        "this room") and we know which room the satellite is in, replace
+        it with the actual area name so HA's area registry can resolve it.
+        """
+        area = (arguments.get("area") or "").strip().lower()
+        if area in self._HERE_PHRASES and self._current_satellite_room:
+            _LOGGER.info(
+                "Room context: replacing area='%s' with satellite room '%s'",
+                area, self._current_satellite_room,
+            )
+            arguments["area"] = self._current_satellite_room
+
+        return await device_tool.control_device(
+            arguments, self.hass, self.voice_scripts,
+            device_id=self._current_user_input.device_id if self._current_user_input else None,
+            room_player_mapping=self.room_player_mapping,
+        )
+
+    async def _execute_control_music(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Execute control_music with satellite room context.
+
+        For play/shuffle actions that require a room, if the LLM passes a
+        "here"-style room value or omits the room entirely, fill in the
+        satellite's room so playback starts on the correct speaker.
+        """
+        if not self._music_controller:
+            return {"error": "Music control not configured"}
+
+        room = (arguments.get("room") or "").strip().lower()
+        action = (arguments.get("action") or "").strip().lower()
+        needs_room = action in ("play", "shuffle")
+
+        if needs_room and self._current_satellite_room:
+            if room in self._HERE_PHRASES or not room:
+                _LOGGER.info(
+                    "Room context: setting music room='%s' (was '%s') for action='%s'",
+                    self._current_satellite_room, room or "<empty>", action,
+                )
+                arguments["room"] = self._current_satellite_room
+
+        arguments["_user_text"] = getattr(self, "_current_user_text", "")
+        return await self._music_controller.control_music(arguments)
+
     async def _execute_tool(
         self,
         tool_name: str,
@@ -1722,11 +1841,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     arguments, self.hass,
                     self._current_user_query, self.format_temp
                 ),
-                "control_device": lambda: device_tool.control_device(
-                    arguments, self.hass, self.voice_scripts,
-                    device_id=self._current_user_input.device_id if self._current_user_input else None,
-                    room_player_mapping=self.room_player_mapping,
-                ),
+                "control_device": lambda: self._execute_control_device(arguments),
                 "control_timer": lambda: timer_tool.control_timer(
                     arguments, self.hass,
                     device_id=self._current_user_input.device_id if self._current_user_input else None,
@@ -1777,12 +1892,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 )
 
             if tool_name == "control_music":
-                if not self._music_controller:
-                    return {"error": "Music control not configured"}
-                # Pass original user text so control_music can detect album intent
-                # even when the LLM strips "album" from the query parameter
-                arguments["_user_text"] = getattr(self, "_current_user_text", "")
-                return await self._music_controller.control_music(arguments)
+                return await self._execute_control_music(arguments)
 
             # Fall back to script execution
             if self.hass.services.has_service("script", tool_name):
