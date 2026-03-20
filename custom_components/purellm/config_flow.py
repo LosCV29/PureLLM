@@ -52,7 +52,6 @@ from .const import (
     CONF_ENABLE_CAMERAS,
     CONF_ENABLE_SPORTS,
     CONF_ENABLE_PLACES,
-    CONF_ENABLE_RESTAURANTS,
     CONF_ENABLE_THERMOSTAT,
     CONF_ENABLE_DEVICE_STATUS,
     CONF_ENABLE_WIKIPEDIA,
@@ -80,7 +79,6 @@ from .const import (
     DEFAULT_ENABLE_CAMERAS,
     DEFAULT_ENABLE_SPORTS,
     DEFAULT_ENABLE_PLACES,
-    DEFAULT_ENABLE_RESTAURANTS,
     DEFAULT_ENABLE_THERMOSTAT,
     DEFAULT_ENABLE_DEVICE_STATUS,
     DEFAULT_ENABLE_WIKIPEDIA,
@@ -101,11 +99,9 @@ from .const import (
     # Notifications
     CONF_NOTIFICATION_ENTITIES,
     CONF_NOTIFY_ON_PLACES,
-    CONF_NOTIFY_ON_RESTAURANTS,
     CONF_NOTIFY_ON_SEARCH,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
-    DEFAULT_NOTIFY_ON_RESTAURANTS,
     DEFAULT_NOTIFY_ON_SEARCH,
     # Voice Scripts
     CONF_VOICE_SCRIPTS,
@@ -565,10 +561,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_ENABLE_PLACES,
                         default=current.get(CONF_ENABLE_PLACES, DEFAULT_ENABLE_PLACES),
-                    ): cv.boolean,
-                    vol.Optional(
-                        CONF_ENABLE_RESTAURANTS,
-                        default=current.get(CONF_ENABLE_RESTAURANTS, DEFAULT_ENABLE_RESTAURANTS),
                     ): cv.boolean,
                     vol.Optional(
                         CONF_ENABLE_THERMOSTAT,
@@ -1404,8 +1396,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     processed_input[CONF_NOTIFICATION_ENTITIES] = entity_list
             if CONF_NOTIFY_ON_PLACES in user_input:
                 processed_input[CONF_NOTIFY_ON_PLACES] = user_input[CONF_NOTIFY_ON_PLACES]
-            if CONF_NOTIFY_ON_RESTAURANTS in user_input:
-                processed_input[CONF_NOTIFY_ON_RESTAURANTS] = user_input[CONF_NOTIFY_ON_RESTAURANTS]
             if CONF_NOTIFY_ON_SEARCH in user_input:
                 processed_input[CONF_NOTIFY_ON_SEARCH] = user_input[CONF_NOTIFY_ON_SEARCH]
 
@@ -1455,10 +1445,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_NOTIFY_ON_PLACES,
                         default=current.get(CONF_NOTIFY_ON_PLACES, DEFAULT_NOTIFY_ON_PLACES),
-                    ): cv.boolean,
-                    vol.Optional(
-                        CONF_NOTIFY_ON_RESTAURANTS,
-                        default=current.get(CONF_NOTIFY_ON_RESTAURANTS, DEFAULT_NOTIFY_ON_RESTAURANTS),
                     ): cv.boolean,
                     vol.Optional(
                         CONF_NOTIFY_ON_SEARCH,

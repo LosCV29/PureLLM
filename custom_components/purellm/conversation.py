@@ -6,7 +6,6 @@ through the LLM pipeline with tool calling and STREAMING TTS support.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import re
@@ -134,7 +133,6 @@ from .const import (
     CONF_ENABLE_DEVICE_STATUS,
     CONF_ENABLE_MUSIC,
     CONF_ENABLE_PLACES,
-    CONF_ENABLE_RESTAURANTS,
     CONF_ENABLE_SPORTS,
     CONF_ENABLE_THERMOSTAT,
     CONF_ENABLE_WEATHER,
@@ -157,7 +155,6 @@ from .const import (
     CONF_TOP_P,
     CONF_NOTIFICATION_ENTITIES,
     CONF_NOTIFY_ON_PLACES,
-    CONF_NOTIFY_ON_RESTAURANTS,
     CONF_NOTIFY_ON_CAMERA,
     CONF_NOTIFY_ON_SEARCH,
     CONF_VOICE_SCRIPTS,
@@ -171,7 +168,6 @@ from .const import (
     DEFAULT_API_KEY,
     DEFAULT_NOTIFICATION_ENTITIES,
     DEFAULT_NOTIFY_ON_PLACES,
-    DEFAULT_NOTIFY_ON_RESTAURANTS,
     DEFAULT_NOTIFY_ON_CAMERA,
     DEFAULT_NOTIFY_ON_SEARCH,
     DEFAULT_ENABLE_CALENDAR,
@@ -179,7 +175,6 @@ from .const import (
     DEFAULT_ENABLE_DEVICE_STATUS,
     DEFAULT_ENABLE_MUSIC,
     DEFAULT_ENABLE_PLACES,
-    DEFAULT_ENABLE_RESTAURANTS,
     DEFAULT_ENABLE_SPORTS,
     DEFAULT_ENABLE_THERMOSTAT,
     DEFAULT_ENABLE_WEATHER,
@@ -353,7 +348,6 @@ class PureLLMConversationEntity(ConversationEntity):
         self.enable_cameras = config.get(CONF_ENABLE_CAMERAS, DEFAULT_ENABLE_CAMERAS)
         self.enable_sports = config.get(CONF_ENABLE_SPORTS, DEFAULT_ENABLE_SPORTS)
         self.enable_places = config.get(CONF_ENABLE_PLACES, DEFAULT_ENABLE_PLACES)
-        self.enable_restaurants = config.get(CONF_ENABLE_RESTAURANTS, DEFAULT_ENABLE_RESTAURANTS)
         self.enable_thermostat = config.get(CONF_ENABLE_THERMOSTAT, DEFAULT_ENABLE_THERMOSTAT)
         self.enable_device_status = config.get(CONF_ENABLE_DEVICE_STATUS, DEFAULT_ENABLE_DEVICE_STATUS)
         self.enable_wikipedia = config.get(CONF_ENABLE_WIKIPEDIA, DEFAULT_ENABLE_WIKIPEDIA)
@@ -387,7 +381,6 @@ class PureLLMConversationEntity(ConversationEntity):
         else:
             self.notification_entities = []
         self.notify_on_places = config.get(CONF_NOTIFY_ON_PLACES, DEFAULT_NOTIFY_ON_PLACES)
-        self.notify_on_restaurants = config.get(CONF_NOTIFY_ON_RESTAURANTS, DEFAULT_NOTIFY_ON_RESTAURANTS)
         self.notify_on_camera = config.get(CONF_NOTIFY_ON_CAMERA, DEFAULT_NOTIFY_ON_CAMERA)
         self.notify_on_search = config.get(CONF_NOTIFY_ON_SEARCH, DEFAULT_NOTIFY_ON_SEARCH)
 

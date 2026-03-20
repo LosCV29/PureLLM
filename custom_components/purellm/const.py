@@ -81,7 +81,6 @@ CONF_ENABLE_CALENDAR: Final = "enable_calendar"
 CONF_ENABLE_CAMERAS: Final = "enable_cameras"
 CONF_ENABLE_SPORTS: Final = "enable_sports"
 CONF_ENABLE_PLACES: Final = "enable_places"
-CONF_ENABLE_RESTAURANTS: Final = "enable_restaurants"
 CONF_ENABLE_THERMOSTAT: Final = "enable_thermostat"
 CONF_ENABLE_DEVICE_STATUS: Final = "enable_device_status"
 CONF_ENABLE_WIKIPEDIA: Final = "enable_wikipedia"
@@ -93,7 +92,6 @@ DEFAULT_ENABLE_CALENDAR: Final = True
 DEFAULT_ENABLE_CAMERAS: Final = False  # Requires Frigate
 DEFAULT_ENABLE_SPORTS: Final = True
 DEFAULT_ENABLE_PLACES: Final = True
-DEFAULT_ENABLE_RESTAURANTS: Final = True
 DEFAULT_ENABLE_THERMOSTAT: Final = True
 DEFAULT_ENABLE_DEVICE_STATUS: Final = True
 DEFAULT_ENABLE_WIKIPEDIA: Final = True
@@ -216,13 +214,11 @@ DEFAULT_TAVILY_API_KEY: Final = ""
 # =============================================================================
 CONF_NOTIFICATION_ENTITIES: Final = "notification_entities"
 CONF_NOTIFY_ON_PLACES: Final = "notify_on_places"
-CONF_NOTIFY_ON_RESTAURANTS: Final = "notify_on_restaurants"
 CONF_NOTIFY_ON_CAMERA: Final = "notify_on_camera"
 CONF_NOTIFY_ON_SEARCH: Final = "notify_on_search"
 
 DEFAULT_NOTIFICATION_ENTITIES: Final = ""  # Newline-separated list of notify service names
 DEFAULT_NOTIFY_ON_PLACES: Final = True
-DEFAULT_NOTIFY_ON_RESTAURANTS: Final = True
 DEFAULT_NOTIFY_ON_CAMERA: Final = True
 DEFAULT_NOTIFY_ON_SEARCH: Final = True
 
