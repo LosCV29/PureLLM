@@ -44,9 +44,11 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
 
     # Get exposed entity names for tool descriptions
     _exposed_names: list[str] = []
+    _status_names: list[str] = []  # Includes sensors/binary_sensors for status checks
     if hass:
         from ..utils.fuzzy_matching import get_exposed_entity_names
         _exposed_names = get_exposed_entity_names(hass)
+        _status_names = get_exposed_entity_names(hass, include_sensors=True)
 
     # ===== CORE TOOLS (always enabled) =====
     tools.append(_tool("get_current_datetime", "Get current date/time."))
@@ -152,8 +154,8 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     # ===== DEVICE STATUS =====
     if config.enable_device_status:
         status_desc = "Check device status."
-        if hass and _exposed_names:
-            status_desc += f" Known devices: {', '.join(_exposed_names[:50])}."
+        if hass and _status_names:
+            status_desc += f" Known devices: {', '.join(_status_names[:80])}."
         tools.append(_tool(
             "check_device_status", status_desc,
             {"device": {"type": "string"}},
