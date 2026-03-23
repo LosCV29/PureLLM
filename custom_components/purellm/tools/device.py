@@ -427,7 +427,7 @@ async def control_device(
             "volume_up": "volume_up", "volume_down": "volume_down",
             "set_volume": "volume_set", "mute": "volume_mute", "unmute": "volume_mute"
         },
-        "vacuum": {"turn_on": "start", "start": "start", "turn_off": "return_to_base", "stop": "stop", "dock": "return_to_base", "locate": "locate"},
+        "vacuum": {"turn_on": "start", "start": "start", "turn_off": "return_to_base", "stop": "pause", "pause": "pause", "resume": "start", "dock": "return_to_base", "locate": "locate"},
         "scene": {"turn_on": "turn_on"},
         "script": {"turn_on": "turn_on", "turn_off": "turn_off", "open": "turn_on", "close": "turn_on", "run": "turn_on", "execute": "turn_on", "mute": "turn_on", "unmute": "turn_on", "toggle": "turn_on", "trigger": "turn_on"},
         "input_boolean": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"},
@@ -443,7 +443,7 @@ async def control_device(
         "lock": "locked", "unlock": "unlocked",
         "open_cover": "opened", "close_cover": "closed", "stop_cover": "stopped",
         "set_cover_position": "set position for",
-        "start": "started", "return_to_base": "sent home", "stop": "stopped",
+        "start": "started", "return_to_base": "sent home", "stop": "stopped", "pause": "paused",
         "locate": "located", "press": "pressed",
         "media_play": "resumed", "media_pause": "paused", "media_stop": "stopped",
         "media_next_track": "skipped to next", "media_previous_track": "went back to previous",
