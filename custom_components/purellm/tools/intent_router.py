@@ -120,6 +120,7 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "check the gate", "check the garage",
         "check the mailbox",
         "locked", "unlocked", "open or closed",
+        " status", "what's the ", "whats the ",
     ],
     "search": [
         "search for", "search the web", "look up",
@@ -147,7 +148,7 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
     "places": ["find_nearby_places"],
     "knowledge": ["calculate_age", "get_wikipedia_summary"],
     "datetime": ["get_current_datetime"],
-    "device": ["control_device"],
+    "device": ["control_device", "check_device_status"],
     "device_status": ["check_device_status"],
     "search": ["web_search"],
     "sofabaton": ["control_sofabaton", "control_device"],
