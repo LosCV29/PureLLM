@@ -216,25 +216,40 @@ def _is_exposed(hass: "HomeAssistant", entity_id: str) -> bool:
         return True
 
 
-def get_exposed_entity_names(hass: "HomeAssistant") -> list[str]:
+def get_exposed_entity_names(
+    hass: "HomeAssistant",
+    include_sensors: bool = False,
+) -> list[str]:
     """Get friendly names and aliases of all entities exposed to the conversation assistant.
 
     Returns a list of display names suitable for injection into tool descriptions,
     so the LLM knows what devices are available.
+
+    Args:
+        hass: Home Assistant instance
+        include_sensors: If True, include sensor and binary_sensor domains
+            (useful for check_device_status which can query any entity).
     """
     ent_reg = er.async_get(hass)
     names: list[str] = []
+
+    # Domains to always skip (non-queryable infrastructure)
+    _SKIP_ALWAYS = frozenset((
+        "weather", "person", "zone", "sun", "device_tracker", "update",
+        "button", "calendar", "tts", "stt", "conversation",
+        "number", "input_number", "input_text", "select", "input_select",
+    ))
+    # Domains to skip only when listing controllable devices
+    _SKIP_CONTROL_ONLY = frozenset(("sensor", "binary_sensor"))
+
+    skip_domains = _SKIP_ALWAYS if include_sensors else _SKIP_ALWAYS | _SKIP_CONTROL_ONLY
 
     for entity_entry in ent_reg.entities.values():
         if not _is_exposed(hass, entity_entry.entity_id):
             continue
 
-        # Skip non-controllable domains
         domain = entity_entry.entity_id.split(".")[0] if "." in entity_entry.entity_id else ""
-        if domain in ("sensor", "binary_sensor", "weather", "person", "zone", "sun",
-                       "device_tracker", "update", "button", "calendar", "tts", "stt",
-                       "conversation", "number", "input_number", "input_text", "select",
-                       "input_select"):
+        if domain in skip_domains:
             continue
 
         # Get the best display name
