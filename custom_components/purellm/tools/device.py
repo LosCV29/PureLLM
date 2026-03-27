@@ -13,6 +13,7 @@ from ..utils.helpers import format_human_readable_state, get_friendly_name
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -584,12 +585,19 @@ async def control_device(
                 else:
                     return {"error": f"Could not find a device matching '{device_name}'."}
         else:
-            found_entity_id, friendly_name = find_entity_by_name(hass, device_name)
-
-            if found_entity_id:
-                entities_to_control.append((found_entity_id, friendly_name))
+            # Launch always means a voice script — if none matched above,
+            # the device name the LLM sent doesn't match any configured
+            # voice script trigger.  Return a clear error; no fallback to
+            # fuzzy-matching media_players which can't handle launch.
+            if action == "trigger":
+                return {"error": f"No launch script found matching '{device_name}'."}
             else:
-                return {"error": f"Could not find a device matching '{device_name}'."}
+                found_entity_id, friendly_name = find_entity_by_name(hass, device_name)
+
+                if found_entity_id:
+                    entities_to_control.append((found_entity_id, friendly_name))
+                else:
+                    return {"error": f"Could not find a device matching '{device_name}'."}
 
     else:
         return {"error": "No device specified. Provide entity_id, entity_ids, area, or device name."}
