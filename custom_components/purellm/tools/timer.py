@@ -86,27 +86,40 @@ def get_player_for_device(
     if device_id:
         try:
             from homeassistant.helpers import device_registry as dr
+            from homeassistant.helpers import entity_registry as ent_reg
             dev_reg = dr.async_get(hass)
             device = dev_reg.async_get(device_id)
 
             if device:
-                # Check if this device has a linked media player
-                # ESPHome satellites often have the same name as a media player
-                device_name = (device.name or "").lower()
+                # Primary: find a media_player entity registered to the same device.
+                # This is the most reliable approach for ESPHome satellites which
+                # register both assist_satellite and media_player on the same device.
+                er = ent_reg.async_get(hass)
+                for entry in ent_reg.async_entries_for_device(er, device_id):
+                    if entry.domain == "media_player" and not entry.disabled:
+                        _LOGGER.debug(
+                            "Player resolved via entity registry: device_id=%s -> %s",
+                            device_id, entry.entity_id,
+                        )
+                        return entry.entity_id
 
-                # Search for matching media player in room mapping
+                # Fallback: match device name against room_player_mapping keys
+                device_name = (device.name or "").lower()
                 if room_player_mapping:
                     for room, player in room_player_mapping.items():
                         if device_name in room.lower() or room.lower() in device_name:
                             return player
 
-                # Search all media players for a match
+                # Fallback: search all media players for a fuzzy name match.
+                # Normalize underscores/spaces so "respeaker kitchen" matches
+                # "respeaker_kitchen_media_player".
+                device_name_norm = device_name.replace("_", " ")
                 all_states = hass.states.async_all()
                 for state in all_states:
                     if state.entity_id.startswith("media_player."):
                         friendly = state.attributes.get("friendly_name", "").lower()
-                        entity_name = state.entity_id.replace("media_player.", "").lower()
-                        if device_name in friendly or device_name in entity_name:
+                        entity_name = state.entity_id.replace("media_player.", "").replace("_", " ").lower()
+                        if device_name_norm in friendly or device_name_norm in entity_name:
                             return state.entity_id
         except Exception as err:
             _LOGGER.debug("Could not resolve device_id %s: %s", device_id, err)
