@@ -14,113 +14,6 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 
-def _find_launch_entity(
-    hass: "HomeAssistant",
-    app_name: str,
-    device_id: str | None = None,
-) -> tuple[str, str] | None:
-    """Find a script/automation that launches the given app, or a media_player that has it as a source.
-
-    Search order:
-    1. Scripts/automations whose entity_id or friendly name contains the app name
-       (prefer those with 'launch' in the name, and those in the satellite's area).
-    2. Media players in the satellite's area that list the app as a source.
-
-    Returns ``(entity_id, friendly_name)`` or ``None``.
-    """
-    from homeassistant.helpers import entity_registry as er
-    from homeassistant.helpers import device_registry as dr
-    from homeassistant.helpers import area_registry as ar
-
-    app_lower = app_name.lower().strip()
-    app_normalized = app_lower.replace(" ", "_").replace("-", "_")
-
-    # Resolve satellite area for room-aware ranking
-    satellite_area_id: str | None = None
-    if device_id:
-        try:
-            dev_reg = dr.async_get(hass)
-            device = dev_reg.async_get(device_id)
-            if device and device.area_id:
-                satellite_area_id = device.area_id
-        except Exception:
-            pass
-
-    ent_reg = er.async_get(hass)
-
-    # --- 1. Search for launch scripts/automations ---
-    script_candidates: list[tuple[int, str, str]] = []
-    for state in hass.states.async_all():
-        eid = state.entity_id
-        if not eid.startswith(("script.", "automation.")):
-            continue
-
-        friendly = (state.attributes.get("friendly_name") or "").lower()
-        eid_lower = eid.lower()
-
-        if not (app_normalized in eid_lower or app_lower in friendly or app_lower in eid_lower):
-            continue
-
-        score = 10
-        # Prefer entities with "launch" in the name
-        if "launch" in eid_lower or "launch" in friendly:
-            score -= 5
-        # Prefer entities in the same area as the satellite
-        if satellite_area_id:
-            entry = ent_reg.async_get(eid)
-            if entry:
-                entry_area = entry.area_id
-                if not entry_area and entry.device_id:
-                    dev = dr.async_get(hass).async_get(entry.device_id)
-                    entry_area = dev.area_id if dev else None
-                if entry_area == satellite_area_id:
-                    score -= 3
-
-        script_candidates.append((score, eid, state.attributes.get("friendly_name") or app_name.title()))
-
-    if script_candidates:
-        script_candidates.sort(key=lambda x: x[0])
-        best = script_candidates[0]
-        _LOGGER.info("Launch script found: '%s' -> %s (score=%d)", app_name, best[1], best[0])
-        return (best[1], best[2])
-
-    # --- 2. Find a media_player in the satellite's area with the app as a source ---
-    if satellite_area_id:
-        dev_reg = dr.async_get(hass)
-        area_device_ids = {
-            d.id for d in dev_reg.devices.values() if d.area_id == satellite_area_id
-        }
-
-        mp_candidates: list[tuple[int, str, str]] = []
-        for state in hass.states.async_all():
-            eid = state.entity_id
-            if not eid.startswith("media_player."):
-                continue
-            sources = state.attributes.get("source_list") or []
-            source_match = any(app_lower in s.lower() for s in sources)
-            if not source_match:
-                continue
-
-            # Check if this media_player is in the satellite's area
-            entry = ent_reg.async_get(eid)
-            in_area = False
-            if entry:
-                if entry.area_id == satellite_area_id:
-                    in_area = True
-                elif entry.device_id and entry.device_id in area_device_ids:
-                    in_area = True
-
-            if in_area:
-                mp_candidates.append((0, eid, state.attributes.get("friendly_name") or eid))
-
-        if mp_candidates:
-            mp_candidates.sort(key=lambda x: x[0])
-            best = mp_candidates[0]
-            _LOGGER.info("Launch media_player found: '%s' -> %s (has app as source)", app_name, best[1])
-            return (best[1], best[2])
-
-    return None
-
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -692,23 +585,12 @@ async def control_device(
                 else:
                     return {"error": f"Could not find a device matching '{device_name}'."}
         else:
-            # For launch/trigger actions, search for matching scripts or
-            # area-aware media players BEFORE generic fuzzy matching.  This
-            # handles "Launch YouTube" where "YouTube" is an app name, not a
-            # device name — the generic matcher would either find nothing or
-            # resolve to the wrong media_player (e.g. a TV instead of a
-            # streaming stick).
+            # Launch always means a voice script — if none matched above,
+            # the device name the LLM sent doesn't match any configured
+            # voice script trigger.  Return a clear error; no fallback to
+            # fuzzy-matching media_players which can't handle launch.
             if action == "trigger":
-                launch_result = _find_launch_entity(hass, device_name, device_id)
-                if launch_result:
-                    entities_to_control.append(launch_result)
-                else:
-                    # Fall back to generic fuzzy matching
-                    found_entity_id, friendly_name = find_entity_by_name(hass, device_name)
-                    if found_entity_id:
-                        entities_to_control.append((found_entity_id, friendly_name))
-                    else:
-                        return {"error": f"Could not find a device or launch script matching '{device_name}'."}
+                return {"error": f"No launch script found matching '{device_name}'."}
             else:
                 found_entity_id, friendly_name = find_entity_by_name(hass, device_name)
 
@@ -749,21 +631,6 @@ async def control_device(
         domain = entity_id.split(".")[0]
         domain_services = service_map.get(domain, {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"})
         service = domain_services.get(action)
-
-        # Launch (trigger) on a media_player → select_source with the app name.
-        # _find_launch_entity may return a media_player that lists the app as a
-        # source; use select_source so the app actually launches.
-        if not service and action == "trigger" and domain == "media_player" and device_name:
-            service = "select_source"
-            # Find the best matching source name from the player's source_list
-            mp_state = hass.states.get(entity_id)
-            source_list = (mp_state.attributes.get("source_list") or []) if mp_state else []
-            app_lower = device_name.lower().strip()
-            matched_source = next((s for s in source_list if app_lower in s.lower()), device_name)
-            service_data = {"entity_id": entity_id, "source": matched_source}
-            service_calls.append((domain, service, service_data, friendly_name))
-            last_service = service
-            continue
 
         # Fallback: map common synonyms to turn_on/turn_off when domain doesn't define them
         if not service:
