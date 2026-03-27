@@ -700,6 +700,12 @@ class PureLLMConversationEntity(ConversationEntity):
                 room_player_mapping=self.room_player_mapping,
             )
             _LOGGER.info("Satellite volume short-circuit result: %s", result)
+            if "error" in result:
+                _LOGGER.warning(
+                    "Satellite volume short-circuit device error: %s",
+                    result["error"],
+                )
+                speech = "Sorry, I couldn't adjust the volume."
         except Exception as err:
             _LOGGER.error("Satellite volume short-circuit failed: %s", err)
             speech = "Sorry, I couldn't adjust the volume."
