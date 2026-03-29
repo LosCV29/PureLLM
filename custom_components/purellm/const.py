@@ -171,9 +171,10 @@ MUSIC ROOMS: Extract room separately from query — never include room in query/
 SHUFFLE: For shuffle requests, use action="shuffle" with query= the genre/playlist/vibe. No media_type needed. Examples:
   "shuffle afrobeats 2025 in the living room" → action="shuffle", query="afrobeats 2025", room="living room"
   "shuffle 90s hip hop in the bedroom" → action="shuffle", query="90s hip hop", room="bedroom"
-MUSIC PLAY: ALWAYS set media_type: "album" for albums, "track" for songs, "artist" for artist radio. Examples:
+MUSIC PLAY: ALWAYS set media_type: "album" for albums, "track" for songs, "artist" for artist radio. "in the [room]" is ALWAYS the target room — NEVER part of query/artist/album. Examples:
   "play album Debí Tirar Más Fotos by Bad Bunny in the living room" → action="play", album="Debí Tirar Más Fotos", artist="Bad Bunny", media_type="album", room="living room"
   "play Bohemian Rhapsody in the kitchen" → action="play", query="Bohemian Rhapsody", media_type="track", room="kitchen"
+  "play Picture Me Rolling by Tupac in the kitchen" → action="play", query="Picture Me Rolling", artist="Tupac", media_type="track", room="kitchen"
 ORDINAL/TAGGED ALBUMS: For "first/second/latest [genre] album by [artist]", set media_type="album", album=genre/tag ONLY, query=full modifier phrase, artist=artist name. Examples:
   "play Kelly Clarkson's first christmas album" → action="play", media_type="album", album="christmas", query="first christmas album", artist="Kelly Clarkson"
   "play Taylor Swift's second album" → action="play", media_type="album", query="second album", artist="Taylor Swift"

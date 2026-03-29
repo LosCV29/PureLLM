@@ -396,7 +396,8 @@ class MusicController:
             match = re.search(room_strip_pattern, query, flags=re.IGNORECASE)
             _LOGGER.debug("MUSIC: Regex match on query='%s': %s", query, match)
             if match:
-                potential_room = match.group(1).lower().strip()
+                # Strip trailing punctuation (STT often adds periods: "in the Kitchen.")
+                potential_room = match.group(1).lower().strip().rstrip(".,!?;:")
                 _LOGGER.debug("MUSIC: Potential room extracted: '%s'", potential_room)
                 configured_rooms = {r.lower() for r in self._players.keys()}
                 all_known_rooms = COMMON_ROOM_NAMES | configured_rooms
@@ -409,6 +410,17 @@ class MusicController:
                     if not room:
                         room = potential_room
                     _LOGGER.debug("MUSIC: Stripped room - query='%s' → '%s', room='%s'", original_query, query, room)
+
+        # DEFENSIVE: Strip "by {artist}" from query when artist is already a separate param.
+        # LLM often includes the full phrase "Picture Me Rolling by Tupac" in query AND
+        # also sets artist="Tupac", causing search to be "Picture Me Rolling by Tupac Tupac".
+        if query and artist:
+            by_artist_pattern = rf'\s+by\s+{re.escape(artist)}\s*$'
+            by_match = re.search(by_artist_pattern, query, flags=re.IGNORECASE)
+            if by_match:
+                original_query = query
+                query = query[:by_match.start()].strip()
+                _LOGGER.debug("MUSIC: Stripped 'by %s' from query='%s' → '%s'", artist, original_query, query)
 
         _LOGGER.debug("MUSIC: Final - action='%s', query='%s', room='%s'", action, query, room)
 
