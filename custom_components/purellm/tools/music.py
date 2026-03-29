@@ -919,6 +919,26 @@ class MusicController:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
+            # Resolve artist canonical name via MA search.
+            # Handles voice aliases: "Tupac" → "2Pac", "Jay Z" → "JAY-Z",
+            # "Snoop Dog" → "Snoop Dogg", etc.
+            resolved_artist = artist
+            if artist:
+                try:
+                    artist_search = await self._hass.services.async_call(
+                        "music_assistant", "search",
+                        {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["artist"], "limit": 5},
+                        blocking=True, return_response=True
+                    )
+                    artist_results = _parse_ma_results(artist_search, "artist")
+                    if artist_results:
+                        canonical = (artist_results[0].get("name") or "").strip()
+                        if canonical:
+                            _LOGGER.info("MUSIC: Resolved artist '%s' → '%s'", artist, canonical)
+                            resolved_artist = canonical
+                except Exception as err:
+                    _LOGGER.debug("MUSIC: Artist resolution failed for '%s': %s", artist, err)
+
             # Standard search
             # For albums with artist, search by album name alone first (not concatenated)
             # to avoid confusing Music Assistant's search with combined strings.
@@ -926,7 +946,7 @@ class MusicController:
             if media_type == "album" and artist:
                 search_query = query
             else:
-                search_query = f"{query} {artist}" if artist else query
+                search_query = f"{query} {resolved_artist}" if resolved_artist else query
 
             # NO cascading - search ONLY the requested type
             search_types_to_try = [media_type]
@@ -1002,7 +1022,10 @@ class MusicController:
                                        album, len(results))
 
                 query_lower = _normalize_numerals(_strip_accents(query.lower()))
-                artist_lower = _strip_accents(artist.lower()) if artist else ""
+                # Use resolved artist name for scoring so "Tupac" matches "2Pac" results
+                artist_lower = _strip_accents(resolved_artist.lower()) if resolved_artist else ""
+                # Also keep original artist for fallback matching
+                original_artist_lower = _strip_accents(artist.lower()) if artist else ""
 
                 # Score results to find best match
                 def _fuzzy_word_match(query_word: str, target: str) -> bool:
@@ -1046,13 +1069,15 @@ class MusicController:
                             elif matches > 0:
                                 score += 20 * matches  # Partial word matches
 
-                    # Artist match (if artist was specified)
+                    # Artist match — check both resolved name ("2Pac") and original ("Tupac")
                     if artist_lower:
-                        if artist_lower == item_artist:
+                        if artist_lower == item_artist or original_artist_lower == item_artist:
                             score += 100
-                        elif artist_lower in item_artist or item_artist in artist_lower:
+                        elif (artist_lower in item_artist or item_artist in artist_lower or
+                              original_artist_lower in item_artist or item_artist in original_artist_lower):
                             score += 50
-                        elif _fuzzy_word_match(artist_lower, item_artist):
+                        elif (_fuzzy_word_match(artist_lower, item_artist) or
+                              _fuzzy_word_match(original_artist_lower, item_artist)):
                             # Fuzzy artist match (e.g. "tupac" matches "tupac shakur")
                             score += 40
                         elif item_artist:
