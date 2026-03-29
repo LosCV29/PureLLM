@@ -422,6 +422,16 @@ class MusicController:
                 query = query[:by_match.start()].strip()
                 _LOGGER.debug("MUSIC: Stripped 'by %s' from query='%s' → '%s'", artist, original_query, query)
 
+        # DEFENSIVE: Strip leading media_type keywords from query.
+        # STT often produces "track Picture Me Rolling" or "song Bohemian Rhapsody"
+        # and the LLM may include the keyword in the query param.
+        if query:
+            query = re.sub(r'^(track|song|album|artist)\s+', '', query, flags=re.IGNORECASE).strip()
+
+        # DEFENSIVE: Strip trailing punctuation from query (STT adds periods)
+        if query:
+            query = query.rstrip(".,!?;:")
+
         _LOGGER.debug("MUSIC: Final - action='%s', query='%s', room='%s'", action, query, room)
 
         # DEFENSIVE: If user said "album" in their original request, ensure album param
@@ -941,6 +951,18 @@ class MusicController:
 
                 results = _parse_ma_results(search_result, try_type)
 
+                # Fallback for tracks: try query-only search (without artist in search string)
+                # Handles cases where combined "Picture Me Rolling Tupac" doesn't match
+                # "Picture Me Rollin'" by 2Pac in MA's search index.
+                if not results and try_type == "track" and artist:
+                    _LOGGER.info("Track combined search empty, trying query-only '%s'", query)
+                    query_only_search = await self._hass.services.async_call(
+                        "music_assistant", "search",
+                        {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["track"], "limit": 10},
+                        blocking=True, return_response=True
+                    )
+                    results = _parse_ma_results(query_only_search, "track")
+
                 # Fallback for albums: try combined query, then artist-only search
                 # (handles accented names like "DeBÍ TiRAR MáS fOtOs")
                 if not results and try_type == "album" and artist:
@@ -983,6 +1005,26 @@ class MusicController:
                 artist_lower = _strip_accents(artist.lower()) if artist else ""
 
                 # Score results to find best match
+                def _fuzzy_word_match(query_word: str, target: str) -> bool:
+                    """Check if a query word matches any word in target, with fuzzy stem matching.
+
+                    Handles STT variations like 'rolling' → 'rollin', 'runnin' → 'running'.
+                    Two words match if one is a prefix of the other with at least 4 shared chars.
+                    """
+                    if query_word in target:
+                        return True
+                    # Check each word in target for prefix/stem match
+                    for t_word in re.split(r"[\s'']+", target):
+                        if not t_word:
+                            continue
+                        min_len = min(len(query_word), len(t_word))
+                        if min_len < 4:
+                            continue
+                        # One word is a prefix of the other (handles rollin↔rolling)
+                        if t_word.startswith(query_word) or query_word.startswith(t_word):
+                            return True
+                    return False
+
                 def score_result(item):
                     score = 0
                     item_name = _normalize_numerals(_strip_accents((item.get("name") or item.get("title") or "").lower()))
@@ -994,11 +1036,11 @@ class MusicController:
                     elif query_lower in item_name:
                         score += 50
                     else:
-                        # Word-based matching: check if key words from query appear in item name
-                        # This handles cases like "wicked soundtrack" matching "Wicked: The Soundtrack"
+                        # Word-based matching with fuzzy stems: handles STT variations
+                        # like "rolling" matching "rollin'" or "runnin" matching "running"
                         query_words = [w for w in query_lower.split() if len(w) > 2]  # Skip short words
                         if query_words:
-                            matches = sum(1 for w in query_words if w in item_name)
+                            matches = sum(1 for w in query_words if _fuzzy_word_match(w, item_name))
                             if matches == len(query_words):
                                 score += 40  # All key words match
                             elif matches > 0:
@@ -1010,6 +1052,9 @@ class MusicController:
                             score += 100
                         elif artist_lower in item_artist or item_artist in artist_lower:
                             score += 50
+                        elif _fuzzy_word_match(artist_lower, item_artist):
+                            # Fuzzy artist match (e.g. "tupac" matches "tupac shakur")
+                            score += 40
                         elif item_artist:
                             # Artist was specified but doesn't match - penalize heavily
                             # to prevent e.g. Bublé's "Christmas" beating Clarkson's album
