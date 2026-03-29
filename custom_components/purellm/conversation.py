@@ -1109,7 +1109,10 @@ class PureLLMConversationEntity(ConversationEntity):
                 f"When they say \"here\", \"in here\", \"this room\", or \"in this room\", "
                 f"they mean the {self._current_satellite_room}. "
                 f"Use area=\"{self._current_satellite_room}\" for device control and "
-                f"room=\"{self._current_satellite_room}\" for music in this room."
+                f"room=\"{self._current_satellite_room}\" for music in this room. "
+                f"IMPORTANT: \"in the {self._current_satellite_room}\" at the end of a music "
+                f"command is the target room — extract it into the room parameter, "
+                f"NEVER include it in query/artist/album."
             )
 
         # Append extra_system_prompt if provided (from start_conversation)
