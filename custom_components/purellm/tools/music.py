@@ -1084,6 +1084,15 @@ class MusicController:
                 elif item_artist:
                     score -= 200
 
+            # Prefer explicit over clean — tiebreaker when same song has both versions.
+            metadata = item.get("metadata") or {}
+            is_explicit = item.get("explicit") or metadata.get("explicit")
+            is_clean = "clean" in item_name or "(clean)" in item_name
+            if is_explicit:
+                score += 2
+            elif is_clean:
+                score -= 2
+
             if score > best_score:
                 best_score = score
                 best = item
