@@ -313,6 +313,38 @@ async def _musicbrainz_themed_albums(
     return results
 
 
+def _artist_names_match(a: str, b: str) -> bool:
+    """Fuzzy artist name comparison for voice/STT variations.
+
+    Handles: OT Genesis↔O.T. Genasis, Jay Z↔JAY-Z, Tupac↔2Pac Shakur.
+    Strips punctuation/dots, then checks word overlap (>50% of words match).
+    """
+    if not a or not b:
+        return False
+    # Normalize: strip accents, punctuation, dots → just letters/numbers/spaces
+    norm_a = re.sub(r"[^a-z0-9\s]", "", _strip_accents(a.lower()))
+    norm_b = re.sub(r"[^a-z0-9\s]", "", _strip_accents(b.lower()))
+    # Direct containment after normalization
+    if norm_a in norm_b or norm_b in norm_a:
+        return True
+    # Word overlap: "ot genesis" vs "ot genasis" → {"ot","genesis"} vs {"ot","genasis"}
+    words_a = set(norm_a.split())
+    words_b = set(norm_b.split())
+    if not words_a or not words_b:
+        return False
+    overlap = words_a & words_b
+    if overlap:
+        return True
+    # Prefix matching on individual words: "genesis" ↔ "genasis" (5-char prefix "genes"/"genas" — no)
+    # Better: check if any word pair shares a 4+ char prefix
+    for wa in words_a:
+        for wb in words_b:
+            min_len = min(len(wa), len(wb))
+            if min_len >= 4 and (wa.startswith(wb[:4]) or wb.startswith(wa[:4])):
+                return True
+    return False
+
+
 async def _musicbrainz_resolve(
     session: Any,
     query: str,
@@ -321,67 +353,56 @@ async def _musicbrainz_resolve(
 ) -> tuple[str | None, str | None]:
     """Resolve a track or album name via MusicBrainz fuzzy search.
 
-    MusicBrainz handles spelling variations (Rollin'↔Rolling, O.T. Genasis↔OT Genesis)
-    and returns the canonical name. Uses unquoted artist for fuzzy matching.
+    Handles spelling variations (Rollin'↔Rolling, O.T. Genasis↔OT Genesis).
+    Tries field-specific query first, then general fuzzy query as fallback.
 
     Returns (canonical_title, canonical_artist) or (None, None).
     """
     if not query:
         return None, None
 
-    # Choose endpoint + field name based on media type
     if media_type == "track":
-        endpoint = "recording"
-        field = "recording"
-        results_key = "recordings"
+        endpoint, field, results_key = "recording", "recording", "recordings"
     else:
-        endpoint = "release-group"
-        field = "releasegroup"
-        results_key = "release-groups"
+        endpoint, field, results_key = "release-group", "releasegroup", "release-groups"
 
-    # Build Lucene query — NO quotes on artist for fuzzy matching.
-    # "OT Genesis" (exact) won't match "O.T. Genasis", but OT Genesis (fuzzy) will.
+    # Try two queries: field-specific first, then general fuzzy
+    queries = []
     if artist:
-        mb_query = f'{field}:"{query}" AND artist:({artist})'
+        queries.append(f'{field}:"{query}" AND artist:({artist})')
+        queries.append(f"{query} {artist}")  # general fuzzy fallback
     else:
-        mb_query = f'{field}:"{query}"'
+        queries.append(f'{field}:"{query}"')
     if media_type == "album":
-        mb_query += " AND primarytype:album"
+        queries = [q + " AND primarytype:album" if "AND" in q else q for q in queries]
 
-    url = f"{_MB_BASE}/{endpoint}?query={quote(mb_query)}&fmt=json&limit=5"
-    _LOGGER.info("MUSICBRAINZ: Searching %s: %s", media_type, mb_query)
+    for mb_query in queries:
+        url = f"{_MB_BASE}/{endpoint}?query={quote(mb_query)}&fmt=json&limit=5"
+        _LOGGER.info("MUSICBRAINZ: Searching %s: %s", media_type, mb_query)
 
-    data, status = await fetch_json(
-        session, url,
-        headers={"User-Agent": _MB_USER_AGENT, "Accept": "application/json"},
-        cache_ttl=CACHE_TTL_LONG,
-    )
-    if not data or status != 200:
-        return None, None
-
-    results = data.get(results_key, [])
-    if not results:
-        return None, None
-
-    # Find first result with matching artist (or take top result if no artist filter)
-    artist_lower = _strip_accents(artist.lower()) if artist else ""
-    for item in results:
-        title = item.get("title", "").strip()
-        if not title:
+        data, status = await fetch_json(
+            session, url,
+            headers={"User-Agent": _MB_USER_AGENT, "Accept": "application/json"},
+            cache_ttl=CACHE_TTL_LONG,
+        )
+        if not data or status != 200:
             continue
-        # Extract artist name from MusicBrainz artist-credit
-        item_artist = ""
-        for ac in item.get("artist-credit", []):
-            a = ac.get("artist", {}) if isinstance(ac, dict) else {}
-            item_artist = (a.get("name") or "").strip()
-            break
-        if artist_lower:
-            ia_lower = _strip_accents(item_artist.lower())
-            if not (artist_lower in ia_lower or ia_lower in artist_lower):
+
+        for item in data.get(results_key, []):
+            title = item.get("title", "").strip()
+            if not title:
                 continue
-        _LOGGER.info("MUSICBRAINZ: Resolved %s '%s' → '%s' (artist: '%s')",
-                     media_type, query, title, item_artist)
-        return title, item_artist
+            item_artist = ""
+            for ac in item.get("artist-credit", []):
+                a = ac.get("artist", {}) if isinstance(ac, dict) else {}
+                item_artist = (a.get("name") or "").strip()
+                break
+            # Use fuzzy artist matching — "OT Genesis" must match "O.T. Genasis"
+            if artist and not _artist_names_match(artist, item_artist):
+                continue
+            _LOGGER.info("MUSICBRAINZ: Resolved %s '%s' → '%s' (artist: '%s')",
+                         media_type, query, title, item_artist)
+            return title, item_artist
 
     return None, None
 
@@ -1054,14 +1075,12 @@ class MusicController:
                     elif matches > 0:
                         score += 20 * matches
 
-            # Artist scoring
+            # Artist scoring — use centralized fuzzy match
             if artist_lower:
                 if artist_lower == item_artist:
                     score += 100
-                elif artist_lower in item_artist or item_artist in artist_lower:
+                elif _artist_names_match(artist_lower, item_artist):
                     score += 50
-                elif any(_prefix_match(w, t) for w in artist_lower.split() for t in item_artist.split() if len(w) > 2 and len(t) > 2):
-                    score += 40
                 elif item_artist:
                     score -= 200
 
