@@ -729,7 +729,7 @@ class PureLLMConversationEntity(ConversationEntity):
         r"play\s+(?:(?:the\s+)?(?:track|song)\s+)?"
         r"(?P<query>.+?)"
         r"(?:\s+by\s+(?P<artist>.+?))?"
-        r"(?:\s+in\s+(?:the\s+)?(?P<room>.+?))?"
+        r"(?:\s+in\s+the\s+(?P<room>.+?))?"
         r"[.\s]*$",
         re.IGNORECASE,
     )
