@@ -718,26 +718,21 @@ class PureLLMConversationEntity(ConversationEntity):
             continue_conversation=False,
         )
 
-    # Regex patterns for music play short-circuit.
-    # Matches common voice patterns and extracts query, artist, room.
-    # Group names: query, artist (optional), room (optional)
-    _MUSIC_PLAY_PATTERNS = [
-        # "play [query] by [artist] in the [room]"
-        re.compile(
-            r"^\s*play\s+(?:(?:the\s+)?(?:track|song)\s+)?(?P<query>.+?)\s+by\s+(?P<artist>.+?)\s+in\s+(?:the\s+)?(?P<room>.+?)[.\s]*$",
-            re.IGNORECASE,
-        ),
-        # "play [query] by [artist]" (no room)
-        re.compile(
-            r"^\s*play\s+(?:(?:the\s+)?(?:track|song)\s+)?(?P<query>.+?)\s+by\s+(?P<artist>[^.]+?)[.\s]*$",
-            re.IGNORECASE,
-        ),
-        # "play [query] in the [room]" (no artist)
-        re.compile(
-            r"^\s*play\s+(?:(?:the\s+)?(?:track|song)\s+)?(?P<query>.+?)\s+in\s+(?:the\s+)?(?P<room>.+?)[.\s]*$",
-            re.IGNORECASE,
-        ),
-    ]
+    # Regex to strip conversational prefixes added by STT before the "play" command.
+    # Handles: "Yes, play...", "Sure, play...", "OK play...", "Yeah play..."
+    _PLAY_PREFIX_STRIP = re.compile(
+        r"^(?:yes|yeah|yep|sure|ok|okay|please|hey|hey\s+\w+)[,.\s]+",
+        re.IGNORECASE,
+    )
+    # Core play pattern: "play [track/song]? [query] [by artist]? [in the room]?"
+    _MUSIC_PLAY_RE = re.compile(
+        r"play\s+(?:(?:the\s+)?(?:track|song)\s+)?"
+        r"(?P<query>.+?)"
+        r"(?:\s+by\s+(?P<artist>.+?))?"
+        r"(?:\s+in\s+(?:the\s+)?(?P<room>.+?))?"
+        r"[.\s]*$",
+        re.IGNORECASE,
+    )
 
     async def _try_music_play_shortcircuit(
         self,
@@ -748,49 +743,38 @@ class PureLLMConversationEntity(ConversationEntity):
         """Short-circuit 'play X by Y in Z' commands to the music tool.
 
         Local LLMs often fail to call control_music for play commands,
-        instead generating a text response like "I couldn't find that track."
-        This bypasses the LLM entirely and calls control_music directly.
-
-        Returns None if the text doesn't match a play pattern.
+        instead generating text like "I couldn't find that track."
+        This bypasses the LLM and calls control_music directly.
         """
-        text = user_text.strip()
+        text = self._PLAY_PREFIX_STRIP.sub("", user_text.strip())
 
-        query = artist = room = None
-        for pattern in self._MUSIC_PLAY_PATTERNS:
-            m = pattern.match(text)
-            if m:
-                query = m.group("query").strip()
-                artist = m.groupdict().get("artist", "").strip() or ""
-                room = m.groupdict().get("room", "").strip() or ""
-                break
+        m = self._MUSIC_PLAY_RE.match(text)
+        if not m:
+            return None
+
+        query = m.group("query").strip()
+        artist = (m.group("artist") or "").strip()
+        room = (m.group("room") or "").strip().rstrip(".,!?;:")
 
         if not query:
             return None
 
-        # Strip trailing punctuation from room (STT adds periods)
-        if room:
-            room = room.rstrip(".,!?;:")
-
-        # Determine media_type: if "album" appears in the query, it's an album request
+        # Detect album requests
         media_type = "track"
         album = ""
-        album_match = re.search(r'\balbum\b', query, re.IGNORECASE)
-        if album_match:
+        if re.search(r'\balbum\b', query, re.IGNORECASE):
             media_type = "album"
             query = re.sub(r'\balbum\b', '', query, flags=re.IGNORECASE).strip()
             album = query
 
-        # Use satellite room if no room specified or room is empty
+        # Use satellite room if no room specified
         satellite_room = self._resolve_satellite_room(user_input.device_id)
         if not room and satellite_room:
             room = satellite_room
 
         arguments = {
-            "action": "play",
-            "query": query,
-            "media_type": media_type,
-            "room": room,
-            "_user_text": text,
+            "action": "play", "query": query, "media_type": media_type,
+            "room": room, "_user_text": user_text.strip(),
         }
         if artist:
             arguments["artist"] = artist
@@ -798,8 +782,8 @@ class PureLLMConversationEntity(ConversationEntity):
             arguments["album"] = album
 
         _LOGGER.info(
-            "Music play short-circuit: '%s' → query='%s', artist='%s', room='%s', media_type='%s'",
-            user_text, query, artist, room, media_type,
+            "Music play short-circuit: '%s' → query='%s', artist='%s', room='%s'",
+            user_text, query, artist, room,
         )
 
         try:
@@ -807,11 +791,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 return None
             result = await self._music_controller.control_music(arguments)
             _LOGGER.info("Music play short-circuit result: %s", result)
-
-            if "error" in result:
-                speech = result["error"]
-            else:
-                speech = result.get("response_text", "Done.")
+            speech = result.get("response_text", "Done.") if "error" not in result else result["error"]
         except Exception as err:
             _LOGGER.error("Music play short-circuit failed: %s", err)
             speech = "Sorry, I couldn't play that."

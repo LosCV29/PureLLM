@@ -313,27 +313,43 @@ async def _musicbrainz_themed_albums(
     return results
 
 
-async def _musicbrainz_resolve_track(
+async def _musicbrainz_resolve(
     session: Any,
     query: str,
     artist: str,
-) -> str | None:
-    """Resolve a track name via MusicBrainz fuzzy search.
+    media_type: str,
+) -> tuple[str | None, str | None]:
+    """Resolve a track or album name via MusicBrainz fuzzy search.
 
-    MusicBrainz handles spelling variations like "Rollin'" vs "Rolling",
-    "Playas" vs "Players", etc. Returns the canonical track title or None.
+    MusicBrainz handles spelling variations (Rollin'↔Rolling, O.T. Genasis↔OT Genesis)
+    and returns the canonical name. Uses unquoted artist for fuzzy matching.
+
+    Returns (canonical_title, canonical_artist) or (None, None).
     """
     if not query:
-        return None
+        return None, None
 
-    # Build Lucene query: recording:"X" AND artist:"Y"
-    if artist:
-        mb_query = f'recording:"{query}" AND artist:"{artist}"'
+    # Choose endpoint + field name based on media type
+    if media_type == "track":
+        endpoint = "recording"
+        field = "recording"
+        results_key = "recordings"
     else:
-        mb_query = f'recording:"{query}"'
+        endpoint = "release-group"
+        field = "releasegroup"
+        results_key = "release-groups"
 
-    url = f"{_MB_BASE}/recording?query={quote(mb_query)}&fmt=json&limit=5"
-    _LOGGER.info("MUSICBRAINZ TRACK: Searching: %s", mb_query)
+    # Build Lucene query — NO quotes on artist for fuzzy matching.
+    # "OT Genesis" (exact) won't match "O.T. Genasis", but OT Genesis (fuzzy) will.
+    if artist:
+        mb_query = f'{field}:"{query}" AND artist:({artist})'
+    else:
+        mb_query = f'{field}:"{query}"'
+    if media_type == "album":
+        mb_query += " AND primarytype:album"
+
+    url = f"{_MB_BASE}/{endpoint}?query={quote(mb_query)}&fmt=json&limit=5"
+    _LOGGER.info("MUSICBRAINZ: Searching %s: %s", media_type, mb_query)
 
     data, status = await fetch_json(
         session, url,
@@ -341,96 +357,33 @@ async def _musicbrainz_resolve_track(
         cache_ttl=CACHE_TTL_LONG,
     )
     if not data or status != 200:
-        _LOGGER.warning("MUSICBRAINZ TRACK: Search failed (status=%s)", status)
-        return None
+        return None, None
 
-    recordings = data.get("recordings", [])
-    if not recordings:
-        _LOGGER.info("MUSICBRAINZ TRACK: No recordings found")
-        return None
+    results = data.get(results_key, [])
+    if not results:
+        return None, None
 
-    # If artist was specified, verify artist match on top result
-    if artist:
-        artist_lower = _strip_accents(artist.lower())
-        for rec in recordings:
-            title = rec.get("title", "").strip()
-            if not title:
+    # Find first result with matching artist (or take top result if no artist filter)
+    artist_lower = _strip_accents(artist.lower()) if artist else ""
+    for item in results:
+        title = item.get("title", "").strip()
+        if not title:
+            continue
+        # Extract artist name from MusicBrainz artist-credit
+        item_artist = ""
+        for ac in item.get("artist-credit", []):
+            a = ac.get("artist", {}) if isinstance(ac, dict) else {}
+            item_artist = (a.get("name") or "").strip()
+            break
+        if artist_lower:
+            ia_lower = _strip_accents(item_artist.lower())
+            if not (artist_lower in ia_lower or ia_lower in artist_lower):
                 continue
-            rec_artists = rec.get("artist-credit", [])
-            for ac in rec_artists:
-                a = ac.get("artist", {}) if isinstance(ac, dict) else {}
-                rec_artist = _strip_accents((a.get("name") or "").lower())
-                if rec_artist and (artist_lower in rec_artist or rec_artist in artist_lower):
-                    _LOGGER.info("MUSICBRAINZ TRACK: Resolved '%s' → '%s' (artist: %s)",
-                                 query, title, a.get("name"))
-                    return title
-        _LOGGER.info("MUSICBRAINZ TRACK: No artist match in results")
-        return None
+        _LOGGER.info("MUSICBRAINZ: Resolved %s '%s' → '%s' (artist: '%s')",
+                     media_type, query, title, item_artist)
+        return title, item_artist
 
-    # No artist filter — just return top result
-    title = recordings[0].get("title", "").strip()
-    if title:
-        _LOGGER.info("MUSICBRAINZ TRACK: Resolved '%s' → '%s'", query, title)
-        return title
-    return None
-
-
-async def _musicbrainz_resolve_album(
-    session: Any,
-    query: str,
-    artist: str,
-) -> str | None:
-    """Resolve an album name via MusicBrainz fuzzy search.
-
-    Returns the canonical album title or None.
-    """
-    if not query:
-        return None
-
-    if artist:
-        mb_query = f'releasegroup:"{query}" AND artist:"{artist}" AND primarytype:album'
-    else:
-        mb_query = f'releasegroup:"{query}" AND primarytype:album'
-
-    url = f"{_MB_BASE}/release-group?query={quote(mb_query)}&fmt=json&limit=5"
-    _LOGGER.info("MUSICBRAINZ ALBUM: Searching: %s", mb_query)
-
-    data, status = await fetch_json(
-        session, url,
-        headers={"User-Agent": _MB_USER_AGENT, "Accept": "application/json"},
-        cache_ttl=CACHE_TTL_LONG,
-    )
-    if not data or status != 200:
-        _LOGGER.warning("MUSICBRAINZ ALBUM: Search failed (status=%s)", status)
-        return None
-
-    release_groups = data.get("release-groups", [])
-    if not release_groups:
-        _LOGGER.info("MUSICBRAINZ ALBUM: No release-groups found")
-        return None
-
-    if artist:
-        artist_lower = _strip_accents(artist.lower())
-        for rg in release_groups:
-            title = rg.get("title", "").strip()
-            if not title:
-                continue
-            rg_artists = rg.get("artist-credit", [])
-            for ac in rg_artists:
-                a = ac.get("artist", {}) if isinstance(ac, dict) else {}
-                rg_artist = _strip_accents((a.get("name") or "").lower())
-                if rg_artist and (artist_lower in rg_artist or rg_artist in artist_lower):
-                    _LOGGER.info("MUSICBRAINZ ALBUM: Resolved '%s' → '%s' (artist: %s)",
-                                 query, title, a.get("name"))
-                    return title
-        _LOGGER.info("MUSICBRAINZ ALBUM: No artist match in results")
-        return None
-
-    title = release_groups[0].get("title", "").strip()
-    if title:
-        _LOGGER.info("MUSICBRAINZ ALBUM: Resolved '%s' → '%s'", query, title)
-        return title
-    return None
+    return None, None
 
 
 def _parse_ordinal_theme(text: str) -> tuple[int | None, str | None]:
@@ -997,13 +950,142 @@ class MusicController:
             return None
         return artist_albums[0]
 
-    async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "") -> dict:
-        """Play music via Music Assistant with search-first for accuracy.
+    async def _resolve_artist_name(self, ma_config_entry_id: str, artist: str) -> str:
+        """Resolve voice artist name to MA canonical name (e.g. Tupac → 2Pac)."""
+        if not artist:
+            return artist
+        try:
+            result = await self._hass.services.async_call(
+                "music_assistant", "search",
+                {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["artist"], "limit": 5},
+                blocking=True, return_response=True
+            )
+            for r in _parse_ma_results(result, "artist"):
+                canonical = (r.get("name") or "").strip()
+                if canonical:
+                    _LOGGER.info("MUSIC: Resolved artist '%s' → '%s'", artist, canonical)
+                    return canonical
+        except Exception as err:
+            _LOGGER.debug("MUSIC: Artist resolution failed for '%s': %s", artist, err)
+        return artist
 
-        Searches Music Assistant first to find the exact track/album/artist,
-        then plays the found result and returns the actual name.
+    async def _search_ma(
+        self, config_entry_id: str, query: str, artist: str,
+        media_type: str, album: str = "",
+    ) -> dict | None:
+        """Search Music Assistant and return best match or None.
+
+        Tries multiple search strategies:
+        1. Combined "query artist" (or query-only for albums)
+        2. Query-only fallback for tracks
+        3. Artist-only fallback for albums
         """
-        # Sync query ↔ album so both code paths work regardless of how LLM maps params
+        # Build search queries to try in order
+        queries_to_try = []
+        if media_type == "album" and artist:
+            queries_to_try.append(query)
+            queries_to_try.append(f"{query} {artist}")
+        elif artist:
+            queries_to_try.append(f"{query} {artist}")
+            queries_to_try.append(query)  # fallback without artist
+        else:
+            queries_to_try.append(query)
+        if media_type == "album" and artist:
+            queries_to_try.append(artist)  # album: try artist-only as last resort
+
+        artist_lower = _strip_accents(artist.lower()) if artist else ""
+        query_lower = _normalize_numerals(_strip_accents(query.lower()))
+
+        for search_query in queries_to_try:
+            _LOGGER.info("MUSIC: Searching MA for %s: '%s'", media_type, search_query)
+            search_result = await self._hass.services.async_call(
+                "music_assistant", "search",
+                {"config_entry_id": config_entry_id, "name": search_query, "media_type": [media_type], "limit": 10},
+                blocking=True, return_response=True
+            )
+            results = _parse_ma_results(search_result, media_type)
+            if not results:
+                continue
+
+            # Filter by album name if specified
+            if album and media_type == "album":
+                album_filter = _normalize_numerals(_strip_accents(album.lower()))
+                filtered = [r for r in results
+                            if album_filter in _normalize_numerals(_strip_accents((r.get("name") or r.get("title") or "").lower()))]
+                if filtered:
+                    results = filtered
+
+            # Score and pick best match
+            best = self._pick_best_match(results, query_lower, artist_lower)
+            if best:
+                return best
+
+        return None
+
+    def _pick_best_match(
+        self, results: list[dict], query_lower: str, artist_lower: str,
+    ) -> dict | None:
+        """Score MA results and return best match with uri, name, artist. Returns None if no good match."""
+
+        def _prefix_match(word_a: str, word_b: str) -> bool:
+            """Two words match if one is a 4+ char prefix of the other."""
+            min_len = min(len(word_a), len(word_b))
+            return min_len >= 4 and (word_a.startswith(word_b) or word_b.startswith(word_a))
+
+        best_score = 0
+        best = None
+        for item in results:
+            score = 0
+            item_name = _normalize_numerals(_strip_accents((item.get("name") or item.get("title") or "").lower()))
+            item_artist = _strip_accents(_extract_artist(item, lowercase=True))
+
+            # Name scoring
+            if query_lower == item_name:
+                score += 100
+            elif query_lower in item_name:
+                score += 50
+            else:
+                query_words = [w for w in query_lower.split() if len(w) > 2]
+                if query_words:
+                    matches = sum(1 for w in query_words
+                                  if w in item_name or any(_prefix_match(w, t) for t in re.split(r"[\s'']+", item_name) if t))
+                    if matches == len(query_words):
+                        score += 40
+                    elif matches > 0:
+                        score += 20 * matches
+
+            # Artist scoring
+            if artist_lower:
+                if artist_lower == item_artist:
+                    score += 100
+                elif artist_lower in item_artist or item_artist in artist_lower:
+                    score += 50
+                elif any(_prefix_match(w, t) for w in artist_lower.split() for t in item_artist.split() if len(w) > 2 and len(t) > 2):
+                    score += 40
+                elif item_artist:
+                    score -= 200
+
+            if score > best_score:
+                best_score = score
+                best = item
+
+        if best and best_score > 0:
+            found_name = _normalize_unicode(best.get("name") or best.get("title"))
+            found_artist = _extract_artist(best)
+            found_uri = best.get("uri") or best.get("media_id")
+            _LOGGER.info("MUSIC: Best match: '%s' by '%s' (uri: %s, score: %d)",
+                         found_name, found_artist, found_uri, best_score)
+            return {"name": found_name, "artist": found_artist, "uri": found_uri}
+        return None
+
+    async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "") -> dict:
+        """Play music via Music Assistant.
+
+        Strategy:
+        1. Resolve artist name via MA (Tupac → 2Pac)
+        2. Search MA for the track/album
+        3. If MA fails, resolve canonical name via MusicBrainz, then retry MA
+        """
         if not query and album:
             query = album
         if not query:
@@ -1015,278 +1097,47 @@ class MusicController:
         valid_types = {"artist", "album", "track"}
         if media_type not in valid_types:
             media_type = "artist"
-
-        # If album parameter was explicitly provided, this is an album request
         if album and media_type != "album":
-            _LOGGER.info("Overriding media_type to 'album' since album parameter was specified")
             media_type = "album"
-
-        # Smart override: if artist is specified with a query but media_type is "artist",
-        # user likely wants a track: "Big Pimpin by Jay-Z" = track, not artist
-        # BUT if user explicitly said "album", respect that choice
         if artist and query and media_type == "artist":
             media_type = "track"
-            _LOGGER.info("Overriding media_type to 'track' since both query and artist specified")
-
-        # Sync query → album for album requests so album filter works in search
         if media_type == "album" and query and not album:
             album = query
 
         try:
-            # Get Music Assistant config entry
             ma_entries = self._hass.config_entries.async_entries("music_assistant")
             if not ma_entries:
                 return {"error": "Music Assistant integration not found"}
             ma_config_entry_id = ma_entries[0].entry_id
 
-            # Resolve artist canonical name via MA search.
-            # Handles voice aliases: "Tupac" → "2Pac", "Jay Z" → "JAY-Z",
-            # "Snoop Dog" → "Snoop Dogg", etc.
-            resolved_artist = artist
-            if artist:
-                try:
-                    artist_search = await self._hass.services.async_call(
-                        "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["artist"], "limit": 5},
-                        blocking=True, return_response=True
-                    )
-                    artist_results = _parse_ma_results(artist_search, "artist")
-                    if artist_results:
-                        canonical = (artist_results[0].get("name") or "").strip()
-                        if canonical:
-                            _LOGGER.info("MUSIC: Resolved artist '%s' → '%s'", artist, canonical)
-                            resolved_artist = canonical
-                except Exception as err:
-                    _LOGGER.debug("MUSIC: Artist resolution failed for '%s': %s", artist, err)
+            # Step 1: Resolve artist via MA (handles Tupac→2Pac, Jay Z→JAY-Z)
+            resolved_artist = await self._resolve_artist_name(ma_config_entry_id, artist)
 
-            # Standard search
-            # For albums with artist, search by album name alone first (not concatenated)
-            # to avoid confusing Music Assistant's search with combined strings.
-            # Artist matching is handled by the scoring function below.
-            if media_type == "album" and artist:
-                search_query = query
-            else:
-                search_query = f"{query} {resolved_artist}" if resolved_artist else query
+            # Step 2: Search MA directly
+            match = await self._search_ma(ma_config_entry_id, query, resolved_artist, media_type, album)
 
-            # NO cascading - search ONLY the requested type
-            search_types_to_try = [media_type]
-            _LOGGER.info("Searching for media_type='%s' only (no cascade)", media_type)
-
-            found_name = None
-            found_artist = None
-            found_uri = None
-            found_type = None
-
-            for try_type in search_types_to_try:
-                _LOGGER.info("Searching MA for %s: search_query='%s' (query='%s', artist='%s')", try_type, search_query, query, artist)
-
-                search_result = await self._hass.services.async_call(
-                    "music_assistant", "search",
-                    {"config_entry_id": ma_config_entry_id, "name": search_query, "media_type": [try_type], "limit": 10},
-                    blocking=True, return_response=True
-                )
-
-                if not search_result:
-                    continue
-
-                results = _parse_ma_results(search_result, try_type)
-
-                # Fallback for tracks: try query-only search (without artist in search string)
-                # Handles cases where combined "Picture Me Rolling Tupac" doesn't match
-                # "Picture Me Rollin'" by 2Pac in MA's search index.
-                if not results and try_type == "track" and artist:
-                    _LOGGER.info("Track combined search empty, trying query-only '%s'", query)
-                    query_only_search = await self._hass.services.async_call(
-                        "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["track"], "limit": 10},
-                        blocking=True, return_response=True
-                    )
-                    results = _parse_ma_results(query_only_search, "track")
-
-                # Fallback for albums: try combined query, then artist-only search
-                # (handles accented names like "DeBÍ TiRAR MáS fOtOs")
-                if not results and try_type == "album" and artist:
-                    _LOGGER.info("Album-name search empty, trying combined query '%s %s'", query, artist)
-                    combined_search = await self._hass.services.async_call(
-                        "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": f"{query} {artist}", "media_type": ["album"], "limit": 10},
-                        blocking=True, return_response=True
-                    )
-                    results = _parse_ma_results(combined_search, "album")
-
-                if not results and try_type == "album" and artist:
-                    _LOGGER.info("Combined search empty, trying artist-only search for '%s'", artist)
-                    artist_search = await self._hass.services.async_call(
-                        "music_assistant", "search",
-                        {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["album"], "limit": 20},
-                        blocking=True, return_response=True
-                    )
-                    results = _parse_ma_results(artist_search, "album")
-
-                if not results:
-                    continue
-
-                # Filter by album name if specified
-                if album and try_type == "album":
-                    album_filter = _normalize_numerals(_strip_accents(album.lower()))
-                    filtered_results = [
-                        r for r in results
-                        if album_filter in _normalize_numerals(_strip_accents((r.get("name") or r.get("title") or "").lower()))
-                    ]
-                    if filtered_results:
-                        _LOGGER.info("Filtered %d albums to %d matching '%s'",
-                                    len(results), len(filtered_results), album)
-                        results = filtered_results
-                    else:
-                        _LOGGER.warning("No albums matched filter '%s', using all %d results",
-                                       album, len(results))
-
-                query_lower = _normalize_numerals(_strip_accents(query.lower()))
-                # Use resolved artist name for scoring so "Tupac" matches "2Pac" results
-                artist_lower = _strip_accents(resolved_artist.lower()) if resolved_artist else ""
-                # Also keep original artist for fallback matching
-                original_artist_lower = _strip_accents(artist.lower()) if artist else ""
-
-                # Score results to find best match
-                def _fuzzy_word_match(query_word: str, target: str) -> bool:
-                    """Check if a query word matches any word in target, with fuzzy stem matching.
-
-                    Handles STT variations like 'rolling' → 'rollin', 'runnin' → 'running'.
-                    Two words match if one is a prefix of the other with at least 4 shared chars.
-                    """
-                    if query_word in target:
-                        return True
-                    # Check each word in target for prefix/stem match
-                    for t_word in re.split(r"[\s'']+", target):
-                        if not t_word:
-                            continue
-                        min_len = min(len(query_word), len(t_word))
-                        if min_len < 4:
-                            continue
-                        # One word is a prefix of the other (handles rollin↔rolling)
-                        if t_word.startswith(query_word) or query_word.startswith(t_word):
-                            return True
-                    return False
-
-                def score_result(item):
-                    score = 0
-                    item_name = _normalize_numerals(_strip_accents((item.get("name") or item.get("title") or "").lower()))
-                    item_artist = _strip_accents(_extract_artist(item, lowercase=True))
-
-                    # Exact query match in name
-                    if query_lower == item_name:
-                        score += 100
-                    elif query_lower in item_name:
-                        score += 50
-                    else:
-                        # Word-based matching with fuzzy stems: handles STT variations
-                        # like "rolling" matching "rollin'" or "runnin" matching "running"
-                        query_words = [w for w in query_lower.split() if len(w) > 2]  # Skip short words
-                        if query_words:
-                            matches = sum(1 for w in query_words if _fuzzy_word_match(w, item_name))
-                            if matches == len(query_words):
-                                score += 40  # All key words match
-                            elif matches > 0:
-                                score += 20 * matches  # Partial word matches
-
-                    # Artist match — check both resolved name ("2Pac") and original ("Tupac")
-                    if artist_lower:
-                        if artist_lower == item_artist or original_artist_lower == item_artist:
-                            score += 100
-                        elif (artist_lower in item_artist or item_artist in artist_lower or
-                              original_artist_lower in item_artist or item_artist in original_artist_lower):
-                            score += 50
-                        elif (_fuzzy_word_match(artist_lower, item_artist) or
-                              _fuzzy_word_match(original_artist_lower, item_artist)):
-                            # Fuzzy artist match (e.g. "tupac" matches "tupac shakur")
-                            score += 40
-                        elif item_artist:
-                            # Artist was specified but doesn't match - penalize heavily
-                            # to prevent e.g. Bublé's "Christmas" beating Clarkson's album
-                            score -= 200
-
-                    return score
-
-                # Sort by score descending
-                scored_results = [(score_result(r), r) for r in results]
-                scored_results.sort(key=lambda x: x[0], reverse=True)
-
-                # Only accept if we have a good match (score > 0 means query or artist matched)
-                if scored_results and scored_results[0][0] > 0:
-                    best_match = scored_results[0][1]
-                    found_name = _normalize_unicode(best_match.get("name") or best_match.get("title"))
-                    found_uri = best_match.get("uri") or best_match.get("media_id")
-                    found_type = try_type
-
-                    found_artist = _extract_artist(best_match) or found_artist
-
-                    _LOGGER.info("Found %s: '%s' by '%s' (uri: %s, score: %d)", try_type, found_name, found_artist, found_uri, scored_results[0][0])
-                    break  # Found a good match, stop searching
-
-            if not found_uri:
-                # ── MusicBrainz fallback: resolve canonical name, then retry MA ──
-                # Handles STT spelling variations: "Rolling" → "Rollin'",
-                # "Playas" → "Players", etc. MusicBrainz has fuzzy search built in.
+            # Step 3: MusicBrainz fallback — resolve canonical name, retry MA
+            if not match and media_type in ("track", "album"):
                 try:
                     session = async_get_clientsession(self._hass)
-                    mb_name = None
-                    if media_type == "track":
-                        mb_name = await _musicbrainz_resolve_track(session, query, resolved_artist)
-                    elif media_type == "album":
-                        mb_name = await _musicbrainz_resolve_album(session, query, resolved_artist)
-
-                    if mb_name and _strip_accents(mb_name.lower()) != _strip_accents(query.lower()):
-                        _LOGGER.info("MUSIC: MusicBrainz resolved '%s' → '%s', retrying MA search", query, mb_name)
-                        mb_search_query = f"{mb_name} {resolved_artist}" if resolved_artist else mb_name
-                        mb_search_result = await self._hass.services.async_call(
-                            "music_assistant", "search",
-                            {"config_entry_id": ma_config_entry_id, "name": mb_search_query, "media_type": [media_type], "limit": 10},
-                            blocking=True, return_response=True
-                        )
-                        mb_results = _parse_ma_results(mb_search_result, media_type)
-
-                        if not mb_results and resolved_artist:
-                            # Try with just the MusicBrainz name (no artist in search string)
-                            mb_search_result = await self._hass.services.async_call(
-                                "music_assistant", "search",
-                                {"config_entry_id": ma_config_entry_id, "name": mb_name, "media_type": [media_type], "limit": 10},
-                                blocking=True, return_response=True
-                            )
-                            mb_results = _parse_ma_results(mb_search_result, media_type)
-
-                        if mb_results:
-                            # Score using the MusicBrainz-resolved name
-                            mb_query_lower = _normalize_numerals(_strip_accents(mb_name.lower()))
-                            for r in mb_results:
-                                item_name = _normalize_numerals(_strip_accents((r.get("name") or r.get("title") or "").lower()))
-                                item_artist = _strip_accents(_extract_artist(r, lowercase=True))
-                                name_ok = mb_query_lower in item_name or item_name in mb_query_lower
-                                artist_ok = not resolved_artist or (
-                                    artist_lower in item_artist or item_artist in artist_lower or
-                                    original_artist_lower in item_artist or item_artist in original_artist_lower
-                                )
-                                if name_ok and artist_ok:
-                                    found_name = _normalize_unicode(r.get("name") or r.get("title"))
-                                    found_uri = r.get("uri") or r.get("media_id")
-                                    found_type = media_type
-                                    found_artist = _extract_artist(r) or found_artist
-                                    _LOGGER.info("MUSIC: MusicBrainz fallback found %s: '%s' by '%s' (uri: %s)",
-                                                 media_type, found_name, found_artist, found_uri)
-                                    break
+                    mb_title, mb_artist = await _musicbrainz_resolve(session, query, resolved_artist, media_type)
+                    # Use MB artist if MA couldn't resolve it (e.g. OT Genesis → O.T. Genasis)
+                    final_artist = mb_artist or resolved_artist
+                    if mb_title:
+                        _LOGGER.info("MUSIC: MusicBrainz resolved '%s' → '%s' (artist: '%s')", query, mb_title, final_artist)
+                        match = await self._search_ma(ma_config_entry_id, mb_title, final_artist, media_type, album)
                 except Exception as err:
                     _LOGGER.debug("MUSIC: MusicBrainz fallback failed: %s", err)
 
-            if not found_uri:
+            if not match:
                 return {"error": f"Could not find {media_type} matching '{query}'" + (f" by {artist}" if artist else "")}
 
-            # Build display name from actual found result
-            if found_artist and found_type in ("track", "album"):
-                display_name = f"{found_name} by {found_artist}"
-            else:
-                display_name = found_name
-
             # Play the found media
-            await self._play_on_players(target_players, found_uri, found_type, shuffle=shuffle)
+            found_name = match["name"]
+            found_artist = match.get("artist")
+            found_uri = match["uri"]
+            display_name = f"{found_name} by {found_artist}" if found_artist and media_type in ("track", "album") else found_name
+            await self._play_on_players(target_players, found_uri, media_type, shuffle=shuffle)
 
             return {"status": "playing", "response_text": f"Playing {display_name} in the {room}"}
 
