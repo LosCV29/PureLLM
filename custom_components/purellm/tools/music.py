@@ -1085,14 +1085,14 @@ class MusicController:
                     score -= 200
 
             # Prefer explicit over clean — tiebreaker when same song has both versions.
-            # Check metadata flags, track name, AND album name (Apple Music puts clean
-            # versions on separate albums like "Album Name (Clean)").
+            # Apple Music sets explicit on ALBUMS (not tracks), so check both.
+            # Path: item.metadata.explicit OR item.album.metadata.explicit
             metadata = item.get("metadata") or {}
-            is_explicit = item.get("explicit") or metadata.get("explicit")
-            item_album = (item.get("album") if isinstance(item.get("album"), str)
-                          else (item.get("album") or {}).get("name") or "").lower()
-            all_text = f"{item_name} {item_album}"
-            is_clean = bool(re.search(r'\bclean\b', all_text))
+            album_obj = item.get("album") if isinstance(item.get("album"), dict) else {}
+            album_meta = (album_obj.get("metadata") or {}) if album_obj else {}
+            album_name = ((album_obj or {}).get("name") or "").lower()
+            is_explicit = metadata.get("explicit") is True or album_meta.get("explicit") is True
+            is_clean = bool(re.search(r'\bclean\b', f"{item_name} {album_name}"))
             if is_explicit:
                 score += 2
             elif is_clean:
