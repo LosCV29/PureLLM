@@ -1085,9 +1085,14 @@ class MusicController:
                     score -= 200
 
             # Prefer explicit over clean — tiebreaker when same song has both versions.
+            # Check metadata flags, track name, AND album name (Apple Music puts clean
+            # versions on separate albums like "Album Name (Clean)").
             metadata = item.get("metadata") or {}
             is_explicit = item.get("explicit") or metadata.get("explicit")
-            is_clean = "clean" in item_name or "(clean)" in item_name
+            item_album = (item.get("album") if isinstance(item.get("album"), str)
+                          else (item.get("album") or {}).get("name") or "").lower()
+            all_text = f"{item_name} {item_album}"
+            is_clean = bool(re.search(r'\bclean\b', all_text))
             if is_explicit:
                 score += 2
             elif is_clean:
@@ -1159,6 +1164,15 @@ class MusicController:
 
             if not match:
                 return {"error": f"Could not find {media_type} matching '{query}'" + (f" by {artist}" if artist else "")}
+
+            # Step 4: If we got a clean version, try to find the explicit one
+            if re.search(r'\bclean\b', (match.get("name") or "").lower()):
+                _LOGGER.info("MUSIC: Found clean version '%s', searching for explicit", match["name"])
+                explicit_match = await self._search_ma(
+                    ma_config_entry_id, f"{query} explicit", resolved_artist, media_type, album
+                )
+                if explicit_match and not re.search(r'\bclean\b', (explicit_match.get("name") or "").lower()):
+                    match = explicit_match
 
             # Play the found media
             found_name = match["name"]
