@@ -718,6 +718,112 @@ class PureLLMConversationEntity(ConversationEntity):
             continue_conversation=False,
         )
 
+    # Regex patterns for music play short-circuit.
+    # Matches common voice patterns and extracts query, artist, room.
+    # Group names: query, artist (optional), room (optional)
+    _MUSIC_PLAY_PATTERNS = [
+        # "play [query] by [artist] in the [room]"
+        re.compile(
+            r"^\s*play\s+(?:(?:the\s+)?(?:track|song)\s+)?(?P<query>.+?)\s+by\s+(?P<artist>.+?)\s+in\s+(?:the\s+)?(?P<room>.+?)[.\s]*$",
+            re.IGNORECASE,
+        ),
+        # "play [query] by [artist]" (no room)
+        re.compile(
+            r"^\s*play\s+(?:(?:the\s+)?(?:track|song)\s+)?(?P<query>.+?)\s+by\s+(?P<artist>[^.]+?)[.\s]*$",
+            re.IGNORECASE,
+        ),
+        # "play [query] in the [room]" (no artist)
+        re.compile(
+            r"^\s*play\s+(?:(?:the\s+)?(?:track|song)\s+)?(?P<query>.+?)\s+in\s+(?:the\s+)?(?P<room>.+?)[.\s]*$",
+            re.IGNORECASE,
+        ),
+    ]
+
+    async def _try_music_play_shortcircuit(
+        self,
+        user_text: str,
+        user_input: conversation.ConversationInput,
+        conversation_id: str,
+    ) -> conversation.ConversationResult | None:
+        """Short-circuit 'play X by Y in Z' commands to the music tool.
+
+        Local LLMs often fail to call control_music for play commands,
+        instead generating a text response like "I couldn't find that track."
+        This bypasses the LLM entirely and calls control_music directly.
+
+        Returns None if the text doesn't match a play pattern.
+        """
+        text = user_text.strip()
+
+        query = artist = room = None
+        for pattern in self._MUSIC_PLAY_PATTERNS:
+            m = pattern.match(text)
+            if m:
+                query = m.group("query").strip()
+                artist = m.groupdict().get("artist", "").strip() or ""
+                room = m.groupdict().get("room", "").strip() or ""
+                break
+
+        if not query:
+            return None
+
+        # Strip trailing punctuation from room (STT adds periods)
+        if room:
+            room = room.rstrip(".,!?;:")
+
+        # Determine media_type: if "album" appears in the query, it's an album request
+        media_type = "track"
+        album = ""
+        album_match = re.search(r'\balbum\b', query, re.IGNORECASE)
+        if album_match:
+            media_type = "album"
+            query = re.sub(r'\balbum\b', '', query, flags=re.IGNORECASE).strip()
+            album = query
+
+        # Use satellite room if no room specified or room is empty
+        satellite_room = self._resolve_satellite_room(user_input.device_id)
+        if not room and satellite_room:
+            room = satellite_room
+
+        arguments = {
+            "action": "play",
+            "query": query,
+            "media_type": media_type,
+            "room": room,
+            "_user_text": text,
+        }
+        if artist:
+            arguments["artist"] = artist
+        if album:
+            arguments["album"] = album
+
+        _LOGGER.info(
+            "Music play short-circuit: '%s' → query='%s', artist='%s', room='%s', media_type='%s'",
+            user_text, query, artist, room, media_type,
+        )
+
+        try:
+            if not self._music_controller:
+                return None
+            result = await self._music_controller.control_music(arguments)
+            _LOGGER.info("Music play short-circuit result: %s", result)
+
+            if "error" in result:
+                speech = result["error"]
+            else:
+                speech = result.get("response_text", "Done.")
+        except Exception as err:
+            _LOGGER.error("Music play short-circuit failed: %s", err)
+            speech = "Sorry, I couldn't play that."
+
+        response = intent.IntentResponse(language=user_input.language)
+        response.async_set_speech(speech)
+        return conversation.ConversationResult(
+            response=response,
+            conversation_id=conversation_id,
+            continue_conversation=False,
+        )
+
     def _save_conversation_turn(
         self,
         conversation_id: str,
@@ -1082,6 +1188,16 @@ class PureLLMConversationEntity(ConversationEntity):
         )
         if satellite_vol_result is not None:
             return satellite_vol_result
+
+        # --- Short-circuit "play X by Y in Z" music commands ---
+        # Local LLMs often fail to call control_music for play commands,
+        # responding with text like "I couldn't find that track" without
+        # ever invoking the tool.  Bypass the LLM and call directly.
+        music_play_result = await self._try_music_play_shortcircuit(
+            user_text, user_input, conversation_id
+        )
+        if music_play_result is not None:
+            return music_play_result
 
         self._current_user_text = user_text  # For tool handlers that need original utterance
 
