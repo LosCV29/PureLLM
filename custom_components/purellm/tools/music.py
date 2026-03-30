@@ -313,6 +313,126 @@ async def _musicbrainz_themed_albums(
     return results
 
 
+async def _musicbrainz_resolve_track(
+    session: Any,
+    query: str,
+    artist: str,
+) -> str | None:
+    """Resolve a track name via MusicBrainz fuzzy search.
+
+    MusicBrainz handles spelling variations like "Rollin'" vs "Rolling",
+    "Playas" vs "Players", etc. Returns the canonical track title or None.
+    """
+    if not query:
+        return None
+
+    # Build Lucene query: recording:"X" AND artist:"Y"
+    if artist:
+        mb_query = f'recording:"{query}" AND artist:"{artist}"'
+    else:
+        mb_query = f'recording:"{query}"'
+
+    url = f"{_MB_BASE}/recording?query={quote(mb_query)}&fmt=json&limit=5"
+    _LOGGER.info("MUSICBRAINZ TRACK: Searching: %s", mb_query)
+
+    data, status = await fetch_json(
+        session, url,
+        headers={"User-Agent": _MB_USER_AGENT, "Accept": "application/json"},
+        cache_ttl=CACHE_TTL_LONG,
+    )
+    if not data or status != 200:
+        _LOGGER.warning("MUSICBRAINZ TRACK: Search failed (status=%s)", status)
+        return None
+
+    recordings = data.get("recordings", [])
+    if not recordings:
+        _LOGGER.info("MUSICBRAINZ TRACK: No recordings found")
+        return None
+
+    # If artist was specified, verify artist match on top result
+    if artist:
+        artist_lower = _strip_accents(artist.lower())
+        for rec in recordings:
+            title = rec.get("title", "").strip()
+            if not title:
+                continue
+            rec_artists = rec.get("artist-credit", [])
+            for ac in rec_artists:
+                a = ac.get("artist", {}) if isinstance(ac, dict) else {}
+                rec_artist = _strip_accents((a.get("name") or "").lower())
+                if rec_artist and (artist_lower in rec_artist or rec_artist in artist_lower):
+                    _LOGGER.info("MUSICBRAINZ TRACK: Resolved '%s' → '%s' (artist: %s)",
+                                 query, title, a.get("name"))
+                    return title
+        _LOGGER.info("MUSICBRAINZ TRACK: No artist match in results")
+        return None
+
+    # No artist filter — just return top result
+    title = recordings[0].get("title", "").strip()
+    if title:
+        _LOGGER.info("MUSICBRAINZ TRACK: Resolved '%s' → '%s'", query, title)
+        return title
+    return None
+
+
+async def _musicbrainz_resolve_album(
+    session: Any,
+    query: str,
+    artist: str,
+) -> str | None:
+    """Resolve an album name via MusicBrainz fuzzy search.
+
+    Returns the canonical album title or None.
+    """
+    if not query:
+        return None
+
+    if artist:
+        mb_query = f'releasegroup:"{query}" AND artist:"{artist}" AND primarytype:album'
+    else:
+        mb_query = f'releasegroup:"{query}" AND primarytype:album'
+
+    url = f"{_MB_BASE}/release-group?query={quote(mb_query)}&fmt=json&limit=5"
+    _LOGGER.info("MUSICBRAINZ ALBUM: Searching: %s", mb_query)
+
+    data, status = await fetch_json(
+        session, url,
+        headers={"User-Agent": _MB_USER_AGENT, "Accept": "application/json"},
+        cache_ttl=CACHE_TTL_LONG,
+    )
+    if not data or status != 200:
+        _LOGGER.warning("MUSICBRAINZ ALBUM: Search failed (status=%s)", status)
+        return None
+
+    release_groups = data.get("release-groups", [])
+    if not release_groups:
+        _LOGGER.info("MUSICBRAINZ ALBUM: No release-groups found")
+        return None
+
+    if artist:
+        artist_lower = _strip_accents(artist.lower())
+        for rg in release_groups:
+            title = rg.get("title", "").strip()
+            if not title:
+                continue
+            rg_artists = rg.get("artist-credit", [])
+            for ac in rg_artists:
+                a = ac.get("artist", {}) if isinstance(ac, dict) else {}
+                rg_artist = _strip_accents((a.get("name") or "").lower())
+                if rg_artist and (artist_lower in rg_artist or rg_artist in artist_lower):
+                    _LOGGER.info("MUSICBRAINZ ALBUM: Resolved '%s' → '%s' (artist: %s)",
+                                 query, title, a.get("name"))
+                    return title
+        _LOGGER.info("MUSICBRAINZ ALBUM: No artist match in results")
+        return None
+
+    title = release_groups[0].get("title", "").strip()
+    if title:
+        _LOGGER.info("MUSICBRAINZ ALBUM: Resolved '%s' → '%s'", query, title)
+        return title
+    return None
+
+
 def _parse_ordinal_theme(text: str) -> tuple[int | None, str | None]:
     """Parse ordinal position and theme from user text.
 
@@ -1102,6 +1222,59 @@ class MusicController:
 
                     _LOGGER.info("Found %s: '%s' by '%s' (uri: %s, score: %d)", try_type, found_name, found_artist, found_uri, scored_results[0][0])
                     break  # Found a good match, stop searching
+
+            if not found_uri:
+                # ── MusicBrainz fallback: resolve canonical name, then retry MA ──
+                # Handles STT spelling variations: "Rolling" → "Rollin'",
+                # "Playas" → "Players", etc. MusicBrainz has fuzzy search built in.
+                try:
+                    session = async_get_clientsession(self._hass)
+                    mb_name = None
+                    if media_type == "track":
+                        mb_name = await _musicbrainz_resolve_track(session, query, resolved_artist)
+                    elif media_type == "album":
+                        mb_name = await _musicbrainz_resolve_album(session, query, resolved_artist)
+
+                    if mb_name and _strip_accents(mb_name.lower()) != _strip_accents(query.lower()):
+                        _LOGGER.info("MUSIC: MusicBrainz resolved '%s' → '%s', retrying MA search", query, mb_name)
+                        mb_search_query = f"{mb_name} {resolved_artist}" if resolved_artist else mb_name
+                        mb_search_result = await self._hass.services.async_call(
+                            "music_assistant", "search",
+                            {"config_entry_id": ma_config_entry_id, "name": mb_search_query, "media_type": [media_type], "limit": 10},
+                            blocking=True, return_response=True
+                        )
+                        mb_results = _parse_ma_results(mb_search_result, media_type)
+
+                        if not mb_results and resolved_artist:
+                            # Try with just the MusicBrainz name (no artist in search string)
+                            mb_search_result = await self._hass.services.async_call(
+                                "music_assistant", "search",
+                                {"config_entry_id": ma_config_entry_id, "name": mb_name, "media_type": [media_type], "limit": 10},
+                                blocking=True, return_response=True
+                            )
+                            mb_results = _parse_ma_results(mb_search_result, media_type)
+
+                        if mb_results:
+                            # Score using the MusicBrainz-resolved name
+                            mb_query_lower = _normalize_numerals(_strip_accents(mb_name.lower()))
+                            for r in mb_results:
+                                item_name = _normalize_numerals(_strip_accents((r.get("name") or r.get("title") or "").lower()))
+                                item_artist = _strip_accents(_extract_artist(r, lowercase=True))
+                                name_ok = mb_query_lower in item_name or item_name in mb_query_lower
+                                artist_ok = not resolved_artist or (
+                                    artist_lower in item_artist or item_artist in artist_lower or
+                                    original_artist_lower in item_artist or item_artist in original_artist_lower
+                                )
+                                if name_ok and artist_ok:
+                                    found_name = _normalize_unicode(r.get("name") or r.get("title"))
+                                    found_uri = r.get("uri") or r.get("media_id")
+                                    found_type = media_type
+                                    found_artist = _extract_artist(r) or found_artist
+                                    _LOGGER.info("MUSIC: MusicBrainz fallback found %s: '%s' by '%s' (uri: %s)",
+                                                 media_type, found_name, found_artist, found_uri)
+                                    break
+                except Exception as err:
+                    _LOGGER.debug("MUSIC: MusicBrainz fallback failed: %s", err)
 
             if not found_uri:
                 return {"error": f"Could not find {media_type} matching '{query}'" + (f" by {artist}" if artist else "")}
