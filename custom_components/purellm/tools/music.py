@@ -1047,23 +1047,33 @@ class MusicController:
 
     @staticmethod
     def _is_clean_version(item: dict) -> bool:
-        """Check if a search result is a clean/censored version.
-
-        Checks track name, album name, version string, and metadata flags.
-        """
+        """Check if a search result is a clean/censored version."""
         name = (item.get("name") or item.get("title") or "").lower()
         version = (item.get("version") or "").lower()
         album_obj = item.get("album") if isinstance(item.get("album"), dict) else {}
         album_name = ((album_obj or {}).get("name") or "").lower()
         album_version = ((album_obj or {}).get("version") or "").lower()
-        # Check metadata explicit flag — False means explicitly marked clean
         metadata = item.get("metadata") or {}
         album_meta = (album_obj.get("metadata") or {}) if album_obj else {}
+
+        _LOGGER.debug(
+            "CLEAN CHECK: track='%s' version='%s' album='%s' album_ver='%s' "
+            "meta.explicit=%s album_meta.explicit=%s keys=%s album_keys=%s",
+            name, version, album_name, album_version,
+            metadata.get("explicit"), album_meta.get("explicit"),
+            list(metadata.keys())[:10], list(album_meta.keys())[:10],
+        )
+
+        # Check metadata explicit flag — False means explicitly marked clean
         if metadata.get("explicit") is False or album_meta.get("explicit") is False:
+            _LOGGER.info("CLEAN CHECK: CLEAN (metadata flag) — '%s'", name)
             return True
         # Check for "clean"/"edited"/"censored" in names/versions
         all_text = f"{name} {version} {album_name} {album_version}"
-        return bool(re.search(r'\b(clean|edited|censored)\b', all_text))
+        if re.search(r'\b(clean|edited|censored)\b', all_text):
+            _LOGGER.info("CLEAN CHECK: CLEAN (name match) — '%s' album='%s'", name, album_name)
+            return True
+        return False
 
     def _pick_best_match(
         self, results: list[dict], query_lower: str, artist_lower: str,
