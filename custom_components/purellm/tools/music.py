@@ -1036,12 +1036,34 @@ class MusicController:
                 if filtered:
                     results = filtered
 
-            # Score and pick best match
-            best = self._pick_best_match(results, query_lower, artist_lower)
+            # Filter out clean versions — prefer explicit/unmarked over clean.
+            # Apple Music puts clean tracks on separate albums like "Album (Clean)".
+            non_clean = [r for r in results if not self._is_clean_version(r)]
+            best = self._pick_best_match(non_clean or results, query_lower, artist_lower)
             if best:
                 return best
 
         return None
+
+    @staticmethod
+    def _is_clean_version(item: dict) -> bool:
+        """Check if a search result is a clean/censored version.
+
+        Checks track name, album name, version string, and metadata flags.
+        """
+        name = (item.get("name") or item.get("title") or "").lower()
+        version = (item.get("version") or "").lower()
+        album_obj = item.get("album") if isinstance(item.get("album"), dict) else {}
+        album_name = ((album_obj or {}).get("name") or "").lower()
+        album_version = ((album_obj or {}).get("version") or "").lower()
+        # Check metadata explicit flag — False means explicitly marked clean
+        metadata = item.get("metadata") or {}
+        album_meta = (album_obj.get("metadata") or {}) if album_obj else {}
+        if metadata.get("explicit") is False or album_meta.get("explicit") is False:
+            return True
+        # Check for "clean"/"edited"/"censored" in names/versions
+        all_text = f"{name} {version} {album_name} {album_version}"
+        return bool(re.search(r'\b(clean|edited|censored)\b', all_text))
 
     def _pick_best_match(
         self, results: list[dict], query_lower: str, artist_lower: str,
@@ -1083,20 +1105,6 @@ class MusicController:
                     score += 50
                 elif item_artist:
                     score -= 200
-
-            # Prefer explicit over clean — tiebreaker when same song has both versions.
-            # Apple Music sets explicit on ALBUMS (not tracks), so check both.
-            # Path: item.metadata.explicit OR item.album.metadata.explicit
-            metadata = item.get("metadata") or {}
-            album_obj = item.get("album") if isinstance(item.get("album"), dict) else {}
-            album_meta = (album_obj.get("metadata") or {}) if album_obj else {}
-            album_name = ((album_obj or {}).get("name") or "").lower()
-            is_explicit = metadata.get("explicit") is True or album_meta.get("explicit") is True
-            is_clean = bool(re.search(r'\bclean\b', f"{item_name} {album_name}"))
-            if is_explicit:
-                score += 2
-            elif is_clean:
-                score -= 2
 
             if score > best_score:
                 best_score = score
@@ -1146,15 +1154,8 @@ class MusicController:
             # Step 1: Resolve artist via MA (handles Tupac→2Pac, Jay Z→JAY-Z)
             resolved_artist = await self._resolve_artist_name(ma_config_entry_id, artist)
 
-            # Step 2: Search MA — try explicit version first, then normal
-            match = None
-            if media_type in ("track", "album"):
-                # Search with "explicit" to preference uncensored versions
-                match = await self._search_ma(
-                    ma_config_entry_id, f"{query} explicit", resolved_artist, media_type, album
-                )
-            if not match:
-                match = await self._search_ma(ma_config_entry_id, query, resolved_artist, media_type, album)
+            # Step 2: Search MA directly (clean versions are filtered in _search_ma)
+            match = await self._search_ma(ma_config_entry_id, query, resolved_artist, media_type, album)
 
             # Step 3: MusicBrainz fallback — resolve canonical name, retry MA
             if not match and media_type in ("track", "album"):
