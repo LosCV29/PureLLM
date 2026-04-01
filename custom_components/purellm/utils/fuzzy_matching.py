@@ -259,7 +259,7 @@ def get_exposed_entity_names(
         # Prefer aliases (user-defined voice names) over friendly names
         if entity_entry.aliases:
             for alias in entity_entry.aliases:
-                alias = alias.strip()
+                alias = str(alias).strip()
                 if alias:
                     names.append(alias)
         elif friendly_name:
@@ -339,6 +339,7 @@ def _find_entity_by_query(
         # PRIORITY 1/11: Exact match on entity registry alias
         if entity_entry.aliases:
             for alias in entity_entry.aliases:
+                alias = str(alias)
                 if alias.lower() == query_lower:
                     _LOGGER.info("Exact alias match%s: '%s' -> %s", "" if exposed else " (non-exposed)", alias, entity_entry.entity_id)
                     partial_matches.append((1 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or alias))
