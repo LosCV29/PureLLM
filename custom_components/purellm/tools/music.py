@@ -1037,9 +1037,11 @@ class MusicController:
                     results = filtered
 
             # Filter out clean versions — prefer explicit/unmarked over clean.
-            # Apple Music puts clean tracks on separate albums like "Album (Clean)".
             non_clean = [r for r in results if not self._is_clean_version(r)]
-            best = self._pick_best_match(non_clean or results, query_lower, artist_lower)
+            best = self._pick_best_match(non_clean, query_lower, artist_lower) if non_clean else None
+            if not best:
+                # No explicit match found — fall back to all results (clean is better than nothing)
+                best = self._pick_best_match(results, query_lower, artist_lower)
             if best:
                 return best
 
