@@ -1056,14 +1056,10 @@ class MusicController:
         metadata = item.get("metadata") or {}
         album_meta = (album_obj.get("metadata") or {}) if album_obj else {}
 
+        # Log ALL keys in the raw item to find where explicit/album data lives
         _LOGGER.info(
-            "CLEAN CHECK: track='%s' version='%s' album='%s' album_ver='%s' "
-            "meta.explicit=%s album_meta.explicit=%s meta_keys=%s album_meta_keys=%s "
-            "album_type=%s raw_album_keys=%s",
-            name, version, album_name, album_version,
-            metadata.get("explicit"), album_meta.get("explicit"),
-            list(metadata.keys())[:15], list(album_meta.keys())[:15],
-            type(album_obj).__name__, list(album_obj.keys())[:15] if isinstance(album_obj, dict) else "N/A",
+            "CLEAN CHECK: track='%s' ALL_KEYS=%s uri=%s item_id=%s",
+            name, list(item.keys()), item.get("uri"), item.get("item_id"),
         )
 
         # Check metadata explicit flag — False means explicitly marked clean
