@@ -1047,29 +1047,21 @@ class MusicController:
 
     @staticmethod
     def _is_clean_version(item: dict) -> bool:
-        """Check if a search result is a clean/censored version."""
-        name = (item.get("name") or item.get("title") or "").lower()
-        version = (item.get("version") or "").lower()
-        album_obj = item.get("album") if isinstance(item.get("album"), dict) else {}
-        album_name = ((album_obj or {}).get("name") or "").lower()
-        album_version = ((album_obj or {}).get("version") or "").lower()
-        metadata = item.get("metadata") or {}
-        album_meta = (album_obj.get("metadata") or {}) if album_obj else {}
+        """Check if a search result is a clean/censored version.
 
-        # Log ALL keys in the raw item to find where explicit/album data lives
-        _LOGGER.info(
-            "CLEAN CHECK: track='%s' ALL_KEYS=%s uri=%s item_id=%s",
-            name, list(item.keys()), item.get("uri"), item.get("item_id"),
-        )
-
-        # Check metadata explicit flag — False means explicitly marked clean
-        if metadata.get("explicit") is False or album_meta.get("explicit") is False:
-            _LOGGER.info("CLEAN CHECK: CLEAN (metadata flag) — '%s'", name)
+        MA search results have 'explicit' as a top-level field (not under metadata).
+        Values: True = explicit, False = clean, None = unknown.
+        """
+        # Top-level explicit field from MA search results
+        if item.get("explicit") is False:
+            _LOGGER.info("CLEAN CHECK: CLEAN — '%s' (explicit=False, uri=%s)",
+                         item.get("name"), item.get("uri"))
             return True
-        # Check for "clean"/"edited"/"censored" in names/versions
-        all_text = f"{name} {version} {album_name} {album_version}"
-        if re.search(r'\b(clean|edited|censored)\b', all_text):
-            _LOGGER.info("CLEAN CHECK: CLEAN (name match) — '%s' album='%s'", name, album_name)
+        # Fallback: check names for "clean"/"edited"/"censored"
+        name = (item.get("name") or "").lower()
+        version = (item.get("version") or "").lower()
+        if re.search(r'\b(clean|edited|censored)\b', f"{name} {version}"):
+            _LOGGER.info("CLEAN CHECK: CLEAN — '%s' (name match)", name)
             return True
         return False
 
