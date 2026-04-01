@@ -1146,8 +1146,15 @@ class MusicController:
             # Step 1: Resolve artist via MA (handles Tupac→2Pac, Jay Z→JAY-Z)
             resolved_artist = await self._resolve_artist_name(ma_config_entry_id, artist)
 
-            # Step 2: Search MA directly
-            match = await self._search_ma(ma_config_entry_id, query, resolved_artist, media_type, album)
+            # Step 2: Search MA — try explicit version first, then normal
+            match = None
+            if media_type in ("track", "album"):
+                # Search with "explicit" to preference uncensored versions
+                match = await self._search_ma(
+                    ma_config_entry_id, f"{query} explicit", resolved_artist, media_type, album
+                )
+            if not match:
+                match = await self._search_ma(ma_config_entry_id, query, resolved_artist, media_type, album)
 
             # Step 3: MusicBrainz fallback — resolve canonical name, retry MA
             if not match and media_type in ("track", "album"):
@@ -1164,15 +1171,6 @@ class MusicController:
 
             if not match:
                 return {"error": f"Could not find {media_type} matching '{query}'" + (f" by {artist}" if artist else "")}
-
-            # Step 4: If we got a clean version, try to find the explicit one
-            if re.search(r'\bclean\b', (match.get("name") or "").lower()):
-                _LOGGER.info("MUSIC: Found clean version '%s', searching for explicit", match["name"])
-                explicit_match = await self._search_ma(
-                    ma_config_entry_id, f"{query} explicit", resolved_artist, media_type, album
-                )
-                if explicit_match and not re.search(r'\bclean\b', (explicit_match.get("name") or "").lower()):
-                    match = explicit_match
 
             # Play the found media
             found_name = match["name"]
