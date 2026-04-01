@@ -1037,13 +1037,17 @@ class MusicController:
                     results = filtered
 
             # Filter out clean versions — prefer explicit/unmarked over clean.
+            # But only use non-clean if its match quality is comparable to the best overall.
+            best_all = self._pick_best_match(results, query_lower, artist_lower)
+            if not best_all:
+                continue
             non_clean = [r for r in results if not self._is_clean_version(r)]
-            best = self._pick_best_match(non_clean, query_lower, artist_lower) if non_clean else None
-            if not best:
-                # No explicit match found — fall back to all results (clean is better than nothing)
-                best = self._pick_best_match(results, query_lower, artist_lower)
-            if best:
-                return best
+            best_clean_free = self._pick_best_match(non_clean, query_lower, artist_lower) if non_clean else None
+            # Use non-clean result only if it scores at least 80% of the best overall match.
+            # Otherwise the clean version is a much better match — play it rather than wrong song.
+            if best_clean_free and best_clean_free["score"] >= best_all["score"] * 0.8:
+                return best_clean_free
+            return best_all
 
         return None
 
@@ -1118,7 +1122,7 @@ class MusicController:
             found_uri = best.get("uri") or best.get("media_id")
             _LOGGER.info("MUSIC: Best match: '%s' by '%s' (uri: %s, score: %d)",
                          found_name, found_artist, found_uri, best_score)
-            return {"name": found_name, "artist": found_artist, "uri": found_uri}
+            return {"name": found_name, "artist": found_artist, "uri": found_uri, "score": best_score}
         return None
 
     async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "") -> dict:
