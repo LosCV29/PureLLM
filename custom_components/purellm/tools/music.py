@@ -1036,9 +1036,14 @@ class MusicController:
                 if filtered:
                     results = filtered
 
-            # Pick the best matching result regardless of clean/explicit status.
-            # Correct song (even clean) is always better than wrong song (explicit).
-            best = self._pick_best_match(results, query_lower, artist_lower)
+            # Prefer explicit over clean: filter out clean versions, pick best.
+            # With name_score requirement, only same-song matches survive, so
+            # filtering clean won't cause wrong-song selection.
+            non_clean = [r for r in results if not self._is_clean_version(r)]
+            best = self._pick_best_match(non_clean, query_lower, artist_lower) if non_clean else None
+            if not best:
+                # No explicit version — fall back to all results (clean is better than nothing)
+                best = self._pick_best_match(results, query_lower, artist_lower)
             if best:
                 return best
 
