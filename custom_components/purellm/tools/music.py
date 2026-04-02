@@ -1036,18 +1036,11 @@ class MusicController:
                 if filtered:
                     results = filtered
 
-            # Filter out clean versions — prefer explicit/unmarked over clean.
-            # But only use non-clean if its match quality is comparable to the best overall.
-            best_all = self._pick_best_match(results, query_lower, artist_lower)
-            if not best_all:
-                continue
-            non_clean = [r for r in results if not self._is_clean_version(r)]
-            best_clean_free = self._pick_best_match(non_clean, query_lower, artist_lower) if non_clean else None
-            # Use non-clean result only if it scores at least 80% of the best overall match.
-            # Otherwise the clean version is a much better match — play it rather than wrong song.
-            if best_clean_free and best_clean_free["score"] >= best_all["score"] * 0.8:
-                return best_clean_free
-            return best_all
+            # Pick the best matching result regardless of clean/explicit status.
+            # Correct song (even clean) is always better than wrong song (explicit).
+            best = self._pick_best_match(results, query_lower, artist_lower)
+            if best:
+                return best
 
         return None
 
@@ -1084,35 +1077,38 @@ class MusicController:
         best_score = 0
         best = None
         for item in results:
-            score = 0
+            name_score = 0
+            artist_score = 0
             item_name = _normalize_numerals(_strip_accents((item.get("name") or item.get("title") or "").lower()))
             item_artist = _strip_accents(_extract_artist(item, lowercase=True))
 
             # Name scoring
             if query_lower == item_name:
-                score += 100
+                name_score = 100
             elif query_lower in item_name:
-                score += 50
+                name_score = 50
             else:
                 query_words = [w for w in query_lower.split() if len(w) > 2]
                 if query_words:
                     matches = sum(1 for w in query_words
                                   if w in item_name or any(_prefix_match(w, t) for t in re.split(r"[\s'']+", item_name) if t))
                     if matches == len(query_words):
-                        score += 40
+                        name_score = 40
                     elif matches > 0:
-                        score += 20 * matches
+                        name_score = 20 * matches
 
             # Artist scoring — use centralized fuzzy match
             if artist_lower:
                 if artist_lower == item_artist:
-                    score += 100
+                    artist_score = 100
                 elif _artist_names_match(artist_lower, item_artist):
-                    score += 50
+                    artist_score = 50
                 elif item_artist:
-                    score -= 200
+                    artist_score = -200
 
-            if score > best_score:
+            # Require name to actually match — artist-only matches play wrong songs
+            score = name_score + artist_score
+            if score > best_score and name_score > 0:
                 best_score = score
                 best = item
 
