@@ -1036,38 +1036,11 @@ class MusicController:
                 if filtered:
                     results = filtered
 
-            # Prefer explicit over clean: filter out clean versions, pick best.
-            # With name_score requirement, only same-song matches survive, so
-            # filtering clean won't cause wrong-song selection.
-            non_clean = [r for r in results if not self._is_clean_version(r)]
-            best = self._pick_best_match(non_clean, query_lower, artist_lower) if non_clean else None
-            if not best:
-                # No explicit version — fall back to all results (clean is better than nothing)
-                best = self._pick_best_match(results, query_lower, artist_lower)
+            best = self._pick_best_match(results, query_lower, artist_lower)
             if best:
                 return best
 
         return None
-
-    @staticmethod
-    def _is_clean_version(item: dict) -> bool:
-        """Check if a search result is a clean/censored version.
-
-        MA search results have 'explicit' as a top-level field (not under metadata).
-        Values: True = explicit, False = clean, None = unknown.
-        """
-        # Top-level explicit field from MA search results
-        if item.get("explicit") is False:
-            _LOGGER.info("CLEAN CHECK: CLEAN — '%s' (explicit=False, uri=%s)",
-                         item.get("name"), item.get("uri"))
-            return True
-        # Fallback: check names for "clean"/"edited"/"censored"
-        name = (item.get("name") or "").lower()
-        version = (item.get("version") or "").lower()
-        if re.search(r'\b(clean|edited|censored)\b', f"{name} {version}"):
-            _LOGGER.info("CLEAN CHECK: CLEAN — '%s' (name match)", name)
-            return True
-        return False
 
     def _pick_best_match(
         self, results: list[dict], query_lower: str, artist_lower: str,
