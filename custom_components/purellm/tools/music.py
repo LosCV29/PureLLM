@@ -1077,35 +1077,38 @@ class MusicController:
         best_score = 0
         best = None
         for item in results:
-            score = 0
+            name_score = 0
+            artist_score = 0
             item_name = _normalize_numerals(_strip_accents((item.get("name") or item.get("title") or "").lower()))
             item_artist = _strip_accents(_extract_artist(item, lowercase=True))
 
             # Name scoring
             if query_lower == item_name:
-                score += 100
+                name_score = 100
             elif query_lower in item_name:
-                score += 50
+                name_score = 50
             else:
                 query_words = [w for w in query_lower.split() if len(w) > 2]
                 if query_words:
                     matches = sum(1 for w in query_words
                                   if w in item_name or any(_prefix_match(w, t) for t in re.split(r"[\s'']+", item_name) if t))
                     if matches == len(query_words):
-                        score += 40
+                        name_score = 40
                     elif matches > 0:
-                        score += 20 * matches
+                        name_score = 20 * matches
 
             # Artist scoring — use centralized fuzzy match
             if artist_lower:
                 if artist_lower == item_artist:
-                    score += 100
+                    artist_score = 100
                 elif _artist_names_match(artist_lower, item_artist):
-                    score += 50
+                    artist_score = 50
                 elif item_artist:
-                    score -= 200
+                    artist_score = -200
 
-            if score > best_score:
+            # Require name to actually match — artist-only matches play wrong songs
+            score = name_score + artist_score
+            if score > best_score and name_score > 0:
                 best_score = score
                 best = item
 
