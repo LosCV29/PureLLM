@@ -67,18 +67,28 @@ def _extract_competitors(competitors: list) -> tuple:
     )
 
 
-def _extract_broadcast(competition: dict) -> str:
-    """Extract TV broadcast channel from competition data."""
+def _extract_broadcast(competition: dict, event: dict = None) -> str:
+    """Extract TV broadcast channel from competition or event data."""
     # Try geoBroadcasts first (more detailed)
     for gb in competition.get("geoBroadcasts", []):
         name = gb.get("media", {}).get("shortName", "")
         if name:
             return name
-    # Fallback to broadcasts array
+    # Fallback to broadcasts array on competition
     for b in competition.get("broadcasts", []):
         names = b.get("names", [])
         if names:
             return names[0]
+    # Some ESPN endpoints put broadcasts at the event level
+    if event:
+        for gb in event.get("geoBroadcasts", []):
+            name = gb.get("media", {}).get("shortName", "")
+            if name:
+                return name
+        for b in event.get("broadcasts", []):
+            names = b.get("names", [])
+            if names:
+                return names[0]
     return ""
 
 # Approximate sport seasons by month (1=Jan, 12=Dec)
@@ -466,7 +476,7 @@ async def get_sports_info(
                                 formatted_date = sb_status.get("detail", "TBD")
 
                             venue = sb_comp.get("venue", {}).get("fullName", "")
-                            broadcast = _extract_broadcast(sb_comp)
+                            broadcast = _extract_broadcast(sb_comp, sb_event)
                             is_home = (home_name == full_name)
                             opponent = away_name if is_home else home_name
                             home_away = "home" if is_home else "away"
@@ -528,7 +538,7 @@ async def get_sports_info(
                         except (ValueError, KeyError, TypeError, AttributeError):
                             formatted_date = "TBD"
                         venue = fut_comp.get("venue", {}).get("fullName", "")
-                        broadcast = _extract_broadcast(fut_comp)
+                        broadcast = _extract_broadcast(fut_comp, fut_event)
                         is_home = (home_name == full_name)
                         opponent = away_name if is_home else home_name
                         home_away = "home" if is_home else "away"
@@ -649,7 +659,7 @@ async def get_sports_info(
                                 next_game_date.astimezone(hass_timezone), datetime.now(hass_timezone))
 
                             venue = comp.get("venue", {}).get("fullName", "")
-                            broadcast = _extract_broadcast(comp)
+                            broadcast = _extract_broadcast(comp, next_game)
                             is_home = (home_name == full_name)
                             opponent = away_name if is_home else home_name
                             home_away = "home" if is_home else "away"
@@ -707,8 +717,7 @@ async def get_sports_info(
         result["response_text"] = ". ".join(response_parts) if response_parts else f"No game info found for {full_name}"
 
         _LOGGER.info("Sports info for %s: %s", full_name, result.get("response_text", ""))
-        # Return only response_text to prevent LLM from reformatting dates
-        return {"response_text": result["response_text"], "team": result.get("team", "")}
+        return result
 
     except Exception as err:
         return log_and_error("Failed to get sports info", err)
