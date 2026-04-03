@@ -69,26 +69,51 @@ def _extract_competitors(competitors: list) -> tuple:
 
 def _extract_broadcast(competition: dict, event: dict = None) -> str:
     """Extract TV broadcast channel from competition or event data."""
-    # Try geoBroadcasts first (more detailed)
-    for gb in competition.get("geoBroadcasts", []):
-        name = gb.get("media", {}).get("shortName", "")
-        if name:
-            return name
-    # Fallback to broadcasts array on competition
-    for b in competition.get("broadcasts", []):
-        names = b.get("names", [])
-        if names:
-            return names[0]
-    # Some ESPN endpoints put broadcasts at the event level
+    # Log available keys for debugging broadcast extraction
+    _LOGGER.debug("Broadcast extraction - competition keys: %s", list(competition.keys()))
     if event:
-        for gb in event.get("geoBroadcasts", []):
+        _LOGGER.debug("Broadcast extraction - event keys: %s", list(event.keys()))
+
+    # Try geoBroadcasts first (more detailed)
+    geo = competition.get("geoBroadcasts", [])
+    if geo:
+        _LOGGER.debug("Broadcast: found geoBroadcasts on competition: %s", geo)
+        for gb in geo:
             name = gb.get("media", {}).get("shortName", "")
             if name:
                 return name
-        for b in event.get("broadcasts", []):
+    # Fallback to broadcasts array on competition
+    bcast = competition.get("broadcasts", [])
+    if bcast:
+        _LOGGER.debug("Broadcast: found broadcasts on competition: %s", bcast)
+        for b in bcast:
             names = b.get("names", [])
             if names:
                 return names[0]
+            # Some formats use "name" (singular) instead of "names"
+            name = b.get("name", "")
+            if name:
+                return name
+    # Some ESPN endpoints put broadcasts at the event level
+    if event:
+        geo = event.get("geoBroadcasts", [])
+        if geo:
+            _LOGGER.debug("Broadcast: found geoBroadcasts on event: %s", geo)
+            for gb in geo:
+                name = gb.get("media", {}).get("shortName", "")
+                if name:
+                    return name
+        bcast = event.get("broadcasts", [])
+        if bcast:
+            _LOGGER.debug("Broadcast: found broadcasts on event: %s", bcast)
+            for b in bcast:
+                names = b.get("names", [])
+                if names:
+                    return names[0]
+                name = b.get("name", "")
+                if name:
+                    return name
+    _LOGGER.debug("Broadcast: no broadcast data found")
     return ""
 
 # Approximate sport seasons by month (1=Jan, 12=Dec)
