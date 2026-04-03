@@ -66,6 +66,21 @@ def _extract_competitors(competitors: list) -> tuple:
         away,
     )
 
+
+def _extract_broadcast(competition: dict) -> str:
+    """Extract TV broadcast channel from competition data."""
+    # Try geoBroadcasts first (more detailed)
+    for gb in competition.get("geoBroadcasts", []):
+        name = gb.get("media", {}).get("shortName", "")
+        if name:
+            return name
+    # Fallback to broadcasts array
+    for b in competition.get("broadcasts", []):
+        names = b.get("names", [])
+        if names:
+            return names[0]
+    return ""
+
 # Approximate sport seasons by month (1=Jan, 12=Dec)
 # Used to disambiguate when the same team name exists in multiple leagues
 _SPORT_SEASONS = {
@@ -451,12 +466,20 @@ async def get_sports_info(
                                 formatted_date = sb_status.get("detail", "TBD")
 
                             venue = sb_comp.get("venue", {}).get("fullName", "")
+                            broadcast = _extract_broadcast(sb_comp)
+                            is_home = (home_name == full_name)
+                            opponent = away_name if is_home else home_name
+                            home_away = "home" if is_home else "away"
+                            venue_str = f" at {venue}" if venue else ""
+                            broadcast_str = f", airing on {broadcast}" if broadcast else ""
                             result["next_game"] = {
                                 "date": formatted_date,
                                 "home_team": home_name,
                                 "away_team": away_name,
                                 "venue": venue,
-                                "summary": f"{away_name} @ {home_name} - {formatted_date}"
+                                "broadcast": broadcast,
+                                "home_away": home_away,
+                                "summary": f"{full_name} vs {opponent} ({home_away}) {formatted_date}{venue_str}{broadcast_str}"
                             }
                             next_game_from_scoreboard = True
 
@@ -505,12 +528,20 @@ async def get_sports_info(
                         except (ValueError, KeyError, TypeError, AttributeError):
                             formatted_date = "TBD"
                         venue = fut_comp.get("venue", {}).get("fullName", "")
+                        broadcast = _extract_broadcast(fut_comp)
+                        is_home = (home_name == full_name)
+                        opponent = away_name if is_home else home_name
+                        home_away = "home" if is_home else "away"
+                        venue_str = f" at {venue}" if venue else ""
+                        broadcast_str = f", airing on {broadcast}" if broadcast else ""
                         result["next_game"] = {
                             "date": formatted_date,
                             "home_team": home_name,
                             "away_team": away_name,
                             "venue": venue,
-                            "summary": f"{away_name} @ {home_name} - {formatted_date}"
+                            "broadcast": broadcast,
+                            "home_away": home_away,
+                            "summary": f"{full_name} vs {opponent} ({home_away}) {formatted_date}{venue_str}{broadcast_str}"
                         }
                         next_game_from_scoreboard = True
                         break
@@ -618,12 +649,20 @@ async def get_sports_info(
                                 next_game_date.astimezone(hass_timezone), datetime.now(hass_timezone))
 
                             venue = comp.get("venue", {}).get("fullName", "")
+                            broadcast = _extract_broadcast(comp)
+                            is_home = (home_name == full_name)
+                            opponent = away_name if is_home else home_name
+                            home_away = "home" if is_home else "away"
+                            venue_str = f" at {venue}" if venue else ""
+                            broadcast_str = f", airing on {broadcast}" if broadcast else ""
                             result["next_game"] = {
                                 "date": formatted_date,
                                 "home_team": home_name,
                                 "away_team": away_name,
                                 "venue": venue,
-                                "summary": f"{away_name} @ {home_name} - {formatted_date}"
+                                "broadcast": broadcast,
+                                "home_away": home_away,
+                                "summary": f"{full_name} vs {opponent} ({home_away}) {formatted_date}{venue_str}{broadcast_str}"
                             }
 
         # Build response text
@@ -663,10 +702,7 @@ async def get_sports_info(
                     response_parts.append(f"{lg['summary']} on {date_str}")
         if "next_game" in result:
             ng = result["next_game"]
-            next_text = f"Next game: {ng['summary']}"
-            if ng.get('venue'):
-                next_text += f" at {ng['venue']}"
-            response_parts.append(next_text)
+            response_parts.append(f"Next game: {ng['summary']}")
 
         result["response_text"] = ". ".join(response_parts) if response_parts else f"No game info found for {full_name}"
 
