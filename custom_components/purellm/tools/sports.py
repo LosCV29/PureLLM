@@ -69,49 +69,39 @@ def _extract_competitors(competitors: list) -> tuple:
 
 def _extract_broadcast(competition: dict, event: dict = None) -> str:
     """Extract TV broadcast channel from competition or event data."""
-    _LOGGER.info("Broadcast extraction - competition keys: %s", list(competition.keys()))
+    # Check both competition and event levels
+    sources = [competition]
     if event:
-        _LOGGER.info("Broadcast extraction - event keys: %s", list(event.keys()))
+        sources.append(event)
 
-    # Try geoBroadcasts first (more detailed)
-    geo = competition.get("geoBroadcasts", [])
-    if geo:
-        _LOGGER.info("Broadcast: found geoBroadcasts on competition: %s", geo)
-        for gb in geo:
+    for source in sources:
+        # Try geoBroadcasts first
+        for gb in source.get("geoBroadcasts", []):
             name = gb.get("media", {}).get("shortName", "")
             if name:
                 return name
-    # Fallback to broadcasts array on competition
-    bcast = competition.get("broadcasts", [])
-    if bcast:
-        _LOGGER.info("Broadcast: found broadcasts on competition: %s", bcast)
-        for b in bcast:
-            names = b.get("names", [])
-            if names:
-                return names[0]
-            name = b.get("name", "")
-            if name:
-                return name
-    # Some ESPN endpoints put broadcasts at the event level
-    if event:
-        geo = event.get("geoBroadcasts", [])
-        if geo:
-            _LOGGER.info("Broadcast: found geoBroadcasts on event: %s", geo)
-            for gb in geo:
-                name = gb.get("media", {}).get("shortName", "")
-                if name:
-                    return name
-        bcast = event.get("broadcasts", [])
-        if bcast:
-            _LOGGER.info("Broadcast: found broadcasts on event: %s", bcast)
-            for b in bcast:
+        # Fallback to broadcasts array — prefer TV type over subscriptions
+        broadcasts = source.get("broadcasts", [])
+        tv_name = ""
+        fallback_name = ""
+        for b in broadcasts:
+            name = b.get("media", {}).get("shortName", "")
+            if not name:
+                # Legacy format: names array
                 names = b.get("names", [])
-                if names:
-                    return names[0]
-                name = b.get("name", "")
-                if name:
-                    return name
-    _LOGGER.info("Broadcast: no broadcast data found in competition or event")
+                name = names[0] if names else ""
+            if not name:
+                continue
+            b_type = b.get("type", {}).get("shortName", "")
+            if b_type == "TV" and not tv_name:
+                tv_name = name
+            elif not fallback_name:
+                fallback_name = name
+        if tv_name:
+            return tv_name
+        if fallback_name:
+            return fallback_name
+
     return ""
 
 # Approximate sport seasons by month (1=Jan, 12=Dec)
