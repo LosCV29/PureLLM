@@ -1419,6 +1419,18 @@ class PureLLMConversationEntity(ConversationEntity):
                         "functionResponse": {"name": fc["name"], "response": {"result": resp_content}}
                     })
 
+                # Short-circuit for tools that return response_text — skip
+                # the second LLM call to prevent smaller models from
+                # reformatting venue/home-away/broadcast details.
+                if len(unique_calls) == 1:
+                    try:
+                        single_result = json.loads(function_responses[0]["functionResponse"]["response"]["result"])
+                        if isinstance(single_result, dict) and "response_text" in single_result and "instruction" not in single_result:
+                            _LOGGER.info("Verbatim short-circuit for %s", unique_calls[0]["name"])
+                            return single_result["response_text"]
+                    except (json.JSONDecodeError, KeyError, TypeError):
+                        pass
+
                 contents.append({"role": "user", "parts": function_responses})
                 continue
 
@@ -1607,6 +1619,16 @@ class PureLLMConversationEntity(ConversationEntity):
                             "tool_call_id": tool_call["id"],
                             "content": content,
                         })
+
+                    # Short-circuit for tools that return response_text — skip
+                    # the second LLM call to prevent smaller models from
+                    # reformatting venue/home-away/broadcast details.
+                    if len(unique_tool_calls) == 1 and not isinstance(tool_results[0], Exception):
+                        single_result = tool_results[0]
+                        if isinstance(single_result, dict) and "response_text" in single_result and "instruction" not in single_result:
+                            _LOGGER.info("Verbatim short-circuit for %s", unique_tool_calls[0]["function"]["name"])
+                            yield {"content": single_result["response_text"]}
+                            return
 
                     # Continue to next iteration to get LLM's response after tools
                     continue
