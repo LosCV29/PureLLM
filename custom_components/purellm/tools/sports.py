@@ -69,15 +69,14 @@ def _extract_competitors(competitors: list) -> tuple:
 
 def _extract_broadcast(competition: dict, event: dict = None) -> str:
     """Extract TV broadcast channel from competition or event data."""
-    # Log available keys for debugging broadcast extraction
-    _LOGGER.debug("Broadcast extraction - competition keys: %s", list(competition.keys()))
+    _LOGGER.info("Broadcast extraction - competition keys: %s", list(competition.keys()))
     if event:
-        _LOGGER.debug("Broadcast extraction - event keys: %s", list(event.keys()))
+        _LOGGER.info("Broadcast extraction - event keys: %s", list(event.keys()))
 
     # Try geoBroadcasts first (more detailed)
     geo = competition.get("geoBroadcasts", [])
     if geo:
-        _LOGGER.debug("Broadcast: found geoBroadcasts on competition: %s", geo)
+        _LOGGER.info("Broadcast: found geoBroadcasts on competition: %s", geo)
         for gb in geo:
             name = gb.get("media", {}).get("shortName", "")
             if name:
@@ -85,12 +84,11 @@ def _extract_broadcast(competition: dict, event: dict = None) -> str:
     # Fallback to broadcasts array on competition
     bcast = competition.get("broadcasts", [])
     if bcast:
-        _LOGGER.debug("Broadcast: found broadcasts on competition: %s", bcast)
+        _LOGGER.info("Broadcast: found broadcasts on competition: %s", bcast)
         for b in bcast:
             names = b.get("names", [])
             if names:
                 return names[0]
-            # Some formats use "name" (singular) instead of "names"
             name = b.get("name", "")
             if name:
                 return name
@@ -98,14 +96,14 @@ def _extract_broadcast(competition: dict, event: dict = None) -> str:
     if event:
         geo = event.get("geoBroadcasts", [])
         if geo:
-            _LOGGER.debug("Broadcast: found geoBroadcasts on event: %s", geo)
+            _LOGGER.info("Broadcast: found geoBroadcasts on event: %s", geo)
             for gb in geo:
                 name = gb.get("media", {}).get("shortName", "")
                 if name:
                     return name
         bcast = event.get("broadcasts", [])
         if bcast:
-            _LOGGER.debug("Broadcast: found broadcasts on event: %s", bcast)
+            _LOGGER.info("Broadcast: found broadcasts on event: %s", bcast)
             for b in bcast:
                 names = b.get("names", [])
                 if names:
@@ -113,7 +111,7 @@ def _extract_broadcast(competition: dict, event: dict = None) -> str:
                 name = b.get("name", "")
                 if name:
                     return name
-    _LOGGER.debug("Broadcast: no broadcast data found")
+    _LOGGER.info("Broadcast: no broadcast data found in competition or event")
     return ""
 
 # Approximate sport seasons by month (1=Jan, 12=Dec)
@@ -741,16 +739,17 @@ async def get_sports_info(
             venue = ng.get("venue", "")
             broadcast = ng.get("broadcast", "")
             opponent = ng.get("away_team") if home_away == "home" else ng.get("home_team", "")
-            parts = [f"The next {full_name} game is {ng['date']} against {opponent}"]
-            if home_away:
-                parts.append(f"It's {'a home' if home_away == 'home' else 'an away'} game")
-                if venue:
-                    parts[-1] += f" at {venue}"
-            elif venue:
-                parts.append(f"The game is at {venue}")
-            if broadcast:
-                parts.append(f"It airs on {broadcast}")
-            response_parts.append(". ".join(parts))
+            # Single sentence with all details baked in so the LLM can't drop parts
+            ha_label = "home" if home_away == "home" else "away" if home_away else ""
+            venue_part = f" at {venue}" if venue else ""
+            broadcast_part = f" on {broadcast}" if broadcast else ""
+            if ha_label:
+                next_text = f"The next {full_name} {ha_label} game is {ng['date']} against {opponent}{venue_part}"
+            else:
+                next_text = f"The next {full_name} game is {ng['date']} against {opponent}{venue_part}"
+            if broadcast_part:
+                next_text += f",{broadcast_part}"
+            response_parts.append(next_text)
 
         result["response_text"] = ". ".join(response_parts) if response_parts else f"No game info found for {full_name}"
 
