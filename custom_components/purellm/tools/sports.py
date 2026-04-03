@@ -68,42 +68,39 @@ def _extract_competitors(competitors: list) -> tuple:
 
 
 def _extract_broadcast(competition: dict, event: dict = None) -> str:
-    """Extract TV broadcast channels from competition or event data.
-
-    Collects national and local TV broadcasts, skipping subscription services.
-    Returns a combined string like 'ESPN, MNMT' or just 'MNMT'.
-    """
+    """Extract TV broadcast channel from competition or event data."""
+    # Check both competition and event levels
     sources = [competition]
     if event:
         sources.append(event)
 
-    national = []
-    local = []
-
     for source in sources:
-        # Collect from both geoBroadcasts and broadcasts arrays
-        for entry in source.get("geoBroadcasts", []) + source.get("broadcasts", []):
-            name = entry.get("media", {}).get("shortName", "")
+        # Try geoBroadcasts first
+        for gb in source.get("geoBroadcasts", []):
+            name = gb.get("media", {}).get("shortName", "")
+            if name:
+                return name
+        # Fallback to broadcasts array — prefer TV type over subscriptions
+        broadcasts = source.get("broadcasts", [])
+        tv_name = ""
+        fallback_name = ""
+        for b in broadcasts:
+            name = b.get("media", {}).get("shortName", "")
             if not name:
                 # Legacy format: names array
-                names = entry.get("names", [])
+                names = b.get("names", [])
                 name = names[0] if names else ""
             if not name:
                 continue
-
-            b_type = entry.get("type", {}).get("shortName", "")
-            # Skip subscription/streaming packages (e.g., NBA League Pass)
-            if b_type and b_type != "TV":
-                continue
-
-            market = entry.get("market", {}).get("type", "").lower()
-            if market == "national" and name not in national:
-                national.append(name)
-            elif name not in national and name not in local:
-                local.append(name)
-
-    all_channels = national + local
-    return ", ".join(all_channels) if all_channels else ""
+            b_type = b.get("type", {}).get("shortName", "")
+            if b_type == "TV" and not tv_name:
+                tv_name = name
+            elif not fallback_name:
+                fallback_name = name
+        if tv_name:
+            return tv_name
+        if fallback_name:
+            return fallback_name
 
     return ""
 
