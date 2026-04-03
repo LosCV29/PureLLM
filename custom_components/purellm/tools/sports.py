@@ -712,7 +712,20 @@ async def get_sports_info(
                     response_parts.append(f"{lg['summary']} on {date_str}")
         if "next_game" in result:
             ng = result["next_game"]
-            response_parts.append(f"Next game: {ng['summary']}")
+            home_away = ng.get("home_away", "")
+            venue = ng.get("venue", "")
+            broadcast = ng.get("broadcast", "")
+            opponent = ng.get("away_team") if home_away == "home" else ng.get("home_team", "")
+            parts = [f"The next {full_name} game is {ng['date']} against {opponent}"]
+            if home_away:
+                parts.append(f"It's {'a home' if home_away == 'home' else 'an away'} game")
+                if venue:
+                    parts[-1] += f" at {venue}"
+            elif venue:
+                parts.append(f"The game is at {venue}")
+            if broadcast:
+                parts.append(f"It airs on {broadcast}")
+            response_parts.append(". ".join(parts))
 
         result["response_text"] = ". ".join(response_parts) if response_parts else f"No game info found for {full_name}"
 
