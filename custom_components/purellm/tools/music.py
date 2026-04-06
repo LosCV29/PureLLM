@@ -1042,6 +1042,12 @@ class MusicController:
 
         return None
 
+    # Track variant keywords — penalized unless the user explicitly asks for them
+    _VARIANT_KEYWORDS = re.compile(
+        r'\b(instrumental|karaoke|acapella|a\s*cappella|backing\s+track|minus\s+one)\b',
+        re.IGNORECASE,
+    )
+
     def _pick_best_match(
         self, results: list[dict], query_lower: str, artist_lower: str,
     ) -> dict | None:
@@ -1051,6 +1057,9 @@ class MusicController:
             """Two words match if one is a 4+ char prefix of the other."""
             min_len = min(len(word_a), len(word_b))
             return min_len >= 4 and (word_a.startswith(word_b) or word_b.startswith(word_a))
+
+        # Check once whether the user actually asked for a variant version
+        user_wants_variant = bool(self._VARIANT_KEYWORDS.search(query_lower))
 
         best_score = 0
         best = None
@@ -1084,8 +1093,17 @@ class MusicController:
                 elif item_artist:
                     artist_score = -200
 
+            # Penalize instrumental/karaoke/etc. variants when user didn't ask for one.
+            # Check both track name and the version tag (MA often stores "Instrumental" there).
+            variant_penalty = 0
+            if not user_wants_variant:
+                item_version = (item.get("version") or "").lower()
+                if self._VARIANT_KEYWORDS.search(item_name) or self._VARIANT_KEYWORDS.search(item_version):
+                    variant_penalty = -500
+                    _LOGGER.debug("MUSIC: Variant penalty applied to '%s' (version='%s')", item_name, item_version)
+
             # Require name to actually match — artist-only matches play wrong songs
-            score = name_score + artist_score
+            score = name_score + artist_score + variant_penalty
             if score > best_score and name_score > 0:
                 best_score = score
                 best = item
