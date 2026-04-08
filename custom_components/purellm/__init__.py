@@ -62,6 +62,7 @@ TIMER_LISTENER_KEY = "timer_finished_listener"
 
 SNAPSHOT_VIEW_KEY = "snapshot_view_registered"
 SILENCE_WAV_KEY = "silence_wav_written"
+SILENCE_WAV_FILENAME = "purellm_silence.wav"
 
 # Media source URI for the silent WAV used by start_conversation.
 # Resolves to <config_dir>/media/purellm_silence.wav via HA's local media source.
@@ -174,6 +175,29 @@ def _get_silent_wav() -> bytes:
     if _SILENT_WAV is None:
         _SILENT_WAV = _generate_silent_wav()
     return _SILENT_WAV
+
+
+async def _ensure_silence_wav(hass: HomeAssistant) -> None:
+    """Ensure the silent WAV file exists in the media directory.
+
+    Called before each start_conversation to guard against the file being
+    missing (deleted, never written, tmpfs cleared, etc.).  Skips the write
+    if the file already exists on disk.
+    """
+    media_dir = hass.config.path("media")
+    silence_path = os.path.join(media_dir, SILENCE_WAV_FILENAME)
+
+    def _check_and_write() -> None:
+        if os.path.isfile(silence_path):
+            return
+        os.makedirs(media_dir, exist_ok=True)
+        with open(silence_path, "wb") as f:
+            f.write(_get_silent_wav())
+
+    try:
+        await hass.async_add_executor_job(_check_and_write)
+    except OSError as err:
+        _LOGGER.warning("ask_and_act: could not ensure silent WAV at %s: %s", silence_path, err)
 
 
 class PureLLMSilentWavView(HomeAssistantView):
@@ -476,6 +500,7 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     # start_message to avoid TTS synthesis — the question was already spoken
     # in step 1.  The old code used start_message="" which worked with HA Cloud
     # TTS but crashes openai-streaming (can't synthesize empty text).
+    await _ensure_silence_wav(hass)
     max_attempts = 3
     for attempt in range(1, max_attempts + 1):
         try:
@@ -682,9 +707,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             await hass.async_add_executor_job(_write_silence_wav)
             _LOGGER.debug("Wrote silent WAV to %s", silence_path)
+            hass.data[DOMAIN][SILENCE_WAV_KEY] = True
         except OSError as err:
             _LOGGER.warning("Could not write silent WAV to media dir: %s", err)
-        hass.data[DOMAIN][SILENCE_WAV_KEY] = True
 
     # Register ask_and_act service (only once per HA instance)
     if SERVICE_REGISTERED_KEY not in hass.data[DOMAIN]:
