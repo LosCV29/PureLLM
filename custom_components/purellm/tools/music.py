@@ -1311,7 +1311,7 @@ class MusicController:
         playing = self._find_player_by_state("playing", all_players)
         if playing:
             await self._hass.services.async_call("media_player", "media_next_track", {"entity_id": playing})
-            return {"status": "skipped", "message": "Skipped to next track"}
+            return {"status": "skipped", "response_text": "Skipped to next track"}
         return {"error": "No music is playing to skip"}
 
     async def _skip_previous(self, all_players: list[str]) -> dict:
@@ -1320,7 +1320,7 @@ class MusicController:
         playing = self._find_player_by_state("playing", all_players)
         if playing:
             await self._hass.services.async_call("media_player", "media_previous_track", {"entity_id": playing})
-            return {"status": "skipped", "message": "Previous track"}
+            return {"status": "skipped", "response_text": "Previous track"}
         return {"error": "No music is playing"}
 
     async def _restart_track(self, all_players: list[str]) -> dict:
@@ -1329,7 +1329,7 @@ class MusicController:
         playing = self._find_player_by_state("playing", all_players)
         if playing:
             await self._hass.services.async_call("media_player", "media_seek", {"entity_id": playing, "seek_position": 0})
-            return {"status": "restarted", "message": "Bringing it back from the top"}
+            return {"status": "restarted", "response_text": "Bringing it back from the top"}
         return {"error": "No music is playing"}
 
     async def _what_playing(self, all_players: list[str]) -> dict:
