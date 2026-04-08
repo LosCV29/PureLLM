@@ -285,6 +285,11 @@ def find_entity_by_name(
     # Build list of query variations to try
     queries_to_try = [query]
 
+    # Normalize underscores to spaces — LLM sometimes passes entity_id
+    # suffixes (e.g. "master_dimmer_switch_light") as device names.
+    if "_" in query:
+        queries_to_try.append(query.replace("_", " "))
+
     # Add number-normalized version (e.g., "shade one" -> "shade 1")
     number_normalized = normalize_numbers(query)
     if number_normalized.lower() != query.lower():
@@ -354,6 +359,14 @@ def _find_entity_by_query(
                 partial_matches.append((3 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
             elif _words_match(query_lower, fn_lower):
                 partial_matches.append((4 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
+
+        # PRIORITY 5/15: Exact match on entity_id suffix (the part after the dot).
+        # LLM sometimes passes entity_id suffixes as device names
+        # (e.g. "master_dimmer_switch_light" for light.master_dimmer_switch_light).
+        entity_suffix = entity_entry.entity_id.split(".", 1)[-1].lower()
+        query_as_suffix = query_lower.replace(" ", "_")
+        if entity_suffix == query_lower or entity_suffix == query_as_suffix:
+            partial_matches.append((5 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or entity_suffix))
 
     # Check states not in entity registry
     for entity_id, state in all_states.items():
