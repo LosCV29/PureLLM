@@ -181,7 +181,7 @@ class PureLLMElevenLabsTTS(TextToSpeechEntity):
             "Content-Type": "application/json",
         }
 
-        _LOGGER.debug(
+        _LOGGER.info(
             "ElevenLabs TTS: voice=%s model=%s speed=%.2f stability=%.2f similarity=%.2f style=%.2f boost=%s format=%s",
             voice_id, model_id,
             speed,
