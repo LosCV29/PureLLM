@@ -160,6 +160,7 @@ class PureLLMElevenLabsTTS(TextToSpeechEntity):
             "similarity_boost": float(config.get(CONF_ELEVENLABS_SIMILARITY, DEFAULT_ELEVENLABS_SIMILARITY)),
             "style": float(config.get(CONF_ELEVENLABS_STYLE, DEFAULT_ELEVENLABS_STYLE)),
             "use_speaker_boost": bool(config.get(CONF_ELEVENLABS_SPEAKER_BOOST, DEFAULT_ELEVENLABS_SPEAKER_BOOST)),
+            "speed": speed,
         }
 
         text_normalization = config.get(
@@ -171,7 +172,6 @@ class PureLLMElevenLabsTTS(TextToSpeechEntity):
             "model_id": model_id,
             "voice_settings": voice_settings,
             "apply_text_normalization": text_normalization,
-            "speed": speed,
         }
 
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}?output_format={output_format}"
