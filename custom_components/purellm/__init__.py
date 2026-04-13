@@ -736,7 +736,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Handle config entry updates - reload the integration."""
+    """Handle config entry updates - reload the integration.
+
+    Also clears HA's TTS audio cache. HA keys cached TTS audio by
+    (message, language, options, engine_id) and does not know about the
+    ElevenLabs voice_settings we read from config. Without clearing the
+    cache, changes to stability/similarity/style/speaker_boost sliders
+    would be silently ignored whenever a previously-spoken phrase is
+    replayed, because the stale audio would be served from cache.
+    """
+    if hass.services.has_service("tts", "clear_cache"):
+        try:
+            await hass.services.async_call("tts", "clear_cache", {}, blocking=True)
+            _LOGGER.debug("Cleared HA TTS cache after PureLLM options update")
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Could not clear TTS cache on options update: %s", err)
+
     await hass.config_entries.async_reload(entry.entry_id)
 
 
