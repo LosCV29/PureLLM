@@ -74,12 +74,36 @@ def _discover_plants(hass: "HomeAssistant") -> list["State"]:
     return [s for s in hass.states.async_all() if s.entity_id.startswith("plant.")]
 
 
+_PLANT_NOISE_WORDS = (
+    "the plant", "plant", "my", "the",
+)
+
+
+def _clean_plant_query(query: str) -> str:
+    """Strip filler words so 'boogie the plant' / 'my boogie plant' match 'boogie'."""
+    q = query.strip().lower()
+    # Strip trailing/leading noise words iteratively
+    changed = True
+    while changed:
+        changed = False
+        for noise in _PLANT_NOISE_WORDS:
+            if q.endswith(" " + noise):
+                q = q[: -(len(noise) + 1)].strip()
+                changed = True
+            elif q.startswith(noise + " "):
+                q = q[len(noise) + 1:].strip()
+                changed = True
+    return q
+
+
 def _match_plant(hass: "HomeAssistant", query: str) -> "State | None":
-    """Fuzzy-match a plant by name or slug. Case-insensitive substring match."""
+    """Fuzzy-match a plant by name or slug. Case-insensitive, filler-tolerant."""
     if not query:
         return None
-    q = query.strip().lower()
     plants = _discover_plants(hass)
+    q = _clean_plant_query(query)
+    if not q:
+        return None
 
     # Exact match on slug or friendly name
     for p in plants:
@@ -88,9 +112,12 @@ def _match_plant(hass: "HomeAssistant", query: str) -> "State | None":
         if _plant_name(p).lower() == q:
             return p
 
-    # Substring match on slug or friendly name (e.g. "boog" -> "boogie")
+    # Two-way substring match — handles both "boog" -> "boogie" AND
+    # "boogie the plant" (if noise stripping missed something) -> "boogie"
     for p in plants:
-        if q in _plant_slug(p.entity_id).lower() or q in _plant_name(p).lower():
+        slug = _plant_slug(p.entity_id).lower()
+        name = _plant_name(p).lower()
+        if q in slug or slug in q or q in name or name in q:
             return p
 
     return None
@@ -228,6 +255,11 @@ async def check_plant_status(
     plant_arg = (arguments.get("plant") or "").strip()
     metric_arg = (arguments.get("metric") or "").strip().lower()
     problems_only = bool(arguments.get("problems_only"))
+
+    _LOGGER.info(
+        "check_plant_status called: plant=%r metric=%r problems_only=%s",
+        plant_arg, metric_arg, problems_only,
+    )
 
     plants = _discover_plants(hass)
     if not plants:

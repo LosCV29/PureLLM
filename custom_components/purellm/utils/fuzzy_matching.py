@@ -234,10 +234,15 @@ def get_exposed_entity_names(
     names: list[str] = []
 
     # Domains to always skip (non-queryable infrastructure)
+    # `plant` is skipped because plant.* aggregates are handled exclusively by
+    # check_plant_status — exposing them here caused the LLM to route soil
+    # moisture questions to check_device_status and hallucinate numbers from
+    # the plant's "ok"/"problem" state.
     _SKIP_ALWAYS = frozenset((
         "weather", "person", "zone", "sun", "device_tracker", "update",
         "button", "calendar", "tts", "stt", "conversation",
         "number", "input_number", "input_text", "select", "input_select",
+        "plant",
     ))
     # Domains to skip only when listing controllable devices
     _SKIP_CONTROL_ONLY = frozenset(("sensor", "binary_sensor"))

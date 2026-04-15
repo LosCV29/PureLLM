@@ -170,27 +170,39 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     # for users who don't use the plant integration.
     if config.enable_plants and _plant_names:
         plant_desc = (
-            "Query plant sensors (moisture, temperature, conductivity, illuminance, "
-            "humidity, dli, battery) and health status. Read-only. "
-            "Omit plant to query all plants. Use problems_only=true for "
-            "'does any plant need water' / 'any plants in trouble' questions — "
-            "the integration flags each metric as ok/Low/High against per-plant "
-            "thresholds. Use metric='thresholds' to read the min/max limits."
-            f" Known plants: {', '.join(_plant_names)}."
+            "Read-only plant sensor queries. ALWAYS use this (never check_device_status) "
+            "for ANY plant-related question — moisture, water, watering, soil, "
+            "temperature, conductivity, illuminance, humidity, dli, battery, health.\n"
+            "EXAMPLES (copy the args exactly):\n"
+            "  'what is the soil moisture for X the plant' / 'soil moisture for X'\n"
+            "      -> plant='X', metric='moisture'\n"
+            "  'does any plant need water' / 'do any plants need watering' / 'any plant dry'\n"
+            "      -> metric='moisture', problems_only=true\n"
+            "  'is any plant in trouble' / 'any plants with problems'\n"
+            "      -> problems_only=true\n"
+            "  'how is X the plant' / 'check on X'\n"
+            "      -> plant='X'\n"
+            "  'what's X's moisture threshold' / 'minimum moisture for X'\n"
+            "      -> plant='X', metric='thresholds'\n"
+            "'Water', 'watering', 'dry', 'thirsty' ALWAYS map to metric='moisture'.\n"
+            f"Known plants: {', '.join(_plant_names)}."
         )
         tools.append(_tool(
             "check_plant_status", plant_desc,
             {
-                "plant": {"type": "string", "description": "Plant name (fuzzy matched). Omit for all plants."},
+                "plant": {
+                    "type": "string",
+                    "description": "Plant name only (e.g. 'boogie'). Do NOT include 'the plant' or 'my'. Omit for all plants.",
+                },
                 "metric": {
                     "type": "string",
                     "enum": ["moisture", "temperature", "conductivity", "illuminance",
                              "humidity", "dli", "battery", "status", "thresholds"],
-                    "description": "Specific metric to read. Omit for full readout."
+                    "description": "Specific metric. 'moisture' for water/soil/dry/thirsty questions. Omit for full readout."
                 },
                 "problems_only": {
                     "type": "boolean",
-                    "description": "Only return plants with a non-ok status. Use for 'needs water' / 'has problems' queries."
+                    "description": "True for 'needs water' / 'in trouble' / 'has problems' sweeps across all plants."
                 },
             },
         ))
