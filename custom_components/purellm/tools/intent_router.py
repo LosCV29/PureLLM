@@ -130,6 +130,14 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "sofabaton",
         "watch ", "start watching",
     ],
+    "plants": [
+        " plant", " plants",
+        "moisture", " soil",
+        "watering", "watered",
+        "need water", "needs water", "need watering",
+        "thirsty",
+        " dli",
+    ],
 }
 
 # Map intent categories → tool function names
@@ -152,6 +160,7 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
     "device_status": ["check_device_status"],
     "search": ["web_search"],
     "sofabaton": ["control_sofabaton", "control_device"],
+    "plants": ["check_plant_status"],
 }
 
 # Tiny tools that are cheap to always include (~30 tokens each)
