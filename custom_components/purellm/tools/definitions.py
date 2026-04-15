@@ -45,10 +45,13 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     # Get exposed entity names for tool descriptions
     _exposed_names: list[str] = []
     _status_names: list[str] = []  # Includes sensors/binary_sensors for status checks
+    _plant_names: list[str] = []
     if hass:
         from ..utils.fuzzy_matching import get_exposed_entity_names
+        from .plants import list_plant_names
         _exposed_names = get_exposed_entity_names(hass)
         _status_names = get_exposed_entity_names(hass, include_sensors=True)
+        _plant_names = list_plant_names(hass)
 
     # ===== CORE TOOLS (always enabled) =====
     tools.append(_tool("get_current_datetime", "Get current date/time."))
@@ -160,6 +163,36 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
             "check_device_status", status_desc,
             {"device": {"type": "string"}},
             ["device"]
+        ))
+
+    # ===== PLANT STATUS (Olen homeassistant-plant integration) =====
+    # Only register if plants are actually present — keeps the tool list lean
+    # for users who don't use the plant integration.
+    if config.enable_plants and _plant_names:
+        plant_desc = (
+            "Query plant sensors (moisture, temperature, conductivity, illuminance, "
+            "humidity, dli, battery) and health status. Read-only. "
+            "Omit plant to query all plants. Use problems_only=true for "
+            "'does any plant need water' / 'any plants in trouble' questions — "
+            "the integration flags each metric as ok/Low/High against per-plant "
+            "thresholds. Use metric='thresholds' to read the min/max limits."
+            f" Known plants: {', '.join(_plant_names)}."
+        )
+        tools.append(_tool(
+            "check_plant_status", plant_desc,
+            {
+                "plant": {"type": "string", "description": "Plant name (fuzzy matched). Omit for all plants."},
+                "metric": {
+                    "type": "string",
+                    "enum": ["moisture", "temperature", "conductivity", "illuminance",
+                             "humidity", "dli", "battery", "status", "thresholds"],
+                    "description": "Specific metric to read. Omit for full readout."
+                },
+                "problems_only": {
+                    "type": "boolean",
+                    "description": "Only return plants with a non-ok status. Use for 'needs water' / 'has problems' queries."
+                },
+            },
         ))
 
     # ===== MUSIC =====
@@ -277,6 +310,7 @@ class ToolConfig:
         self.enable_wikipedia = entity.enable_wikipedia
         self.enable_music = entity.enable_music
         self.enable_search = entity.enable_search
+        self.enable_plants = entity.enable_plants
 
         self.openweathermap_api_key = entity.openweathermap_api_key
         self.google_places_api_key = entity.google_places_api_key

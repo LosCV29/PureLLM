@@ -86,6 +86,7 @@ CONF_ENABLE_DEVICE_STATUS: Final = "enable_device_status"
 CONF_ENABLE_WIKIPEDIA: Final = "enable_wikipedia"
 CONF_ENABLE_MUSIC: Final = "enable_music"
 CONF_ENABLE_SEARCH: Final = "enable_search"
+CONF_ENABLE_PLANTS: Final = "enable_plants"
 
 DEFAULT_ENABLE_WEATHER: Final = True
 DEFAULT_ENABLE_CALENDAR: Final = True
@@ -97,6 +98,7 @@ DEFAULT_ENABLE_DEVICE_STATUS: Final = True
 DEFAULT_ENABLE_WIKIPEDIA: Final = True
 DEFAULT_ENABLE_MUSIC: Final = False  # Requires Music Assistant + player config
 DEFAULT_ENABLE_SEARCH: Final = True  # Web search via Tavily
+DEFAULT_ENABLE_PLANTS: Final = True  # Auto-discovers plant.* entities; no-op if none present
 
 # =============================================================================
 # ENTITY CONFIGURATION - User-defined entities
