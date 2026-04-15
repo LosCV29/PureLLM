@@ -132,10 +132,12 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
     ],
     "plants": [
         " plant", " plants",
-        "moisture", " soil",
+        "moisture", " soil ",
         "watering", "watered",
         "need water", "needs water", "need watering",
-        "thirsty",
+        "thirsty", " dry", " wet",
+        "hydrated", "hydration",
+        "overwater", "underwater", "drown",
         " dli",
     ],
 }
