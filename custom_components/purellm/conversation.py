@@ -1951,7 +1951,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     self._current_user_query, self.format_temp
                 ),
                 "check_plant_status": lambda: plants_tool.check_plant_status(
-                    arguments, self.hass
+                    arguments, self.hass, self._current_user_query
                 ),
                 "control_device": lambda: self._execute_control_device(arguments),
                 "control_timer": lambda: timer_tool.control_timer(

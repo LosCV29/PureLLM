@@ -229,9 +229,109 @@ def list_plant_names(hass: "HomeAssistant") -> list[str]:
     return sorted({_plant_name(p) for p in _discover_plants(hass)})
 
 
+# Keywords that strongly imply the user is asking about moisture/watering.
+# Used as a backstop when the LLM omits metric='moisture' for a water query.
+_WATER_KEYWORDS = (
+    "water", "watering", "moisture", "soil", "thirsty", "dry",
+    "wet", "hydrat", "overwater", "underwater", "drown",
+)
+
+
+def _infer_metric_from_query(user_query: str) -> str | None:
+    """Infer the intended metric from the user's natural-language query.
+
+    Only fires when the LLM didn't provide one — meant as a safety net, not
+    a replacement for the LLM choosing the right param.
+    """
+    if not user_query:
+        return None
+    q = user_query.lower()
+    if any(kw in q for kw in _WATER_KEYWORDS):
+        return "moisture"
+    return None
+
+
+def _join_names(entries: list[dict[str, Any]]) -> str:
+    return ", ".join(e["plant"] for e in entries)
+
+
+def _pluralize(n: int, singular: str, plural: str) -> str:
+    return singular if n == 1 else plural
+
+
+def _moisture_sweep(
+    hass: "HomeAssistant",
+    plants: list["State"],
+    problems_only: bool,
+) -> dict[str, Any]:
+    """Group every plant's moisture status into underwatered / overwatered /
+    ok / unavailable, and produce a response_text ready for TTS.
+
+    This is the star query — "does any plant need water" — so we go
+    out of our way to format it so the LLM can't lose the thread.
+    """
+    underwatered: list[dict[str, Any]] = []
+    overwatered: list[dict[str, Any]] = []
+    ok_plants: list[dict[str, Any]] = []
+    unavailable: list[dict[str, Any]] = []
+
+    for p in plants:
+        block = _metric_block(hass, p, "moisture")
+        entry = {"plant": _plant_name(p), **block}
+        if block["value"] is None:
+            unavailable.append(entry)
+        elif block["status"] == "Low":
+            underwatered.append(entry)
+        elif block["status"] == "High":
+            overwatered.append(entry)
+        else:
+            ok_plants.append(entry)
+
+    # Build a natural-language response_text the LLM can repeat verbatim
+    parts: list[str] = []
+    if underwatered:
+        verb = _pluralize(len(underwatered), "needs", "need")
+        parts.append(
+            f"{len(underwatered)} {_pluralize(len(underwatered), 'plant', 'plants')} "
+            f"{verb} water ({_join_names(underwatered)})"
+        )
+    if overwatered:
+        verb = _pluralize(len(overwatered), "is", "are")
+        parts.append(
+            f"{len(overwatered)} {_pluralize(len(overwatered), 'plant', 'plants')} "
+            f"{verb} overwatered ({_join_names(overwatered)})"
+        )
+
+    if not parts:
+        response_text = f"All {len(plants)} plants have adequate moisture."
+    else:
+        response_text = "; ".join(parts) + "."
+
+    if unavailable:
+        response_text += (
+            f" {len(unavailable)} "
+            f"{_pluralize(len(unavailable), 'sensor is', 'sensors are')} unavailable."
+        )
+
+    result: dict[str, Any] = {
+        "metric": "moisture",
+        "underwatered_plants": underwatered,
+        "overwatered_plants": overwatered,
+        "total_checked": len(plants),
+        "response_text": response_text,
+        "instruction": "Use response_text VERBATIM. Do not re-label or combine underwatered/overwatered plants.",
+    }
+    if unavailable:
+        result["unavailable_sensors"] = unavailable
+    if not problems_only:
+        result["ok_plants"] = ok_plants
+    return result
+
+
 async def check_plant_status(
     arguments: dict[str, Any],
     hass: "HomeAssistant",
+    user_query: str = "",
 ) -> dict[str, Any]:
     """Query plant status via the Olen homeassistant-plant integration.
 
@@ -245,6 +345,9 @@ async def check_plant_status(
                 overall status is ``problem`` (or, with a ``metric``, plants whose
                 that metric's status is Low/High).
         hass: Home Assistant instance.
+        user_query: Original user utterance. Used as a safety net to infer
+            ``metric='moisture'`` if the LLM forgot to pass it for a water
+            question like "any plants dry".
 
     Returns:
         Dict with the query result. Shape depends on arguments:
@@ -256,9 +359,21 @@ async def check_plant_status(
     metric_arg = (arguments.get("metric") or "").strip().lower()
     problems_only = bool(arguments.get("problems_only"))
 
+    # Safety net: if the LLM didn't pick a metric but the user clearly asked
+    # about moisture, infer it. Prevents the LLM from silently falling into
+    # the generic overview path and giving muddy answers.
+    if not metric_arg:
+        inferred = _infer_metric_from_query(user_query)
+        if inferred:
+            _LOGGER.info(
+                "check_plant_status: inferring metric=%r from user query %r",
+                inferred, user_query,
+            )
+            metric_arg = inferred
+
     _LOGGER.info(
-        "check_plant_status called: plant=%r metric=%r problems_only=%s",
-        plant_arg, metric_arg, problems_only,
+        "check_plant_status called: plant=%r metric=%r problems_only=%s (query=%r)",
+        plant_arg, metric_arg, problems_only, user_query,
     )
 
     plants = _discover_plants(hass)
@@ -285,9 +400,22 @@ async def check_plant_status(
         # Specific metric ------------------------------------------------
         if metric_arg in METRIC_MAP:
             block = _metric_block(hass, plant, metric_arg)
+            value = block["value"]
+            unit = block.get("unit", "")
+            status = block["status"]
+            if value is None:
+                response_text = f"{name}'s {metric_arg} sensor is unavailable."
+            else:
+                status_phrase = ""
+                if status == "Low":
+                    status_phrase = f" (below minimum of {block.get('min', '?')}{unit})"
+                elif status == "High":
+                    status_phrase = f" (above maximum of {block.get('max', '?')}{unit})"
+                response_text = f"{name}'s {metric_arg} is {value}{unit}{status_phrase}."
             return {
                 "plant": name,
                 "species": plant.attributes.get("species"),
+                "response_text": response_text,
                 **block,
             }
 
@@ -295,8 +423,9 @@ async def check_plant_status(
             val, unit = _battery_for_plant(hass, slug)
             if val is None:
                 return {"plant": name, "metric": "battery", "value": None,
-                        "message": "No battery sensor found for this plant."}
-            return {"plant": name, "metric": "battery", "value": val, "unit": unit or "%"}
+                        "response_text": f"{name}'s plant sensor battery reading is unavailable."}
+            return {"plant": name, "metric": "battery", "value": val, "unit": unit or "%",
+                    "response_text": f"{name}'s plant sensor battery is at {val}{unit or '%'}."}
 
         if metric_arg == "thresholds":
             thresholds: dict[str, Any] = {}
@@ -310,16 +439,26 @@ async def check_plant_status(
 
         # No metric → full readout
         issues = _plant_issues(plant)
+        state = plant.state
+        if state == "ok" and not issues:
+            response_text = f"{name} is doing well — no issues detected."
+        else:
+            response_text = f"{name}: {', '.join(issues) if issues else state}."
         return {
             "plant": name,
             "species": plant.attributes.get("species"),
-            "state": plant.state,  # "ok" or "problem"
+            "state": state,
             "issues": issues,
             "metrics": _all_metric_blocks(hass, plant),
+            "response_text": response_text,
         }
 
     # ========== All plants ==========
-    # Specific metric across every plant
+    # Moisture sweep gets special grouped treatment (under/over/ok/unavailable)
+    if metric_arg == "moisture":
+        return _moisture_sweep(hass, plants, problems_only)
+
+    # Other metric sweeps
     if metric_arg in METRIC_MAP:
         results = []
         for p in plants:
@@ -327,11 +466,21 @@ async def check_plant_status(
             if problems_only and block["status"] == "ok":
                 continue
             results.append({"plant": _plant_name(p), **block})
+        if not results:
+            response_text = (
+                f"All {len(plants)} plants are within their {metric_arg} range."
+                if problems_only else
+                f"No {metric_arg} readings available."
+            )
+        else:
+            names = ", ".join(f"{r['plant']} ({r['status']})" for r in results)
+            response_text = f"{metric_arg.title()} issues: {names}."
         return {
             "metric": metric_arg,
             "plants": results,
             "total_checked": len(plants),
             "problems_only": problems_only,
+            "response_text": response_text,
         }
 
     if metric_arg == "battery":
@@ -344,9 +493,14 @@ async def check_plant_status(
             if problems_only and (not isinstance(val, (int, float)) or val >= 20):
                 continue
             results.append(entry)
+        if not results:
+            response_text = ("All plant sensor batteries are above 20%."
+                             if problems_only else "No battery readings available.")
+        else:
+            names = ", ".join(f"{r['plant']} ({r['value']}{r.get('unit', '%')})" for r in results)
+            response_text = f"Low batteries: {names}." if problems_only else f"Plant sensor batteries: {names}."
         return {"metric": "battery", "plants": results, "total_checked": len(plants),
-                "problems_only": problems_only,
-                "note": "Batteries below 20% flagged as problems" if problems_only else None}
+                "problems_only": problems_only, "response_text": response_text}
 
     # No metric → overview of every plant
     overview = []
@@ -359,9 +513,16 @@ async def check_plant_status(
             "state": p.state,
             "issues": issues,
         })
+    problem_count = sum(1 for p in plants if p.state == "problem")
+    if not overview:
+        response_text = f"All {len(plants)} plants are doing well."
+    else:
+        lines = [f"{e['plant']}: {', '.join(e['issues']) if e['issues'] else e['state']}" for e in overview]
+        response_text = "; ".join(lines) + "."
     return {
         "plants": overview,
         "total": len(plants),
-        "problem_count": sum(1 for p in plants if p.state == "problem"),
+        "problem_count": problem_count,
         "problems_only": problems_only,
+        "response_text": response_text,
     }
