@@ -133,6 +133,7 @@ from .const import (
     CONF_ENABLE_DEVICE_STATUS,
     CONF_ENABLE_MUSIC,
     CONF_ENABLE_PLACES,
+    CONF_ENABLE_PLANTS,
     CONF_ENABLE_SPORTS,
     CONF_ENABLE_THERMOSTAT,
     CONF_ENABLE_WEATHER,
@@ -175,6 +176,7 @@ from .const import (
     DEFAULT_ENABLE_DEVICE_STATUS,
     DEFAULT_ENABLE_MUSIC,
     DEFAULT_ENABLE_PLACES,
+    DEFAULT_ENABLE_PLANTS,
     DEFAULT_ENABLE_SPORTS,
     DEFAULT_ENABLE_THERMOSTAT,
     DEFAULT_ENABLE_WEATHER,
@@ -217,6 +219,7 @@ from .tools import timer as timer_tool
 from .tools import lists as lists_tool
 from .tools import sofabaton as sofabaton_tool
 from .tools import search as search_tool
+from .tools import plants as plants_tool
 
 if TYPE_CHECKING:
     import aiohttp
@@ -356,6 +359,7 @@ class PureLLMConversationEntity(ConversationEntity):
         self.enable_wikipedia = config.get(CONF_ENABLE_WIKIPEDIA, DEFAULT_ENABLE_WIKIPEDIA)
         self.enable_music = config.get(CONF_ENABLE_MUSIC, DEFAULT_ENABLE_MUSIC)
         self.enable_search = config.get(CONF_ENABLE_SEARCH, DEFAULT_ENABLE_SEARCH)
+        self.enable_plants = config.get(CONF_ENABLE_PLANTS, DEFAULT_ENABLE_PLANTS)
 
         # Entity configuration
         self.room_player_mapping = parse_entity_config(config.get(CONF_ROOM_PLAYER_MAPPING, DEFAULT_ROOM_PLAYER_MAPPING))
@@ -1945,6 +1949,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 "check_device_status": lambda: device_tool.check_device_status(
                     arguments, self.hass,
                     self._current_user_query, self.format_temp
+                ),
+                "check_plant_status": lambda: plants_tool.check_plant_status(
+                    arguments, self.hass
                 ),
                 "control_device": lambda: self._execute_control_device(arguments),
                 "control_timer": lambda: timer_tool.control_timer(

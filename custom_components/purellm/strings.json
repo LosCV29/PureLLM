@@ -74,7 +74,8 @@
           "enable_device_status": "Device Status Checks",
           "enable_wikipedia": "Wikipedia & Age Lookup",
           "enable_music": "Music Control (Music Assistant)",
-          "enable_search": "Web Search (Tavily)"
+          "enable_search": "Web Search (Tavily)",
+          "enable_plants": "Plant Sensor Queries (Olen homeassistant-plant)"
         }
       },
       "entities": {

@@ -57,6 +57,7 @@ from .const import (
     CONF_ENABLE_WIKIPEDIA,
     CONF_ENABLE_MUSIC,
     CONF_ENABLE_SEARCH,
+    CONF_ENABLE_PLANTS,
     # Entity config
     CONF_THERMOSTAT_ENTITY,
     CONF_CALENDAR_ENTITIES,
@@ -84,6 +85,7 @@ from .const import (
     DEFAULT_ENABLE_WIKIPEDIA,
     DEFAULT_ENABLE_MUSIC,
     DEFAULT_ENABLE_SEARCH,
+    DEFAULT_ENABLE_PLANTS,
     DEFAULT_THERMOSTAT_ENTITY,
     DEFAULT_CALENDAR_ENTITIES,
     DEFAULT_ROOM_PLAYER_MAPPING,
@@ -581,6 +583,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_ENABLE_SEARCH,
                         default=current.get(CONF_ENABLE_SEARCH, DEFAULT_ENABLE_SEARCH),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_ENABLE_PLANTS,
+                        default=current.get(CONF_ENABLE_PLANTS, DEFAULT_ENABLE_PLANTS),
                     ): cv.boolean,
                 }
             ),
