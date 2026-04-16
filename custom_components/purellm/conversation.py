@@ -11,7 +11,7 @@ import logging
 import re
 import time
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
 
@@ -220,11 +220,65 @@ from .tools import lists as lists_tool
 from .tools import sofabaton as sofabaton_tool
 from .tools import search as search_tool
 from .tools import plants as plants_tool
+from .tts import (
+    TTS_PLAYBACK_STARTUP_BUFFER,
+    TTS_PLAYBACK_TAIL_BUFFER,
+    subscribe_next_tts,
+)
 
 if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
+
+# How long to wait for our TTS entity to report audio duration before falling
+# back to a character-count estimate. ElevenLabs synthesis normally returns in
+# well under a second; if nothing arrives in this window, assume a different
+# TTS engine is handling speech and estimate duration ourselves.
+_TTS_SIGNAL_TIMEOUT = 3.0
+# Average speech rate for the char-count fallback: ~15 chars/sec ≈ 180 wpm.
+_TTS_CHARS_PER_SECOND = 15.0
+
+
+async def _play_after_tts_finishes(
+    hass: HomeAssistant,
+    speech_text: str,
+    play_action: "Callable[[], Awaitable[None]]",
+) -> None:
+    """Run play_action once the upcoming TTS announcement has finished playing.
+
+    Subscribes to the TTS entity's one-shot completion signal to get the exact
+    audio duration; if the configured TTS engine isn't ours, falls back to a
+    character-count estimate so the behavior degrades gracefully.
+    """
+    duration_event = asyncio.Event()
+    reported = [0.0]
+
+    async def _on_tts(duration: float) -> None:
+        reported[0] = duration
+        duration_event.set()
+
+    unsubscribe = subscribe_next_tts(hass, _on_tts)
+
+    try:
+        await asyncio.wait_for(duration_event.wait(), timeout=_TTS_SIGNAL_TIMEOUT)
+        duration = reported[0]
+        _LOGGER.debug("Play-after-TTS: using measured duration %.2fs", duration)
+    except asyncio.TimeoutError:
+        unsubscribe()
+        duration = max(1.0, len(speech_text) / _TTS_CHARS_PER_SECOND)
+        _LOGGER.debug(
+            "Play-after-TTS: no duration signal, estimating %.2fs from %d chars",
+            duration, len(speech_text),
+        )
+
+    try:
+        await asyncio.sleep(
+            TTS_PLAYBACK_STARTUP_BUFFER + duration + TTS_PLAYBACK_TAIL_BUFFER,
+        )
+        await play_action()
+    except Exception as err:
+        _LOGGER.error("Play-after-TTS execution failed: %s", err, exc_info=True)
 
 # Type for delta dictionaries used in streaming
 ContentDelta = dict[str, Any]
@@ -790,10 +844,11 @@ class PureLLMConversationEntity(ConversationEntity):
             user_text, query, artist, room,
         )
 
+        play_action: Callable[[], Awaitable[None]] | None = None
         try:
             if not self._music_controller:
                 return None
-            result = await self._music_controller.control_music(arguments)
+            result, play_action = await self._music_controller.control_music_deferred(arguments)
             _LOGGER.info("Music play short-circuit result: %s", result)
             speech = result.get("response_text", "Done.") if "error" not in result else result["error"]
         except Exception as err:
@@ -802,6 +857,13 @@ class PureLLMConversationEntity(ConversationEntity):
 
         response = intent.IntentResponse(language=user_input.language)
         response.async_set_speech(speech)
+
+        if play_action is not None:
+            self.hass.async_create_task(
+                _play_after_tts_finishes(self.hass, speech, play_action),
+                name="purellm_play_music_after_tts",
+            )
+
         return conversation.ConversationResult(
             response=response,
             conversation_id=conversation_id,
@@ -1897,7 +1959,20 @@ class PureLLMConversationEntity(ConversationEntity):
                 arguments["room"] = self._current_satellite_room
 
         arguments["_user_text"] = getattr(self, "_current_user_text", "")
-        return await self._music_controller.control_music(arguments)
+
+        # Play-style actions: resolve the track synchronously (so the LLM gets
+        # a confirmed response_text to speak) but defer the actual play_media
+        # call until after the TTS announcement finishes. For non-play actions
+        # like pause/volume/skip, control_music_deferred returns play_action=None
+        # and we behave exactly like before.
+        result, play_action = await self._music_controller.control_music_deferred(arguments)
+        if play_action is not None:
+            speech_text = result.get("response_text", "") or ""
+            self.hass.async_create_task(
+                _play_after_tts_finishes(self.hass, speech_text, play_action),
+                name="purellm_play_music_after_tts",
+            )
+        return result
 
     async def _execute_tool(
         self,

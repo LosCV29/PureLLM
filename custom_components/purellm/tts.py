@@ -6,8 +6,9 @@ as the TTS engine in your Assist pipeline for full control.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 import aiohttp
 
@@ -54,6 +55,86 @@ _FORMAT_TO_CONTENT_TYPE = {
     "pcm": "s16le",
     "ulaw": "mulaw",
 }
+
+# Shared bus so other components (e.g. music tool) can react to TTS completion
+# without coupling to this module's internals. A subscriber registers a one-shot
+# async callback that receives the estimated audio duration as soon as we know
+# it; the subscriber decides how long to wait before acting.
+TTS_SUBSCRIBERS_KEY = "tts_completion_subscribers"
+
+# Latency between audio bytes being returned to HA and the satellite actually
+# starting playback (file cache → URL → media_player.play_media → stream).
+# Plus a small tail so music doesn't start at the exact sample the voice ends.
+TTS_PLAYBACK_STARTUP_BUFFER = 0.4
+TTS_PLAYBACK_TAIL_BUFFER = 0.25
+
+
+def _estimate_audio_duration(audio: bytes, output_format: str) -> float:
+    """Compute playback duration in seconds from raw ElevenLabs audio bytes.
+
+    ElevenLabs output formats encode their parameters in the name
+    (e.g. "mp3_44100_128" = 44.1 kHz CBR @ 128 kbps, "pcm_22050" = signed
+    16-bit mono PCM @ 22.05 kHz, "ulaw_8000" = 8-bit µ-law @ 8 kHz), which
+    lets us derive the exact duration without pulling in an mp3 parser.
+    """
+    if not audio or not output_format:
+        return 0.0
+    parts = output_format.split("_")
+    codec = parts[0]
+    try:
+        if codec == "mp3" and len(parts) >= 3:
+            bitrate_kbps = int(parts[2])
+            if bitrate_kbps > 0:
+                return len(audio) * 8.0 / (bitrate_kbps * 1000.0)
+        elif codec == "pcm" and len(parts) >= 2:
+            sample_rate = int(parts[1])
+            if sample_rate > 0:
+                return len(audio) / (sample_rate * 2.0)
+        elif codec == "ulaw" and len(parts) >= 2:
+            sample_rate = int(parts[1])
+            if sample_rate > 0:
+                return len(audio) / float(sample_rate)
+    except ValueError:
+        pass
+    return 0.0
+
+
+def subscribe_next_tts(
+    hass: HomeAssistant,
+    callback: Callable[[float], Awaitable[None]],
+) -> Callable[[], None]:
+    """Register a one-shot callback fired when the next TTS synthesis completes.
+
+    The callback receives the estimated audio duration (seconds). Returns an
+    unsubscribe function so callers can cancel the registration (e.g. on
+    timeout).
+    """
+    queue: list = hass.data.setdefault(DOMAIN, {}).setdefault(
+        TTS_SUBSCRIBERS_KEY, []
+    )
+    queue.append(callback)
+
+    def _unsubscribe() -> None:
+        try:
+            queue.remove(callback)
+        except ValueError:
+            pass
+
+    return _unsubscribe
+
+
+def _notify_tts_subscribers(hass: HomeAssistant, duration: float) -> None:
+    """Fire all pending one-shot TTS subscribers with the estimated duration."""
+    queue: list = hass.data.get(DOMAIN, {}).get(TTS_SUBSCRIBERS_KEY, [])
+    if not queue:
+        return
+    pending = queue[:]
+    queue.clear()
+    for callback in pending:
+        try:
+            hass.async_create_task(callback(duration))
+        except Exception as err:
+            _LOGGER.error("TTS completion subscriber failed: %s", err)
 
 
 async def async_setup_entry(
@@ -214,10 +295,13 @@ class PureLLMElevenLabsTTS(TextToSpeechEntity):
                     format_prefix = output_format.split("_")[0]
                     content_type = _FORMAT_TO_CONTENT_TYPE.get(format_prefix, "audio/mpeg")
 
+                    duration = _estimate_audio_duration(audio_data, output_format)
                     _LOGGER.debug(
-                        "ElevenLabs TTS: received %d bytes (%s)",
-                        len(audio_data), content_type,
+                        "ElevenLabs TTS: received %d bytes (%s), ~%.2fs",
+                        len(audio_data), content_type, duration,
                     )
+                    if duration > 0:
+                        _notify_tts_subscribers(self.hass, duration)
                     return (content_type, audio_data)
 
         except aiohttp.ClientError as err:
