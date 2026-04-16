@@ -6,7 +6,7 @@ import logging
 import re
 import unicodedata
 from datetime import datetime
-from typing import Any, TYPE_CHECKING
+from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
 from urllib.parse import quote
 
@@ -458,6 +458,38 @@ class MusicController:
         self._last_music_command: str | None = None
         self._last_music_command_time: datetime | None = None
         self._music_debounce_seconds = 3.0
+
+    async def control_music_deferred(
+        self, arguments: dict[str, Any],
+    ) -> tuple[dict[str, Any], Callable[[], Awaitable[None]] | None]:
+        """Run control_music, capturing any play_media calls instead of firing.
+
+        Returns (result, play_action). When play_action is not None, the caller
+        is responsible for awaiting it to actually start playback. Non-play
+        actions (pause, resume, volume, etc.) return play_action=None because
+        they don't emit audio that should wait for TTS.
+        """
+        captured: list[tuple[str, str, str]] = []
+        original = self._play_media
+
+        async def _capture(player: str, media_id: str, media_type: str) -> bool:
+            captured.append((player, media_id, media_type))
+            return True
+
+        self._play_media = _capture  # type: ignore[method-assign]
+        try:
+            result = await self.control_music(arguments)
+        finally:
+            self._play_media = original  # type: ignore[method-assign]
+
+        if not captured:
+            return result, None
+
+        async def _do_play() -> None:
+            for player, media_id, media_type in captured:
+                await original(player, media_id, media_type)
+
+        return result, _do_play
 
     async def control_music(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Control music playback.
