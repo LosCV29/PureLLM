@@ -1134,8 +1134,16 @@ class MusicController:
                     variant_penalty = -500
                     _LOGGER.debug("MUSIC: Variant penalty applied to '%s' (version='%s')", item_name, item_version)
 
+            # Prefer explicit over clean when both versions of the same song exist.
+            # Apple Music returns explicit as top-level field: True/False/None.
+            explicit_bonus = 0
+            if item.get("explicit") is True:
+                explicit_bonus = 15
+            elif item.get("explicit") is False or re.search(r'\bclean\b', item_name):
+                explicit_bonus = -15
+
             # Require name to actually match — artist-only matches play wrong songs
-            score = name_score + artist_score + variant_penalty
+            score = name_score + artist_score + variant_penalty + explicit_bonus
             if score > best_score and name_score > 0:
                 best_score = score
                 best = item
@@ -1184,7 +1192,7 @@ class MusicController:
             # Step 1: Resolve artist via MA (handles Tupac→2Pac, Jay Z→JAY-Z)
             resolved_artist = await self._resolve_artist_name(ma_config_entry_id, artist)
 
-            # Step 2: Search MA directly (clean versions are filtered in _search_ma)
+            # Step 2: Search MA directly (explicit versions preferred via scoring)
             match = await self._search_ma(ma_config_entry_id, query, resolved_artist, media_type, album)
 
             # Step 3: MusicBrainz fallback — resolve canonical name, retry MA
