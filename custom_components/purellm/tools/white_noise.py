@@ -20,15 +20,53 @@ _LOGGER = logging.getLogger(__name__)
 
 # Search queries sent to Music Assistant for each sound type. MA resolves
 # these against the user's configured providers (Spotify, Apple Music, etc.).
-SOUND_QUERIES: dict[str, str] = {
-    "white": "white noise",
-    "pink": "pink noise",
-    "brown": "brown noise",
-    "rain": "rain sounds",
-    "ocean": "ocean waves",
-    "fan": "fan noise",
-    "thunder": "thunderstorm sounds",
-    "shushing": "baby shushing",
+#
+# Each entry is an ordered list of (query, media_type) fallback attempts.
+# We try playlists first (curated, all-ambient) before falling back to
+# artist search (whose catalog is expanded via radio_mode). A plain
+# "white noise" track search is avoided because streaming libraries
+# contain many pop songs literally titled "White Noise" that hijack the
+# match and, with radio_mode, pull in similar pop tracks.
+SOUND_QUERIES: dict[str, list[tuple[str, str]]] = {
+    "white": [
+        ("white noise sleep", "playlist"),
+        ("White Noise Baby Sleep Sounds", "artist"),
+        ("white noise 8 hours", "track"),
+    ],
+    "pink": [
+        ("pink noise sleep", "playlist"),
+        ("Pink Noise", "artist"),
+        ("pink noise 8 hours", "track"),
+    ],
+    "brown": [
+        ("brown noise sleep", "playlist"),
+        ("Brown Noise", "artist"),
+        ("brown noise 8 hours", "track"),
+    ],
+    "rain": [
+        ("rain sounds sleep", "playlist"),
+        ("Rain Sounds", "artist"),
+        ("rain sounds 8 hours", "track"),
+    ],
+    "ocean": [
+        ("ocean sounds sleep", "playlist"),
+        ("Ocean Sounds", "artist"),
+        ("ocean waves 8 hours", "track"),
+    ],
+    "fan": [
+        ("fan noise sleep", "playlist"),
+        ("Fan Sounds", "artist"),
+        ("fan sounds 8 hours", "track"),
+    ],
+    "thunder": [
+        ("thunderstorm sleep", "playlist"),
+        ("Thunderstorm Sounds", "artist"),
+        ("thunderstorm 8 hours", "track"),
+    ],
+    "shushing": [
+        ("Baby Shusher", "artist"),
+        ("baby shushing", "track"),
+    ],
 }
 
 DEFAULT_SOUND = "white"
@@ -55,19 +93,84 @@ class WhiteNoiseController:
                 return [pid]
         return []
 
-    def _resolve_sound(self, sound: str | None) -> tuple[str, str]:
-        """Return (sound_key, search_query) for a user-supplied sound label."""
+    def _resolve_sound(self, sound: str | None) -> tuple[str, list[tuple[str, str]]]:
+        """Return (sound_key, fallback attempts) for a user-supplied label."""
         if not sound:
             return DEFAULT_SOUND, SOUND_QUERIES[DEFAULT_SOUND]
         key = sound.lower().strip()
         if key in SOUND_QUERIES:
             return key, SOUND_QUERIES[key]
-        # Fuzzy: match any sound key contained in the user's phrase
         for candidate in SOUND_QUERIES:
             if candidate in key or key in candidate:
                 return candidate, SOUND_QUERIES[candidate]
-        # Unknown label — treat the whole phrase as a free-form search
-        return key, key
+        # Unknown label — treat as free-form with track + artist attempts
+        return key, [(key, "playlist"), (key, "artist"), (key, "track")]
+
+    def _ma_config_entry_id(self) -> str | None:
+        entries = self._hass.config_entries.async_entries("music_assistant")
+        return entries[0].entry_id if entries else None
+
+    async def _search_ma(
+        self, config_entry_id: str, query: str, media_type: str, limit: int = 5,
+    ) -> list[dict]:
+        """Search Music Assistant and return a flat list of result dicts."""
+        try:
+            result = await self._hass.services.async_call(
+                "music_assistant",
+                "search",
+                {
+                    "config_entry_id": config_entry_id,
+                    "name": query,
+                    "media_type": [media_type],
+                    "limit": limit,
+                },
+                blocking=True,
+                return_response=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("MA search failed for '%s' (%s): %s", query, media_type, err)
+            return []
+        if not result:
+            return []
+        type_keys = {
+            "track": "tracks",
+            "album": "albums",
+            "artist": "artists",
+            "playlist": "playlists",
+            "radio": "radio",
+        }
+        if isinstance(result, dict):
+            items = result.get(type_keys.get(media_type, ""), []) or result.get("items", [])
+            return items or []
+        if isinstance(result, list):
+            return result
+        return []
+
+    async def _resolve_playable(
+        self, attempts: list[tuple[str, str]],
+    ) -> tuple[str, str, str] | None:
+        """Try each (query, media_type) until MA returns a result.
+
+        Returns (uri, media_type, display_name) for the first non-empty match,
+        or None if every attempt came back empty.
+        """
+        config_entry_id = self._ma_config_entry_id()
+        if not config_entry_id:
+            return None
+
+        for query, media_type in attempts:
+            results = await self._search_ma(config_entry_id, query, media_type)
+            for item in results:
+                uri = item.get("uri") or item.get("media_id")
+                if not uri:
+                    continue
+                name = item.get("name") or item.get("title") or query
+                _LOGGER.info(
+                    "White noise: matched '%s' (%s) via query='%s' type=%s",
+                    name, uri, query, media_type,
+                )
+                return uri, media_type, name
+        return None
 
     async def control_white_noise_deferred(
         self, arguments: dict[str, Any],
@@ -78,11 +181,11 @@ class WhiteNoiseController:
         resolve/announce synchronously, then trigger playback after TTS
         finishes so the announcement isn't drowned out.
         """
-        captured: list[tuple[str, str]] = []
+        captured: list[tuple[str, str, str]] = []
         original = self._play_on_player
 
-        async def _capture(player: str, query: str) -> None:
-            captured.append((player, query))
+        async def _capture(player: str, uri: str, media_type: str) -> None:
+            captured.append((player, uri, media_type))
 
         self._play_on_player = _capture  # type: ignore[method-assign]
         try:
@@ -94,8 +197,8 @@ class WhiteNoiseController:
             return result, None
 
         async def _do_play() -> None:
-            for player, query in captured:
-                await original(player, query)
+            for player, uri, media_type in captured:
+                await original(player, uri, media_type)
 
         return result, _do_play
 
@@ -121,13 +224,24 @@ class WhiteNoiseController:
                             f"Unknown room '{room}'. Available: {', '.join(self._players.keys())}"
                         )
                     }
-                sound_key, query = self._resolve_sound(sound_arg)
+                sound_key, attempts = self._resolve_sound(sound_arg)
+                match = await self._resolve_playable(attempts)
+                if not match:
+                    return {
+                        "error": (
+                            f"No {sound_key} noise found in your Music Assistant providers. "
+                            "Try adding a streaming provider (Spotify, Apple Music, etc.) "
+                            "that carries ambient sleep sounds."
+                        )
+                    }
+                uri, media_type, display_name = match
                 for player in target_players:
-                    await self._play_on_player(player, query)
+                    await self._play_on_player(player, uri, media_type)
                 room_label = self._room_label(target_players[0]) or room
                 return {
                     "status": "playing",
                     "sound": sound_key,
+                    "matched": display_name,
                     "response_text": f"Playing {sound_key} noise in the {room_label}",
                 }
 
@@ -147,22 +261,38 @@ class WhiteNoiseController:
             _LOGGER.error("White noise control error: %s", err, exc_info=True)
             return {"error": f"White noise control failed: {err}"}
 
-    async def _play_on_player(self, player: str, query: str) -> None:
-        """Search + play via Music Assistant with radio_mode for continuous loop."""
-        _LOGGER.info("White noise: playing '%s' on %s", query, player)
+    async def _play_on_player(self, player: str, uri: str, media_type: str) -> None:
+        """Play a resolved MA URI. radio_mode only for artist/track so playlists
+        (already curated, all-ambient) aren't expanded into unrelated music."""
+        radio_mode = media_type in ("artist", "track")
+        _LOGGER.info(
+            "White noise: play uri='%s' type=%s radio=%s on %s",
+            uri, media_type, radio_mode, player,
+        )
+        # Shuffle off for playlists/tracks so they start from the beginning;
+        # shuffle on for artists so we don't always hear the same opener.
+        try:
+            await self._hass.services.async_call(
+                "media_player", "shuffle_set",
+                {"entity_id": player, "shuffle": media_type == "artist"},
+                blocking=True,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("shuffle_set not supported on %s: %s", player, err)
+
         await self._hass.services.async_call(
             "music_assistant",
             "play_media",
             {
-                "media_id": query,
-                "media_type": "track",
+                "media_id": uri,
+                "media_type": media_type,
                 "enqueue": "replace",
-                "radio_mode": True,
+                "radio_mode": radio_mode,
             },
             target={"entity_id": player},
             blocking=True,
         )
-        # Belt-and-braces: force repeat so even a single-track result loops.
+        # Belt-and-braces: force repeat so short selections loop.
         try:
             await self._hass.services.async_call(
                 "media_player",
