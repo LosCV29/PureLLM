@@ -215,6 +215,7 @@ from .tools import camera as camera_tool
 from .tools import thermostat as thermostat_tool
 from .tools import device as device_tool
 from .tools.music import MusicController
+from .tools.white_noise import WhiteNoiseController
 from .tools import timer as timer_tool
 from .tools import lists as lists_tool
 from .tools import sofabaton as sofabaton_tool
@@ -329,6 +330,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
         # Music controller (initialized after config)
         self._music_controller: MusicController | None = None
+        self._white_noise_controller: WhiteNoiseController | None = None
 
         # Current query for tool context
         self._current_user_query: str = ""
@@ -512,6 +514,13 @@ class PureLLMConversationEntity(ConversationEntity):
             self._music_controller = MusicController(
                 self.hass,
                 self.room_player_mapping
+            )
+
+        # Initialize white noise controller (needs speakers, not MA music config)
+        if self.room_player_mapping:
+            self._white_noise_controller = WhiteNoiseController(
+                self.hass,
+                self.room_player_mapping,
             )
 
         # Warm up provider connection in background (pre-establish SSL handshake)
@@ -1974,6 +1983,31 @@ class PureLLMConversationEntity(ConversationEntity):
             )
         return result
 
+    async def _execute_control_white_noise(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Execute control_white_noise with satellite room context."""
+        if not self._white_noise_controller:
+            return {"error": "White noise not configured. Set Room to Player Mapping in PureLLM."}
+
+        room = (arguments.get("room") or "").strip().lower()
+        action = (arguments.get("action") or "").strip().lower()
+
+        if action == "play" and self._current_satellite_room:
+            if room in self._HERE_PHRASES or not room:
+                _LOGGER.info(
+                    "Room context: setting white noise room='%s' (was '%s')",
+                    self._current_satellite_room, room or "<empty>",
+                )
+                arguments["room"] = self._current_satellite_room
+
+        result, play_action = await self._white_noise_controller.control_white_noise_deferred(arguments)
+        if play_action is not None:
+            speech_text = result.get("response_text", "") or ""
+            self.hass.async_create_task(
+                _play_after_tts_finishes(self.hass, speech_text, play_action),
+                name="purellm_play_white_noise_after_tts",
+            )
+        return result
+
     async def _execute_tool(
         self,
         tool_name: str,
@@ -2080,6 +2114,9 @@ class PureLLMConversationEntity(ConversationEntity):
 
             if tool_name == "control_music":
                 return await self._execute_control_music(arguments)
+
+            if tool_name == "control_white_noise":
+                return await self._execute_control_white_noise(arguments)
 
             # Fall back to script execution
             if self.hass.services.has_service("script", tool_name):

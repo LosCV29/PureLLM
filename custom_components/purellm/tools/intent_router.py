@@ -130,6 +130,13 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "sofabaton",
         "watch ", "start watching",
     ],
+    "white_noise": [
+        "white noise", "pink noise", "brown noise",
+        "rain sound", "ocean sound", "ocean wave",
+        "fan noise", "thunder sound", "thunderstorm",
+        "shushing", "baby shush", "baby sound",
+        "sleep sound", "nursery sound", "ambient sound",
+    ],
     "plants": [
         " plant", " plants",
         "moisture", " soil ",
@@ -144,7 +151,8 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
 
 # Map intent categories → tool function names
 _INTENT_TO_TOOLS: dict[str, list[str]] = {
-    "music": ["control_music"],
+    "music": ["control_music", "control_white_noise"],
+    "white_noise": ["control_white_noise"],
     "weather": ["get_weather_forecast"],
     "thermostat": ["control_thermostat"],
     "camera": ["check_camera"],
