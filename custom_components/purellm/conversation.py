@@ -791,6 +791,37 @@ class PureLLMConversationEntity(ConversationEntity):
         r"^(?:yes|yeah|yep|sure|ok|okay|please|hey|hey\s+\w+)[,.\s]+",
         re.IGNORECASE,
     )
+    # Ambient sound keywords that should route to control_white_noise
+    # instead of control_music. Checked before the music short-circuit so
+    # "play white noise" doesn't get matched as a song title.
+    _WHITE_NOISE_KEYWORDS: dict[str, str] = {
+        "white noise": "white",
+        "pink noise": "pink",
+        "brown noise": "brown",
+        "rain sound": "rain",
+        "rain sounds": "rain",
+        "rain noise": "rain",
+        "ocean sound": "ocean",
+        "ocean sounds": "ocean",
+        "ocean waves": "ocean",
+        "ocean wave": "ocean",
+        "fan noise": "fan",
+        "fan sound": "fan",
+        "fan sounds": "fan",
+        "thunderstorm": "thunder",
+        "thunder sound": "thunder",
+        "thunder sounds": "thunder",
+        "shushing": "shushing",
+        "baby shush": "shushing",
+        "sleep sound": "white",
+        "sleep sounds": "white",
+        "nursery sound": "white",
+        "nursery sounds": "white",
+        "ambient sound": "white",
+        "ambient sounds": "white",
+        "ambient noise": "white",
+    }
+    _WHITE_NOISE_ROOM_RE = re.compile(r"\s+in\s+the\s+(?P<room>.+?)[.\s]*$", re.IGNORECASE)
     # Core play pattern: "play [track/song]? [query] [by artist]? [in the room]?"
     _MUSIC_PLAY_RE = re.compile(
         r"play\s+(?:(?:the\s+)?(?:track|song)\s+)?"
@@ -800,6 +831,104 @@ class PureLLMConversationEntity(ConversationEntity):
         r"[.\s]*$",
         re.IGNORECASE,
     )
+
+    async def _try_white_noise_shortcircuit(
+        self,
+        user_text: str,
+        user_input: conversation.ConversationInput,
+        conversation_id: str,
+    ) -> conversation.ConversationResult | None:
+        """Catch ambient-sound requests before the music short-circuit.
+
+        Without this, "play white noise" is parsed by _MUSIC_PLAY_RE as
+        query="white noise" and handed to control_music — which then picks
+        whatever song happens to be titled "White Noise" on the user's
+        streaming providers (Joyner Lucas, Disclosure, etc.).
+        """
+        if not self._white_noise_controller:
+            return None
+
+        text = self._PLAY_PREFIX_STRIP.sub("", user_text.strip()).lower().rstrip(".,!?;:")
+        if not text:
+            return None
+
+        # Extract action verb (play / stop / shuffle / turn on|off)
+        action: str | None = None
+        stripped = text
+        for verb, mapped in (
+            ("play ", "play"),
+            ("shuffle ", "play"),
+            ("start ", "play"),
+            ("turn on ", "play"),
+            ("turn off ", "stop"),
+            ("stop ", "stop"),
+            ("pause ", "stop"),
+            ("kill ", "stop"),
+            ("end ", "stop"),
+        ):
+            if stripped.startswith(verb):
+                action = mapped
+                stripped = stripped[len(verb):].strip()
+                break
+        if action is None:
+            return None
+
+        # Optional "the" after the verb ("stop the white noise")
+        if stripped.startswith("the "):
+            stripped = stripped[4:].strip()
+
+        # Pull out "in the <room>" before keyword matching
+        room = ""
+        m = self._WHITE_NOISE_ROOM_RE.search(stripped)
+        if m:
+            room = m.group("room").strip().rstrip(".,!?;:")
+            stripped = self._WHITE_NOISE_ROOM_RE.sub("", stripped).strip()
+
+        # Longest keyword wins so "pink noise" beats "noise"
+        sound: str | None = None
+        for keyword in sorted(self._WHITE_NOISE_KEYWORDS, key=len, reverse=True):
+            if keyword in stripped:
+                sound = self._WHITE_NOISE_KEYWORDS[keyword]
+                break
+        if sound is None:
+            return None
+
+        if not room:
+            satellite_room = self._resolve_satellite_room(user_input.device_id)
+            if satellite_room:
+                room = satellite_room
+
+        arguments: dict[str, Any] = {"action": action, "sound": sound}
+        if room:
+            arguments["room"] = room
+
+        _LOGGER.info(
+            "White noise short-circuit: '%s' → action=%s sound=%s room=%s",
+            user_text, action, sound, room or "<any>",
+        )
+
+        try:
+            result, play_action = await self._white_noise_controller.control_white_noise_deferred(arguments)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("White noise short-circuit failed: %s", err, exc_info=True)
+            return None
+
+        speech = result.get("response_text") or result.get("error") or "Done."
+
+        response = intent.IntentResponse(language=user_input.language)
+        response.async_set_speech(speech)
+
+        if play_action is not None:
+            self.hass.async_create_task(
+                _play_after_tts_finishes(self.hass, speech, play_action),
+                name="purellm_play_white_noise_after_tts",
+            )
+
+        return conversation.ConversationResult(
+            response=response,
+            conversation_id=conversation_id,
+            continue_conversation=False,
+        )
 
     async def _try_music_play_shortcircuit(
         self,
@@ -1243,6 +1372,15 @@ class PureLLMConversationEntity(ConversationEntity):
         )
         if satellite_vol_result is not None:
             return satellite_vol_result
+
+        # --- Short-circuit ambient sound requests ---
+        # Must run BEFORE the music short-circuit so "play white noise" isn't
+        # parsed as a song title and handed to control_music.
+        white_noise_result = await self._try_white_noise_shortcircuit(
+            user_text, user_input, conversation_id
+        )
+        if white_noise_result is not None:
+            return white_noise_result
 
         # --- Short-circuit "play X by Y in Z" music commands ---
         # Local LLMs often fail to call control_music for play commands,
