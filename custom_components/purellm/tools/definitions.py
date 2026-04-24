@@ -226,6 +226,35 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
             ["action"]
         ))
 
+    # ===== WHITE NOISE / AMBIENT SOUNDS =====
+    if config.room_player_mapping:
+        rooms_list = ", ".join(config.room_player_mapping.keys())
+        tools.append(_tool(
+            "control_white_noise",
+            (
+                f"Play ambient sounds (white noise, pink noise, brown noise, rain, ocean, "
+                f"fan, thunder, shushing) on a room speaker for sleep/baby/focus. "
+                f"Rooms: {rooms_list}. For 'play': room is REQUIRED unless the user said "
+                f"'here' (caller will fill it in). For stop/volume: room optional — omit "
+                f"to apply to all rooms. Prefer this over control_music when the user asks "
+                f"for noise/sleep sounds, even if they say 'play'."
+            ),
+            {
+                "action": {
+                    "type": "string",
+                    "enum": ["play", "stop", "volume_up", "volume_down", "set_volume"],
+                },
+                "sound": {
+                    "type": "string",
+                    "enum": ["white", "pink", "brown", "rain", "ocean", "fan", "thunder", "shushing"],
+                    "description": "Type of ambient sound. Defaults to 'white'.",
+                },
+                "room": {"type": "string", "description": "Target room"},
+                "volume": {"type": "integer", "description": "0-100, for set_volume"},
+            },
+            ["action"],
+        ))
+
     # ===== TIMERS (always enabled) =====
     tools.append(_tool(
         "control_timer", "Control timers.",
