@@ -794,6 +794,17 @@ class MusicController:
     async def _play_on_players(self, target_players: list[str], uri: str, media_type: str, shuffle: bool = False) -> None:
         """Play media on target players with appropriate shuffle setting."""
         for player in target_players:
+            # Clear any lingering repeat mode (e.g. left on by white noise) so a
+            # single track doesn't loop forever.
+            try:
+                await self._hass.services.async_call(
+                    "media_player", "repeat_set",
+                    {"entity_id": player, "repeat": "off"},
+                    blocking=True,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("repeat_set not supported on %s: %s", player, err)
+
             # Set shuffle BEFORE playing so the album starts from track 1
             if media_type == "album":
                 await self._hass.services.async_call(
