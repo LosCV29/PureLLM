@@ -72,23 +72,9 @@ async def get_weather_forecast(
     api_key: str,
     latitude: float,
     longitude: float,
-    track_api_call: callable,
     user_query: str = "",
 ) -> dict[str, Any]:
-    """Get weather forecast from OpenWeatherMap.
-
-    Args:
-        arguments: Tool arguments (location, forecast_type)
-        session: aiohttp session
-        api_key: OpenWeatherMap API key
-        latitude: Default latitude
-        longitude: Default longitude
-        track_api_call: Callback to track API usage
-        user_query: Original user query for validation
-
-    Returns:
-        Weather data dict
-    """
+    """Get weather forecast from OpenWeatherMap."""
     forecast_type = arguments.get("forecast_type", "current")
     location_query = arguments.get("location", "").strip()
 
@@ -143,7 +129,6 @@ async def get_weather_forecast(
 
     try:
         result = {}
-        track_api_call("weather")
 
         async with asyncio.timeout(API_TIMEOUT):
             # Use One Call API 3.0 for accurate daily min/max temps

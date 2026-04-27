@@ -260,21 +260,8 @@ async def find_nearby_places(
     api_key: str,
     latitude: float,
     longitude: float,
-    track_api_call: callable,
 ) -> dict[str, Any]:
-    """Find nearby places using Google Places API.
-
-    Args:
-        arguments: Tool arguments (query, max_results)
-        session: aiohttp session
-        api_key: Google Places API key
-        latitude: Search center latitude
-        longitude: Search center longitude
-        track_api_call: Callback to track API usage
-
-    Returns:
-        Places data dict
-    """
+    """Find nearby places using Google Places API."""
     query = arguments.get("query", "")
     max_results = min(arguments.get("max_results", 5), 20)
 
@@ -285,8 +272,6 @@ async def find_nearby_places(
         return {"error": "No search query provided"}
 
     try:
-        track_api_call("places")
-
         places, status = await _search_places(
             session, api_key, query, latitude, longitude,
             field_mask=FIELD_MASK_FULL,

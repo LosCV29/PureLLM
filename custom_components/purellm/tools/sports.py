@@ -174,21 +174,9 @@ async def get_sports_info(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
     hass_timezone,
-    track_api_call: callable,
     tavily_api_key: str = None,
 ) -> dict[str, Any]:
-    """Get sports info from ESPN API with dynamic team search.
-
-    Args:
-        arguments: Tool arguments (team_name, query_type)
-        session: aiohttp session
-        hass_timezone: Home Assistant timezone
-        track_api_call: Callback to track API usage
-        tavily_api_key: Unused, kept for API compatibility
-
-    Returns:
-        Sports data dict
-    """
+    """Get sports info from ESPN API with dynamic team search."""
     from homeassistant.util import dt as dt_util
 
     team_name = arguments.get("team_name", "")
@@ -204,7 +192,6 @@ async def get_sports_info(
         return {"error": "No team name provided"}
 
     try:
-        track_api_call("sports")
         team_key = team_name.lower().strip()
 
         # Detect sport type from query BEFORE removing noise words
@@ -754,24 +741,12 @@ async def get_ufc_info(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
     hass_timezone,
-    track_api_call: callable,
     tavily_api_key: str = None,
 ) -> dict[str, Any]:
-    """Get UFC/MMA event information from ESPN API.
-
-    Args:
-        arguments: Tool arguments (query_type)
-        session: aiohttp session
-        hass_timezone: Home Assistant timezone
-        track_api_call: Callback to track API usage
-
-    Returns:
-        UFC event data dict
-    """
+    """Get UFC/MMA event information from ESPN API."""
     query_type = arguments.get("query_type", "next_event")
 
     try:
-        track_api_call("sports")
         events_url = "https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard"
 
         data, status = await fetch_json(session, events_url, headers=ESPN_HEADERS)
@@ -911,7 +886,6 @@ async def check_league_games(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
     hass_timezone,
-    track_api_call: callable,
     tavily_api_key: str = None,
 ) -> dict[str, Any]:
     """Check if there are games for a league (count only, no game list).
@@ -923,7 +897,6 @@ async def check_league_games(
         return {"error": error}
 
     try:
-        track_api_call("sports")
         url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league_code}/scoreboard?dates={date_str}"
         college_params = _COLLEGE_SCOREBOARD_PARAMS.get(league_code, "")
         if college_params:
@@ -957,7 +930,6 @@ async def list_league_games(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
     hass_timezone,
-    track_api_call: callable,
     tavily_api_key: str = None,
 ) -> dict[str, Any]:
     """List all games for a league with matchups and times.
@@ -969,7 +941,6 @@ async def list_league_games(
         return {"error": error}
 
     try:
-        track_api_call("sports")
         url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league_code}/scoreboard?dates={date_str}"
         college_params = _COLLEGE_SCOREBOARD_PARAMS.get(league_code, "")
         if college_params:

@@ -317,16 +317,12 @@ class PureLLMConversationEntity(ConversationEntity):
         self._attr_unique_id = config_entry.entry_id
         self._session: aiohttp.ClientSession | None = None
 
-        # Usage tracking
-        self._api_calls = {
-            "weather": 0, "places": 0, "restaurants": 0,
-            "sports": 0, "wikipedia": 0, "llm": 0,
-        }
-
         # Caches
         self._tools: list[dict] | None = None
+        # Effective system prompt cache, keyed by (date, language, room).
+        # Avoids rebuilding the per-turn prompt when nothing relevant changed.
         self._cached_system_prompt: str | None = None
-        self._cached_system_prompt_date: str | None = None
+        self._cached_system_prompt_key: tuple[str, str, str | None] | None = None
 
         # Music controller (initialized after config)
         self._music_controller: MusicController | None = None
@@ -602,11 +598,6 @@ class PureLLMConversationEntity(ConversationEntity):
         """Handle config entry update."""
         await hass.config_entries.async_reload(entry.entry_id)
 
-    def _track_api_call(self, api_name: str) -> None:
-        """Track API usage."""
-        if api_name in self._api_calls:
-            self._api_calls[api_name] += 1
-
     def _resolve_satellite_room(self, device_id: str | None) -> str | None:
         """Resolve the satellite device_id to a Home Assistant area name.
 
@@ -655,15 +646,35 @@ class PureLLMConversationEntity(ConversationEntity):
 
         return None
 
-    def _get_effective_system_prompt(self) -> str:
-        """Get system prompt with current date."""
+    def _get_effective_system_prompt(
+        self,
+        language_code: str = "en",
+        room: str | None = None,
+    ) -> str:
+        """Get system prompt with date, language, and room context applied.
+
+        Result is cached on (date, language, room) so identical follow-up
+        turns reuse the same string.
+        """
         today = datetime.now().strftime("%Y-%m-%d")
-        if self._cached_system_prompt and self._cached_system_prompt_date == today:
+        cache_key = (today, language_code, room)
+        if self._cached_system_prompt and self._cached_system_prompt_key == cache_key:
             return self._cached_system_prompt
 
+        lang_name = _LANG_CODE_TO_NAME.get(language_code, "English")
         prompt = self.system_prompt.replace("{current_date}", today)
+        prompt = f"Respond in {lang_name} only.\n\n{prompt}"
+        if room:
+            prompt += (
+                f"\n\nROOM CONTEXT: User is in {room}. "
+                f"\"here\"/\"this room\" = {room}. "
+                f"Use area=\"{room}\" for control, room=\"{room}\" for music. "
+                f"\"in the {room}\" at the end of a music command is the target room — "
+                f"never put it in query/artist/album."
+            )
+
         self._cached_system_prompt = prompt
-        self._cached_system_prompt_date = today
+        self._cached_system_prompt_key = cache_key
         return prompt
 
     def _build_tools(self) -> list[dict]:
@@ -1400,31 +1411,15 @@ class PureLLMConversationEntity(ConversationEntity):
         all_tools = self._build_tools()
         intents = classify_intent(user_text)
         tools = filter_tools_by_intent(all_tools, intents)
-        system_prompt = self._get_effective_system_prompt()
 
-        # Inject language enforcement at the top of the system prompt.
-        # Uses only the target language name — never mentions other languages,
-        # which would prime the model to produce them.
         lang_code = (user_input.language or "en").split("-")[0].lower()
-        lang_name = _LANG_CODE_TO_NAME.get(lang_code, "English")
-        system_prompt = f"Respond in {lang_name} only.\n\n{system_prompt}"
+        system_prompt = self._get_effective_system_prompt(
+            language_code=lang_code,
+            room=self._current_satellite_room,
+        )
 
-        # Inject satellite room context so the LLM knows where "here" is.
-        # This enables commands like "turn on the lights in here" or
-        # "play music in this room" without the user naming the room.
-        if self._current_satellite_room:
-            system_prompt += (
-                f"\n\nROOM CONTEXT: The user is speaking from the {self._current_satellite_room}. "
-                f"When they say \"here\", \"in here\", \"this room\", or \"in this room\", "
-                f"they mean the {self._current_satellite_room}. "
-                f"Use area=\"{self._current_satellite_room}\" for device control and "
-                f"room=\"{self._current_satellite_room}\" for music in this room. "
-                f"IMPORTANT: \"in the {self._current_satellite_room}\" at the end of a music "
-                f"command is the target room — extract it into the room parameter, "
-                f"NEVER include it in query/artist/album."
-            )
-
-        # Append extra_system_prompt if provided (from start_conversation)
+        # Append extra_system_prompt if provided (from start_conversation).
+        # Not part of the cache key since it's per-conversation, not per-turn.
         if extra_system_prompt:
             system_prompt = f"{system_prompt}\n\nAdditional context:\n{extra_system_prompt}"
 
@@ -1539,11 +1534,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 "parameters": func.get("parameters", {"type": "object", "properties": {}})
             })
 
-        contents = [
-            {"role": "user", "parts": [{"text": f"System: {system_prompt}"}]},
-            {"role": "model", "parts": [{"text": "Understood."}]},
-        ]
-
+        contents = []
         if history:
             for msg in history:
                 role = "model" if msg["role"] == "assistant" else "user"
@@ -1555,6 +1546,7 @@ class PureLLMConversationEntity(ConversationEntity):
         for iteration in range(5):
             payload = {
                 "contents": contents,
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
                 "generationConfig": {"maxOutputTokens": max_tokens, "temperature": self.temperature},
             }
             if function_declarations:
@@ -1568,7 +1560,6 @@ class PureLLMConversationEntity(ConversationEntity):
             url = f"{self.base_url}/models/{self.model}:generateContent"
             headers = {"x-goog-api-key": self.api_key}
 
-            self._track_api_call("llm")
             _LOGGER.debug("Google API call to %s", url)
 
             async with self._session.post(url, json=payload, headers=headers, timeout=120) as resp:
@@ -1684,8 +1675,6 @@ class PureLLMConversationEntity(ConversationEntity):
 
             accumulated_content = ""
             tool_calls_buffer: list[dict] = []
-
-            self._track_api_call("llm")
 
             try:
                 stream = await self.client.chat.completions.create(**kwargs)
@@ -2170,19 +2159,19 @@ class PureLLMConversationEntity(ConversationEntity):
             # Sports tools (all use same pattern)
             if tool_name in ("get_sports_info", "get_ufc_info", "check_league_games", "list_league_games"):
                 handler = getattr(sports_tool, tool_name)
-                return await handler(arguments, self._session, hass_tz, self._track_api_call, self.tavily_api_key)
+                return await handler(arguments, self._session, hass_tz, self.tavily_api_key)
 
             # Wikipedia tools
             if tool_name in ("calculate_age", "get_wikipedia_summary"):
                 handler = getattr(wikipedia_tool, tool_name)
-                return await handler(arguments, self._session, self._track_api_call)
+                return await handler(arguments, self._session)
 
             # Tool handlers - maps tool name to async callable
             tool_handlers = {
                 # Weather & Info
                 "get_weather_forecast": lambda: weather_tool.get_weather_forecast(
                     arguments, self._session, self.openweathermap_api_key,
-                    latitude, longitude, self._track_api_call, self._current_user_query
+                    latitude, longitude, self._current_user_query
                 ),
                 "get_calendar_events": lambda: calendar_tool.get_calendar_events(
                     arguments, self.hass, self.calendar_entities, hass_tz
@@ -2210,7 +2199,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Places (with notification post-processing)
                 "find_nearby_places": lambda: places_tool.find_nearby_places(
                     arguments, self._session, self.google_places_api_key,
-                    latitude, longitude, self._track_api_call
+                    latitude, longitude
                 ),
                 # Camera via Frigate API + local vision LLM analysis
                 "check_camera": lambda: camera_tool.check_camera(
@@ -2223,7 +2212,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 ),
                 # Web search
                 "web_search": lambda: search_tool.web_search(
-                    arguments, self._session, self.tavily_api_key, self._track_api_call
+                    arguments, self._session, self.tavily_api_key
                 ),
             }
 
