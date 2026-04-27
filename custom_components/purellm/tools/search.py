@@ -129,85 +129,40 @@ FRESHNESS_KEYWORDS = {
     "current", "right now", "just", "breaking",
 }
 
-# Smart domain patterns - maps keywords to target domains for better results
-# Format: (keywords_tuple, domains_list, enable_raw_content)
+# Smart domain patterns - maps keywords to target domains for better results.
+# Tavily snippets + AI answer are sent to the LLM; raw_content is omitted to
+# keep payloads small.
 DOMAIN_PATTERNS = [
-    # College basketball/sports schedules - exclude ticket sites
-    (
-        ("basketball game", "basketball schedule", "basketball record", "next game",
-         "hurricanes basketball", "college basketball", "ncaa basketball", "ncaab"),
-        ["espn.com", "sports-reference.com", "cbssports.com", "247sports.com", "on3.com"],
-        False
-    ),
-    # Movie/TV synopsis and plot information
-    (
-        ("synopsis", "plot", "storyline", "what is it about", "what's it about",
-         "summary of", "plot summary", "movie plot", "film plot"),
-        ["wikipedia.org", "imdb.com", "rottentomatoes.com", "themoviedb.org"],
-        True  # Need raw content to get full synopsis/plot text
-    ),
-    # Movie/TV ratings and reviews
-    (
-        ("rotten tomatoes", "rt score", "tomatometer", "tomato score", "critics score",
-         "audience score", "certified fresh", "rotten score"),
-        ["rottentomatoes.com"],
-        True  # Need raw content for scores
-    ),
-    (
-        ("imdb rating", "imdb score", "imdb review"),
-        ["imdb.com"],
-        True
-    ),
-    (
-        ("metacritic", "metascore"),
-        ["metacritic.com"],
-        True
-    ),
-    # Restaurant/business reviews
-    (
-        ("yelp review", "yelp rating", "yelp score"),
-        ["yelp.com"],
-        True
-    ),
-    # Recipes
-    (
-        ("recipe for", "how to make", "how to cook", "how to bake"),
-        ["allrecipes.com", "foodnetwork.com", "bonappetit.com", "seriouseats.com", "epicurious.com"],
-        False
-    ),
-    # Tech reviews
-    (
-        ("review of", "reviews for", "best rated", "top rated", "comparison"),
-        ["cnet.com", "theverge.com", "techradar.com", "tomsguide.com", "wirecutter.com"],
-        False
-    ),
-    # Health information
-    (
-        ("symptoms of", "treatment for", "side effects", "medication"),
-        ["mayoclinic.org", "webmd.com", "healthline.com", "nih.gov"],
-        False
-    ),
+    (("basketball game", "basketball schedule", "basketball record", "next game",
+      "hurricanes basketball", "college basketball", "ncaa basketball", "ncaab"),
+     ["espn.com", "sports-reference.com", "cbssports.com", "247sports.com", "on3.com"]),
+    (("synopsis", "plot", "storyline", "what is it about", "what's it about",
+      "summary of", "plot summary", "movie plot", "film plot"),
+     ["wikipedia.org", "imdb.com", "rottentomatoes.com", "themoviedb.org"]),
+    (("rotten tomatoes", "rt score", "tomatometer", "tomato score", "critics score",
+      "audience score", "certified fresh", "rotten score"),
+     ["rottentomatoes.com"]),
+    (("imdb rating", "imdb score", "imdb review"), ["imdb.com"]),
+    (("metacritic", "metascore"), ["metacritic.com"]),
+    (("yelp review", "yelp rating", "yelp score"), ["yelp.com"]),
+    (("recipe for", "how to make", "how to cook", "how to bake"),
+     ["allrecipes.com", "foodnetwork.com", "bonappetit.com", "seriouseats.com", "epicurious.com"]),
+    (("review of", "reviews for", "best rated", "top rated", "comparison"),
+     ["cnet.com", "theverge.com", "techradar.com", "tomsguide.com", "wirecutter.com"]),
+    (("symptoms of", "treatment for", "side effects", "medication"),
+     ["mayoclinic.org", "webmd.com", "healthline.com", "nih.gov"]),
 ]
 
 
-def _detect_target_domains(query: str) -> tuple[list[str] | None, bool]:
-    """Detect if query should target specific domains.
-
-    Args:
-        query: The search query
-
-    Returns:
-        Tuple of (domains_list or None, enable_raw_content)
-    """
+def _detect_target_domains(query: str) -> list[str] | None:
+    """Detect if query should target specific domains."""
     query_lower = query.lower()
-
-    for keywords, domains, raw_content in DOMAIN_PATTERNS:
+    for keywords, domains in DOMAIN_PATTERNS:
         for keyword in keywords:
             if keyword in query_lower:
                 _LOGGER.debug("Detected domain pattern '%s' -> %s", keyword, domains)
-                return domains, raw_content
-
-    return None, False
+                return domains
+    return None
 
 
 def _detect_topic(query: str) -> str:
@@ -246,28 +201,11 @@ async def web_search(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
     api_key: str,
-    track_api_call: callable,
 ) -> dict[str, Any]:
     """Search the web using Tavily API.
 
     Tavily is optimized for LLM applications and returns structured,
     relevant results with optional AI-generated answers.
-
-    Args:
-        arguments: Tool arguments containing:
-            - query: Search query (required)
-            - topic: "general", "news", or "finance" (auto-detected if not provided)
-            - max_results: Number of results (default: 5)
-            - include_answer: Whether to include AI summary (default: True)
-            - days: Limit results to last N days (optional, for freshness)
-            - include_domains: List of domains to search (e.g., ["rottentomatoes.com"])
-            - exclude_domains: List of domains to exclude
-        session: aiohttp session
-        api_key: Tavily API key
-        track_api_call: Callback to track API usage
-
-    Returns:
-        Search results dict with answer, results array, and metadata
     """
     query = arguments.get("query", "").strip()
 
@@ -290,14 +228,8 @@ async def web_search(
     include_answer = arguments.get("include_answer", True)
 
     # Smart domain detection - auto-target specific sites based on query
-    auto_domains, auto_raw_content = _detect_target_domains(query)
-
-    # Use explicit domains if provided, otherwise use auto-detected
-    include_domains = arguments.get("include_domains") or auto_domains
+    include_domains = arguments.get("include_domains") or _detect_target_domains(query)
     exclude_domains = arguments.get("exclude_domains")
-
-    # Include raw content if explicitly requested OR if auto-detected for domain targeting
-    include_raw_content = arguments.get("include_raw_content", auto_raw_content)
 
     # Days filter for freshness (None = no filter)
     days = arguments.get("days")
@@ -306,7 +238,8 @@ async def web_search(
     if days is None and _needs_fresh_results(query):
         days = 7  # Default to last week for "fresh" queries
 
-    # Build request payload
+    # Build request payload — snippets + AI answer are sufficient; raw_content is
+    # omitted to avoid sending thousands of tokens of page text to the LLM.
     payload = {
         "api_key": api_key,
         "query": query,
@@ -314,8 +247,8 @@ async def web_search(
         "topic": topic,
         "max_results": max_results,
         "include_answer": include_answer,
-        "include_raw_content": include_raw_content,
-        "include_images": False,  # Skip images for voice assistant
+        "include_raw_content": False,
+        "include_images": False,
     }
 
     # Add days filter if specified
@@ -329,13 +262,11 @@ async def web_search(
         payload["exclude_domains"] = exclude_domains
 
     _LOGGER.info(
-        "Tavily search: query='%s', topic=%s, depth=%s, max=%d, days=%s, domains=%s, raw=%s",
-        query, topic, search_depth, max_results, days, include_domains, include_raw_content
+        "Tavily search: query='%s', topic=%s, depth=%s, max=%d, days=%s, domains=%s",
+        query, topic, search_depth, max_results, days, include_domains
     )
 
     try:
-        track_api_call("tavily_search")
-
         async with asyncio.timeout(API_TIMEOUT + 5):  # Tavily can be slower
             async with session.post(
                 TAVILY_API_URL,
@@ -377,14 +308,6 @@ async def web_search(
             # Include published date if available
             if item.get("published_date"):
                 result["published"] = item["published_date"]
-
-            # Include raw content if requested and available
-            if include_raw_content and item.get("raw_content"):
-                # Truncate raw content to avoid huge responses
-                raw = item["raw_content"][:2000]
-                if len(item["raw_content"]) > 2000:
-                    raw += "..."
-                result["raw_content"] = raw
 
             results.append(result)
 

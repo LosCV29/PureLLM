@@ -19,26 +19,14 @@ _LOGGER = logging.getLogger(__name__)
 async def calculate_age(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
-    track_api_call: callable,
 ) -> dict[str, Any]:
-    """Calculate a person's age from Wikidata birthdate.
-
-    Args:
-        arguments: Tool arguments (person_name)
-        session: aiohttp session
-        track_api_call: Callback to track API usage
-
-    Returns:
-        Age data dict
-    """
+    """Calculate a person's age from Wikidata birthdate."""
     person_name = arguments.get("person_name", "").strip()
 
     if not person_name:
         return {"error": "No person name provided"}
 
     try:
-        track_api_call("wikipedia")
-
         # Step 1: Search Wikidata for the person
         search_url = f"https://www.wikidata.org/w/api.php?action=wbsearchentities&search={person_name}&language=en&format=json&limit=1"
 
@@ -124,26 +112,14 @@ async def calculate_age(
 async def get_wikipedia_summary(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
-    track_api_call: callable,
 ) -> dict[str, Any]:
-    """Get Wikipedia summary for a topic.
-
-    Args:
-        arguments: Tool arguments (topic)
-        session: aiohttp session
-        track_api_call: Callback to track API usage
-
-    Returns:
-        Wikipedia summary dict
-    """
+    """Get Wikipedia summary for a topic."""
     topic = arguments.get("topic", "").strip()
 
     if not topic:
         return {"error": "No topic provided"}
 
     try:
-        track_api_call("wikipedia")
-
         # Use Wikipedia REST API for summary
         url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{topic.replace(' ', '_')}"
 

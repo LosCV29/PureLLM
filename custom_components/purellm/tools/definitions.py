@@ -42,16 +42,12 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     """Build the tools list based on enabled features."""
     tools = []
 
-    # Get exposed entity names for tool descriptions
-    _exposed_names: list[str] = []
-    _status_names: list[str] = []  # Includes sensors/binary_sensors for status checks
-    _plant_names: list[str] = []
+    # Plant names are still needed to decide whether to expose check_plant_status,
+    # since the tool is gated on at least one plant existing.
+    _has_plants = False
     if hass:
-        from ..utils.fuzzy_matching import get_exposed_entity_names
         from .plants import list_plant_names
-        _exposed_names = get_exposed_entity_names(hass)
-        _status_names = get_exposed_entity_names(hass, include_sensors=True)
-        _plant_names = list_plant_names(hass)
+        _has_plants = bool(list_plant_names(hass))
 
     # ===== CORE TOOLS (always enabled) =====
     tools.append(_tool("get_current_datetime", "Get current date/time."))
@@ -108,7 +104,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     if config.enable_sports:
         tools.append(_tool(
             "get_sports_info",
-            "Get team schedule/scores. Include sport for ambiguous names. Include 'Champions League' for European games.",
+            "Team schedule/scores. Include sport for ambiguous names; include 'Champions League' for European games.",
             {
                 "team_name": {"type": "string", "description": "Team + sport/competition"},
                 "query_type": {"type": "string", "enum": ["last_game", "next_game", "standings", "schedule", "both"]}
@@ -156,11 +152,8 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
 
     # ===== DEVICE STATUS =====
     if config.enable_device_status:
-        status_desc = "Check device status."
-        if hass and _status_names:
-            status_desc += f" Known devices: {', '.join(_status_names[:80])}."
         tools.append(_tool(
-            "check_device_status", status_desc,
+            "check_device_status", "Check device status. Fuzzy-matches the user's name.",
             {"device": {"type": "string"}},
             ["device"]
         ))
@@ -168,42 +161,22 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     # ===== PLANT STATUS (Olen homeassistant-plant integration) =====
     # Only register if plants are actually present — keeps the tool list lean
     # for users who don't use the plant integration.
-    if config.enable_plants and _plant_names:
-        plant_desc = (
-            "Read-only plant sensor queries. ALWAYS use this (never check_device_status) "
-            "for ANY plant-related question — moisture, water, watering, soil, "
-            "temperature, conductivity, illuminance, humidity, dli, battery, health.\n"
-            "EXAMPLES (copy the args exactly):\n"
-            "  'what is the soil moisture for X the plant' / 'soil moisture for X'\n"
-            "      -> plant='X', metric='moisture'\n"
-            "  'does any plant need water' / 'do any plants need watering' / 'any plant dry'\n"
-            "      -> metric='moisture', problems_only=true\n"
-            "  'is any plant in trouble' / 'any plants with problems'\n"
-            "      -> problems_only=true\n"
-            "  'how is X the plant' / 'check on X'\n"
-            "      -> plant='X'\n"
-            "  'what's X's moisture threshold' / 'minimum moisture for X'\n"
-            "      -> plant='X', metric='thresholds'\n"
-            "'Water', 'watering', 'dry', 'thirsty' ALWAYS map to metric='moisture'.\n"
-            f"Known plants: {', '.join(_plant_names)}."
-        )
+    if config.enable_plants and _has_plants:
         tools.append(_tool(
-            "check_plant_status", plant_desc,
+            "check_plant_status",
+            "Plant sensor readings. Omit plant for all plants. problems_only=true to scan for issues.",
             {
                 "plant": {
                     "type": "string",
-                    "description": "Plant name only (e.g. 'boogie'). Do NOT include 'the plant' or 'my'. Omit for all plants.",
+                    "description": "Plant name (no 'the plant'/'my'). Omit for all.",
                 },
                 "metric": {
                     "type": "string",
                     "enum": ["moisture", "temperature", "conductivity", "illuminance",
                              "humidity", "dli", "battery", "status", "thresholds"],
-                    "description": "Specific metric. 'moisture' for water/soil/dry/thirsty questions. Omit for full readout."
+                    "description": "Use 'moisture' for water/dry/thirsty.",
                 },
-                "problems_only": {
-                    "type": "boolean",
-                    "description": "True for 'needs water' / 'in trouble' / 'has problems' sweeps across all plants."
-                },
+                "problems_only": {"type": "boolean"},
             },
         ))
 
@@ -212,16 +185,16 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Control room-based music only (NOT for specific devices like TVs). To pause/resume/play a specific device, use control_device. Rooms: {rooms_list}. Room required for play/shuffle. Room NOT needed for stop/pause/resume/skip/volume — just pass the action and the tool auto-detects the active player. For volume control while music is playing: use volume_up, volume_down, or set_volume with volume param (0-100). For play action you MUST set media_type. For ordinal/themed requests like 'first christmas album by X', set media_type='album', artist=X, and query to the full phrase (e.g. 'first christmas album').",
+            f"Room-based music. Rooms: {rooms_list}. Room required for play/shuffle; auto-detected for stop/pause/resume/skip/volume. media_type required for play. For specific devices use control_device.",
             {
-                "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle", "volume_up", "volume_down", "set_volume"], "description": "Action"},
-                "media_type": {"type": "string", "enum": ["artist", "album", "track"], "description": "REQUIRED for play action. Set 'album' for albums, 'track' for songs, 'artist' for artist radio"},
-                "query": {"type": "string", "description": "Search query. For tracks: song name. For artists: artist name. For albums: album name. For ordinal/themed requests (e.g. 'first christmas album'), include the full phrase"},
-                "album": {"type": "string", "description": "Album name - REQUIRED when media_type is 'album'"},
-                "artist": {"type": "string", "description": "Artist name - REQUIRED for ordinal/themed album requests (e.g. 'first christmas album by Kelly Clarkson')"},
-                "song_on_album": {"type": "string", "description": "Song name to find the album containing it"},
-                "room": {"type": "string", "description": "Target room"},
-                "volume": {"type": "integer", "description": "Volume level 0-100 for set_volume action"},
+                "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle", "volume_up", "volume_down", "set_volume"]},
+                "media_type": {"type": "string", "enum": ["artist", "album", "track"]},
+                "query": {"type": "string", "description": "Track/artist/album name. For ordinal/themed (e.g. 'first christmas album') use the full phrase."},
+                "album": {"type": "string"},
+                "artist": {"type": "string"},
+                "song_on_album": {"type": "string", "description": "Find the album containing this song."},
+                "room": {"type": "string"},
+                "volume": {"type": "integer", "description": "0-100"},
             },
             ["action"]
         ))
@@ -231,26 +204,12 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_white_noise",
-            (
-                f"Play ambient sounds (white noise, pink noise, brown noise, rain, ocean, "
-                f"fan, thunder, shushing) on a room speaker for sleep/baby/focus. "
-                f"Rooms: {rooms_list}. For 'play': room is REQUIRED unless the user said "
-                f"'here' (caller will fill it in). For stop/volume: room optional — omit "
-                f"to apply to all rooms. Prefer this over control_music when the user asks "
-                f"for noise/sleep sounds, even if they say 'play'."
-            ),
+            f"Ambient sounds (white/pink/brown noise, rain, ocean, fan, thunder, shushing) for sleep/focus. Rooms: {rooms_list}. Room required for play; optional for stop/volume.",
             {
-                "action": {
-                    "type": "string",
-                    "enum": ["play", "stop", "volume_up", "volume_down", "set_volume"],
-                },
-                "sound": {
-                    "type": "string",
-                    "enum": ["white", "pink", "brown", "rain", "ocean", "fan", "thunder", "shushing"],
-                    "description": "Type of ambient sound. Defaults to 'white'.",
-                },
-                "room": {"type": "string", "description": "Target room"},
-                "volume": {"type": "integer", "description": "0-100, for set_volume"},
+                "action": {"type": "string", "enum": ["play", "stop", "volume_up", "volume_down", "set_volume"]},
+                "sound": {"type": "string", "enum": ["white", "pink", "brown", "rain", "ocean", "fan", "thunder", "shushing"]},
+                "room": {"type": "string"},
+                "volume": {"type": "integer", "description": "0-100"},
             },
             ["action"],
         ))
@@ -281,17 +240,14 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     ))
 
     # ===== DEVICE CONTROL (always enabled) =====
-    device_desc = "Control devices (lights, switches, locks, fans, blinds, covers, media_player, scripts, automations). For specific device commands (TV pause, etc) or launching/running exposed scripts and automations. When user says 'launch X', use action=launch with device=X (the app/script name the user said, e.g. 'YouTube', 'Netflix') — do NOT substitute a physical device name like a TV. The tool will find the correct launch script or streaming device automatically. Only include params user explicitly requested."
-    if _exposed_names:
-        device_desc += f" Known devices (user aliases — use ONLY when the user's words clearly match one of these; pass the user's original words as-is if no close match): {', '.join(_exposed_names[:50])}."
     tools.append(_tool(
         "control_device",
-        device_desc,
+        "Control lights, switches, locks, fans, covers, media_player, scripts, automations. For 'launch X' pass device=X as-is (app/script name). Only include params the user requested.",
         {
-            "device": {"type": "string", "description": "Device name (fuzzy matched)"},
+            "device": {"type": "string", "description": "Fuzzy-matched name."},
             "entity_id": {"type": "string"},
             "entity_ids": {"type": "array", "items": {"type": "string"}},
-            "area": {"type": "string", "description": "Area name (instead of device)"},
+            "area": {"type": "string"},
             "domain": {"type": "string", "enum": ["light", "switch", "lock", "cover", "fan", "media_player", "climate", "vacuum", "scene", "script", "automation", "all"]},
             "action": {"type": "string", "enum": ["turn_on", "turn_off", "toggle", "dim", "lock", "unlock", "open", "close", "stop", "preset", "set_position", "play", "pause", "resume", "next", "previous", "volume_up", "volume_down", "set_volume", "mute", "unmute", "set_temperature", "set_hvac_mode", "start", "dock", "locate", "return_home", "activate", "launch"]},
             "brightness": {"type": "integer"},
@@ -311,7 +267,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         activity_names = [a.get("name", "") for a in config.sofabaton_activities if a.get("name")]
         tools.append(_tool(
             "control_sofabaton",
-            f"SofaBaton multi-device activities ONLY (NOT for controlling individual devices like TVs/media players — use control_device for those). Activities: {', '.join(activity_names)}.",
+            f"SofaBaton multi-device activities. Activities: {', '.join(activity_names)}. Use control_device for individual devices.",
             {"activity": {"type": "string"}, "action": {"type": "string", "enum": ["start", "stop"]}},
             ["activity", "action"]
         ))
