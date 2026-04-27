@@ -35,35 +35,38 @@ CONF_TOP_P: Final = "top_p"
 
 # Provider choices
 PROVIDER_LM_STUDIO: Final = "lm_studio"
-PROVIDER_GOOGLE: Final = "google"
+PROVIDER_ANTHROPIC: Final = "anthropic"
 
 ALL_PROVIDERS: Final = [
     PROVIDER_LM_STUDIO,
-    PROVIDER_GOOGLE,
+    PROVIDER_ANTHROPIC,
 ]
 
 PROVIDER_NAMES: Final = {
     PROVIDER_LM_STUDIO: "LM Studio / vLLM (Local)",
-    PROVIDER_GOOGLE: "Google Gemini",
+    PROVIDER_ANTHROPIC: "Anthropic Claude",
 }
 
 # Default base URLs per provider
 PROVIDER_BASE_URLS: Final = {
     PROVIDER_LM_STUDIO: "http://localhost:1234/v1",
-    PROVIDER_GOOGLE: "https://generativelanguage.googleapis.com/v1beta",
+    PROVIDER_ANTHROPIC: "https://api.anthropic.com/v1",
 }
 
 # Default models per provider
 PROVIDER_DEFAULT_MODELS: Final = {
     PROVIDER_LM_STUDIO: "local-model",
-    PROVIDER_GOOGLE: "gemini-2.0-flash",
+    PROVIDER_ANTHROPIC: "claude-haiku-4-5",
 }
 
 # Suggested models per provider (for UI hints)
 PROVIDER_MODELS: Final = {
     PROVIDER_LM_STUDIO: ["local-model", "qwen2.5-7b-instruct", "llama-3.2-3b"],
-    PROVIDER_GOOGLE: ["gemini-2.0-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"],
+    PROVIDER_ANTHROPIC: ["claude-opus-4-7", "claude-sonnet-4-6", "claude-haiku-4-5"],
 }
+
+# Anthropic API version header (sent with every request)
+ANTHROPIC_API_VERSION: Final = "2023-06-01"
 
 DEFAULT_PROVIDER: Final = PROVIDER_LM_STUDIO
 DEFAULT_BASE_URL: Final = "http://localhost:1234/v1"
