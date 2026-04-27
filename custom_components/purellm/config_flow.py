@@ -31,7 +31,8 @@ from .const import (
     PROVIDER_DEFAULT_MODELS,
     PROVIDER_MODELS,
     PROVIDER_LM_STUDIO,
-    PROVIDER_GOOGLE,
+    PROVIDER_ANTHROPIC,
+    ANTHROPIC_API_VERSION,
     DEFAULT_PROVIDER,
     DEFAULT_BASE_URL,
     DEFAULT_API_KEY,
@@ -145,7 +146,7 @@ _LOGGER = logging.getLogger(__name__)
 # Providers that support dynamic model fetching via /models endpoint
 DYNAMIC_MODEL_PROVIDERS = [
     PROVIDER_LM_STUDIO,
-    PROVIDER_GOOGLE,
+    PROVIDER_ANTHROPIC,
 ]
 
 
@@ -155,20 +156,22 @@ async def fetch_provider_models(
     """Fetch available models from provider API.
 
     Returns a list of model IDs, or empty list if fetch fails.
+    Anthropic and OpenAI-compatible providers both expose /models with
+    a {"data": [{"id": "..."}]} shape — only the auth header differs.
     """
     if provider not in DYNAMIC_MODEL_PROVIDERS:
         return []
 
     try:
         async with aiohttp.ClientSession() as session:
-            # Google Gemini uses different API format
-            if provider == PROVIDER_GOOGLE:
-                # Request max models per page - use header auth instead of URL param
-                url = f"{base_url}/models?pageSize=1000"
-                headers = {"x-goog-api-key": api_key}
+            url = f"{base_url}/models"
+            if provider == PROVIDER_ANTHROPIC:
+                headers = {
+                    "x-api-key": api_key,
+                    "anthropic-version": ANTHROPIC_API_VERSION,
+                }
             else:
-                # OpenAI-compatible providers
-                url = f"{base_url}/models"
+                # OpenAI-compatible providers (LM Studio / vLLM)
                 headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
 
             async with session.get(
@@ -185,48 +188,23 @@ async def fetch_provider_models(
 
                 data = await response.json()
 
-                # Google returns {"models": [...]} with "name" field
-                # OpenAI-compatible returns {"data": [...]} with "id" field
-                if provider == PROVIDER_GOOGLE:
-                    models = data.get("models", [])
-                    _LOGGER.warning("Google API returned %d total models", len(models))
-                    model_ids = []
-                    for model in models:
-                        # Google format: "models/gemini-1.5-pro" -> "gemini-1.5-pro"
-                        name = model.get("name", "")
-                        if not name:
-                            continue
+                models = data.get("data", [])
+                model_ids = []
+                for model in models:
+                    model_id = model.get("id", "")
+                    if not model_id:
+                        continue
 
-                        # Extract model ID from full name
-                        model_id = name.replace("models/", "")
+                    # Skip non-chat models
+                    lower_id = model_id.lower()
+                    if any(skip in lower_id for skip in [
+                        "whisper", "tts", "embedding", "embed",
+                        "guard", "safeguard", "moderation",
+                        "audio", "speech", "vision-preview"
+                    ]):
+                        continue
 
-                        # Include all gemini models (filter out embedding/aqa/imagen)
-                        lower_id = model_id.lower()
-                        if any(skip in lower_id for skip in ["embedding", "aqa", "imagen"]):
-                            continue
-
-                        model_ids.append(model_id)
-
-                    _LOGGER.warning("Google filtered to %d gemini models: %s", len(model_ids), model_ids[:10])
-                else:
-                    # OpenAI-compatible providers
-                    models = data.get("data", [])
-                    model_ids = []
-                    for model in models:
-                        model_id = model.get("id", "")
-                        if not model_id:
-                            continue
-
-                        # Skip non-chat models
-                        lower_id = model_id.lower()
-                        if any(skip in lower_id for skip in [
-                            "whisper", "tts", "embedding", "embed",
-                            "guard", "safeguard", "moderation",
-                            "audio", "speech", "vision-preview"
-                        ]):
-                            continue
-
-                        model_ids.append(model_id)
+                    model_ids.append(model_id)
 
                 # Sort alphabetically for better UX
                 model_ids.sort()
@@ -355,13 +333,17 @@ class PureLLMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Test connection to the LLM provider."""
         try:
             async with aiohttp.ClientSession() as session:
-                if provider == PROVIDER_GOOGLE:
-                    # Google Gemini
+                if provider == PROVIDER_ANTHROPIC:
+                    headers = {
+                        "x-api-key": api_key,
+                        "anthropic-version": ANTHROPIC_API_VERSION,
+                    }
                     async with session.get(
-                        f"{base_url}/models?key={api_key}",
+                        f"{base_url}/models",
+                        headers=headers,
                         timeout=aiohttp.ClientTimeout(total=10),
                     ) as response:
-                        return response.status in (200, 400, 403)
+                        return response.status in (200, 401)
                 else:
                     # OpenAI-compatible (LM Studio / vLLM)
                     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}

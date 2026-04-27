@@ -194,8 +194,9 @@ from .const import (
     DEFAULT_THERMOSTAT_TEMP_STEP_CELSIUS,
     DEFAULT_THERMOSTAT_USE_CELSIUS,
     PROVIDER_BASE_URLS,
-    PROVIDER_GOOGLE,
+    PROVIDER_ANTHROPIC,
     PROVIDER_LM_STUDIO,
+    ANTHROPIC_API_VERSION,
     get_version,
 )
 
@@ -551,17 +552,21 @@ class PureLLMConversationEntity(ConversationEntity):
                     # Fallback: just establish TCP/SSL connection
                     pass
 
-            elif self.provider == PROVIDER_GOOGLE:
-                # Google: lightweight models list
+            elif self.provider == PROVIDER_ANTHROPIC:
+                # Anthropic: lightweight HEAD on /models to warm SSL/TCP
                 if self._session:
                     try:
                         async with asyncio.timeout(5):
                             async with self._session.get(
-                                f"{self.base_url}/models?key={self.api_key}&pageSize=1",
+                                f"{self.base_url}/models?limit=1",
+                                headers={
+                                    "x-api-key": self.api_key,
+                                    "anthropic-version": ANTHROPIC_API_VERSION,
+                                },
                                 timeout=aiohttp.ClientTimeout(total=5),
                             ) as resp:
                                 await resp.read()
-                        _LOGGER.debug("Warmed up Google Gemini connection")
+                        _LOGGER.debug("Warmed up Anthropic connection")
                     except Exception:
                         pass
 
@@ -1437,8 +1442,8 @@ class PureLLMConversationEntity(ConversationEntity):
                     if "content" in delta:
                         final_response += delta["content"]
 
-            elif self.provider == PROVIDER_GOOGLE:
-                final_response = await self._call_google(
+            elif self.provider == PROVIDER_ANTHROPIC:
+                final_response = await self._call_anthropic(
                     user_text, tools, system_prompt, self.max_tokens, history,
                     is_dismissal=is_dismissal,
                 )
@@ -1515,7 +1520,7 @@ class PureLLMConversationEntity(ConversationEntity):
             continue_conversation=keep_listening,
         )
 
-    async def _call_google(
+    async def _call_anthropic(
         self,
         user_text: str,
         tools: list,
@@ -1524,110 +1529,111 @@ class PureLLMConversationEntity(ConversationEntity):
         history: list[dict] | None = None,
         is_dismissal: bool = False,
     ) -> str:
-        """Simple non-streaming Google Gemini call with conversation history support."""
-        function_declarations = []
+        """Non-streaming Anthropic Claude Messages API call with tool use and history."""
+        # Convert OpenAI-style tool defs to Anthropic format.
+        anthropic_tools = []
         for tool in tools:
             func = tool.get("function", {})
-            function_declarations.append({
+            anthropic_tools.append({
                 "name": func.get("name"),
                 "description": func.get("description"),
-                "parameters": func.get("parameters", {"type": "object", "properties": {}})
+                "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
             })
 
-        contents = []
+        messages: list[dict] = []
         if history:
             for msg in history:
-                role = "model" if msg["role"] == "assistant" else "user"
-                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
-        contents.append({"role": "user", "parts": [{"text": user_text}]})
+                messages.append({"role": msg["role"], "content": msg["content"]})
+        messages.append({"role": "user", "content": user_text})
 
         called_tools: set[str] = set()
+        url = f"{self.base_url}/messages"
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": ANTHROPIC_API_VERSION,
+            "content-type": "application/json",
+        }
 
         for iteration in range(5):
-            payload = {
-                "contents": contents,
-                "systemInstruction": {"parts": [{"text": system_prompt}]},
-                "generationConfig": {"maxOutputTokens": max_tokens, "temperature": self.temperature},
+            payload: dict[str, Any] = {
+                "model": self.model,
+                "max_tokens": max_tokens,
+                "system": system_prompt,
+                "messages": messages,
+                "temperature": self.temperature,
             }
-            if function_declarations:
-                payload["tools"] = [{"functionDeclarations": function_declarations}]
+            if anthropic_tools:
+                payload["tools"] = anthropic_tools
                 # Force tool calling on first iteration to prevent hallucination.
                 if not is_dismissal and iteration == 0:
-                    payload["tool_config"] = {"function_calling_config": {"mode": "ANY"}}
+                    payload["tool_choice"] = {"type": "any"}
                 else:
-                    payload["tool_config"] = {"function_calling_config": {"mode": "AUTO"}}
+                    payload["tool_choice"] = {"type": "auto"}
 
-            url = f"{self.base_url}/models/{self.model}:generateContent"
-            headers = {"x-goog-api-key": self.api_key}
-
-            _LOGGER.debug("Google API call to %s", url)
+            _LOGGER.debug("Anthropic API call to %s (model=%s)", url, self.model)
 
             async with self._session.post(url, json=payload, headers=headers, timeout=120) as resp:
                 if resp.status != 200:
                     error = await resp.text()
-                    _LOGGER.error("Google API error %d: %s", resp.status, error)
-                    return "Error calling Google API."
+                    _LOGGER.error("Anthropic API error %d: %s", resp.status, error)
+                    return "Error calling Anthropic API."
 
                 data = await resp.json()
 
-            candidates = data.get("candidates", [])
-            if not candidates:
-                return "No response from Google."
-
-            parts = candidates[0].get("content", {}).get("parts", [])
+            content_blocks = data.get("content", [])
+            stop_reason = data.get("stop_reason")
             text_response = ""
-            function_calls = []
+            tool_uses: list[dict] = []
 
-            for part in parts:
-                if "text" in part:
-                    text_response += part["text"]
-                elif "functionCall" in part:
-                    function_calls.append(part["functionCall"])
+            for block in content_blocks:
+                btype = block.get("type")
+                if btype == "text":
+                    text_response += block.get("text", "")
+                elif btype == "tool_use":
+                    tool_uses.append(block)
 
-            if function_calls:
-                # Deduplicate tool calls — prevent the same tool+args from
-                # executing twice across iterations (e.g. manage_list add).
-                unique_calls = []
-                for fc in function_calls:
+            if tool_uses:
+                # Anthropic requires every tool_use in an assistant turn to
+                # have a matching tool_result in the next user turn — we
+                # can't drop blocks, so append the full content as-is.
+                messages.append({"role": "assistant", "content": content_blocks})
+
+                tool_results = []
+                for tu in tool_uses:
                     # Normalize args for dedup: strip empty/None values so
                     # {"item":"x","list_name":""} and {"item":"x"} match.
-                    _raw = fc.get('args', {})
-                    _dedup = {k: v for k, v in _raw.items() if v is not None and v != ""}
-                    tool_key = f"{fc['name']}:{json.dumps(_dedup, sort_keys=True)}"
-                    if tool_key not in called_tools:
+                    _input = tu.get("input", {}) or {}
+                    _dedup = {k: v for k, v in _input.items() if v is not None and v != ""}
+                    tool_key = f"{tu['name']}:{json.dumps(_dedup, sort_keys=True)}"
+
+                    if tool_key in called_tools:
+                        _LOGGER.debug("Anthropic: deduped repeated tool call: %s", tu["name"])
+                        resp_content = "Already executed."
+                    else:
                         called_tools.add(tool_key)
-                        unique_calls.append(fc)
-                    else:
-                        _LOGGER.debug("Google: deduped repeated tool call: %s", fc["name"])
+                        result = await self._execute_tool(tu["name"], _input)
+                        # Serialize the full dict so extra fields like
+                        # "instruction" reach the LLM (e.g. thermostat check
+                        # includes an instruction to ask a follow-up).
+                        if isinstance(result, dict):
+                            resp_content = json.dumps(result, ensure_ascii=False)
+                        else:
+                            resp_content = str(result)
 
-                if not unique_calls:
-                    # All calls were duplicates — treat as if no tool calls
-                    if text_response:
-                        return text_response
-                    continue
-
-                contents.append({"role": "model", "parts": parts})
-                function_responses = []
-
-                for fc in unique_calls:
-                    result = await self._execute_tool(fc["name"], fc.get("args", {}))
-                    # Serialize the full dict so extra fields like
-                    # "instruction" reach the LLM (e.g. thermostat check
-                    # includes an instruction to ask a follow-up).
-                    if isinstance(result, dict):
-                        resp_content = json.dumps(result, ensure_ascii=False)
-                    else:
-                        resp_content = str(result)
-
-                    function_responses.append({
-                        "functionResponse": {"name": fc["name"], "response": {"result": resp_content}}
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tu["id"],
+                        "content": resp_content,
                     })
 
-                contents.append({"role": "user", "parts": function_responses})
+                messages.append({"role": "user", "content": tool_results})
                 continue
 
             if text_response:
                 return text_response
+
+            if stop_reason == "end_turn":
+                break
 
         return "Could not get response."
 
