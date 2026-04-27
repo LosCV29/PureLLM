@@ -1594,9 +1594,16 @@ class PureLLMConversationEntity(ConversationEntity):
 
             if tool_uses:
                 # Anthropic requires every tool_use in an assistant turn to
-                # have a matching tool_result in the next user turn — we
-                # can't drop blocks, so append the full content as-is.
-                messages.append({"role": "assistant", "content": content_blocks})
+                # have a matching tool_result in the next user turn, so we
+                # can't drop tool_use blocks. But empty text blocks (which
+                # Claude sometimes emits alongside tool_use) are rejected
+                # on replay, so filter those out and strip any cache_control.
+                sanitized: list[dict] = []
+                for block in content_blocks:
+                    if block.get("type") == "text" and not (block.get("text") or "").strip():
+                        continue
+                    sanitized.append({k: v for k, v in block.items() if k != "cache_control"})
+                messages.append({"role": "assistant", "content": sanitized})
 
                 tool_results = []
                 for tu in tool_uses:
