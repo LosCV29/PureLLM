@@ -463,6 +463,9 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
         "RULES:",
         "- Keep your response very short (one or two words).",
         "- Do NOT call any tools. The action will be handled automatically.",
+        "- If the user's reply does not clearly match one of the answers above,",
+        "  respond with exactly: \"Sorry, I didn't catch that.\" so the user",
+        "  knows the action did NOT run.",
     ])
 
     extra_system_prompt = "\n".join(prompt_parts)

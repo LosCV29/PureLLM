@@ -104,6 +104,31 @@ def _clean_for_match(text: str) -> str:
     return " ".join(_PUNCT_RE.sub("", text.lower()).split())
 
 
+# STT often returns common variations for affirmative/negative answers.
+# These groups are used by ask_and_act to accept "yeah" when the automation
+# only listed "yes", etc.  Without them, a slight STT variation falls through
+# to the LLM, which then says "Done" without running the action.
+_AFFIRMATIVE_TOKENS = frozenset({
+    "yes", "yeah", "yep", "yup", "sure", "ok", "okay", "k",
+    "fine", "alright", "all right", "go ahead", "do it",
+    "please", "yes please", "affirmative", "confirm", "confirmed",
+    "absolutely", "definitely", "of course",
+})
+_NEGATIVE_TOKENS = frozenset({
+    "no", "nope", "nah", "no thanks", "no thank you", "negative",
+    "cancel", "stop", "don't", "dont", "never mind", "nevermind",
+    "not now", "not right now",
+})
+
+
+def _is_affirmative(cleaned: str) -> bool:
+    return cleaned in _AFFIRMATIVE_TOKENS
+
+
+def _is_negative(cleaned: str) -> bool:
+    return cleaned in _NEGATIVE_TOKENS
+
+
 def _normalize_for_tts(text: str) -> str:
     """Pass-through — text normalization is now handled by ElevenLabs API."""
     return text
@@ -1191,24 +1216,56 @@ class PureLLMConversationEntity(ConversationEntity):
             _LOGGER.warning("ask_and_act: failed to parse embedded answers: %s", err)
             return None
 
-        # Match user text against answer sentences (case-insensitive, punctuation-stripped)
-        # STT often adds trailing punctuation (e.g. "Yes." instead of "yes")
-        user_clean = user_text.lower().strip().rstrip(".,!?;:")
+        # Match user text against answer sentences.  STT adds trailing
+        # punctuation, varies casing, and rarely returns the exact word the
+        # automation listed (e.g. user says "yeah" but the sentence is "yes").
+        # Use a tiered match — exact, then whole-word containment, then
+        # affirmative/negative aliases — so common phrasings still execute
+        # the configured action.
+        user_clean = _clean_for_match(user_text)
+        user_words = set(user_clean.split())
         matched_answer = None
+        matched_score = 0  # 3=exact, 2=whole-word, 1=yes/no alias
+
         for answer in answers:
             for sentence in answer.get("sentences", []):
-                if sentence.lower().strip().rstrip(".,!?;:") == user_clean:
+                sentence_clean = _clean_for_match(sentence)
+                if not sentence_clean:
+                    continue
+
+                score = 0
+                if sentence_clean == user_clean:
+                    score = 3
+                else:
+                    sentence_tokens = sentence_clean.split()
+                    if sentence_tokens and all(t in user_words for t in sentence_tokens):
+                        score = 2
+                    elif (
+                        _is_affirmative(sentence_clean) and _is_affirmative(user_clean)
+                    ) or (
+                        _is_negative(sentence_clean) and _is_negative(user_clean)
+                    ):
+                        score = 1
+
+                if score > matched_score:
                     matched_answer = answer
-                    break
-            if matched_answer:
+                    matched_score = score
+                    if score == 3:
+                        break
+            if matched_score == 3:
                 break
 
         if not matched_answer:
-            _LOGGER.debug("ask_and_act: no exact match for '%s', falling through to LLM", user_text)
+            _LOGGER.info(
+                "ask_and_act: no match for '%s' against answers — falling through to LLM",
+                user_text,
+            )
             return None
 
-        _LOGGER.info("ask_and_act: matched answer id='%s' for user text '%s'",
-                      matched_answer.get("id", "?"), user_text)
+        _LOGGER.info(
+            "ask_and_act: matched answer id='%s' (score=%d) for user text '%s'",
+            matched_answer.get("id", "?"), matched_score, user_text,
+        )
 
         # Execute the action if one is configured
         if "action" in matched_answer:
@@ -1216,29 +1273,36 @@ class PureLLMConversationEntity(ConversationEntity):
             service_str = action_config.get("service", "")
             service_parts = service_str.split(".", 1)
             if len(service_parts) == 2:
-                # Merge target (entity_id etc.) directly into service_data
-                # instead of using the separate target= kwarg. This matches
-                # how device.py calls services and avoids HA target-resolution
-                # issues that can silently drop the call inside pipelines.
                 service_data = dict(action_config.get("data") or {})
                 target = action_config.get("target")
-                if target:
-                    service_data.update(target)
+
+                # Pass target= as a separate kwarg so HA resolves area_id /
+                # device_id / label_id properly.  Merging those into
+                # service_data drops the call silently for non-entity_id
+                # targets.  When target is missing we still pass an empty
+                # dict so HA's call signature is consistent.
+                target_arg = dict(target) if isinstance(target, dict) else None
 
                 try:
                     _LOGGER.info(
-                        "ask_and_act: executing %s data=%s",
-                        service_str, service_data,
+                        "ask_and_act: executing %s data=%s target=%s",
+                        service_str, service_data, target_arg,
                     )
                     await self.hass.services.async_call(
                         service_parts[0],
                         service_parts[1],
                         service_data,
                         blocking=True,
+                        target=target_arg,
                     )
                     _LOGGER.info("ask_and_act: action executed successfully")
                 except Exception as err:
                     _LOGGER.error("ask_and_act: action execution failed: %s", err)
+            else:
+                _LOGGER.warning(
+                    "ask_and_act: action service '%s' is not in 'domain.service' form",
+                    service_str,
+                )
 
         # Build response
         response_text = matched_answer.get("response", "OK")
