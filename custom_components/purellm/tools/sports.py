@@ -18,12 +18,21 @@ _LOGGER = logging.getLogger(__name__)
 ESPN_HEADERS = {"User-Agent": "HomeAssistant-PureLLM/1.0"}
 
 
-def _format_game_date(game_dt_local, now_local, include_time: bool = True) -> str:
-    """Format game date with relative labels (Today, Tomorrow, yesterday)."""
+def _format_game_date(
+    game_dt_local,
+    now_local,
+    include_time: bool = True,
+    time_valid: bool = True,
+) -> str:
+    """Format game date with relative labels (Today, Tomorrow, yesterday).
+
+    When ``time_valid`` is False (game time is TBD), the time portion is
+    omitted so the response doesn't claim a bogus "12:00 AM" tip-off.
+    """
     game_date_only = game_dt_local.date()
     today_date = now_local.date()
 
-    if include_time:
+    if include_time and time_valid:
         time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
         if game_date_only == today_date:
             return f"Today at {time_str}"
@@ -33,11 +42,53 @@ def _format_game_date(game_dt_local, now_local, include_time: bool = True) -> st
             return game_dt_local.strftime("%A, %B %d at %I:%M %p")
     else:
         if game_date_only == today_date:
-            return "today"
+            return "today" if not include_time else "Today (time TBD)"
+        elif game_date_only == today_date + timedelta(days=1):
+            return "tomorrow" if not include_time else "Tomorrow (time TBD)"
         elif game_date_only == today_date - timedelta(days=1):
             return "yesterday"
         else:
-            return game_dt_local.strftime("%A, %B %d")
+            base = game_dt_local.strftime("%A, %B %d")
+            return f"{base} (time TBD)" if include_time else base
+
+
+def _is_time_tbd(event: dict, game_dt_utc) -> bool:
+    """Detect ESPN events with a TBD start time.
+
+    ESPN sets ``timeValid`` = false when the start time is unknown; some feeds
+    omit the flag and instead encode the TBD as midnight UTC.  Either signal
+    is treated as "no time yet" so the response doesn't read out 12:00 AM.
+    """
+    if event.get("timeValid") is False:
+        return True
+    try:
+        if (
+            game_dt_utc is not None
+            and game_dt_utc.hour == 0
+            and game_dt_utc.minute == 0
+        ):
+            return True
+    except AttributeError:
+        pass
+    return False
+
+
+def _extract_venue(*sources: dict) -> str:
+    """Pull a venue name from any of the supplied competition / event dicts.
+
+    The schedule and scoreboard endpoints occasionally drop the venue on one
+    side or the other for the same playoff matchup.  Try every location we
+    know about so the response stays consistent regardless of which path
+    found the event.
+    """
+    for source in sources:
+        if not source:
+            continue
+        venue = source.get("venue") or {}
+        name = venue.get("fullName") or venue.get("displayName") or venue.get("name")
+        if name:
+            return name
+    return ""
 
 
 def _match_team_in_competitors(competitors: list, team_id: str, team_abbrev: str, full_name: str) -> bool:
@@ -469,13 +520,18 @@ async def get_sports_info(
                             if game_date_str:
                                 try:
                                     game_dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
-                                    formatted_date = _format_game_date(game_dt.astimezone(hass_timezone), datetime.now(hass_timezone))
+                                    time_valid = not _is_time_tbd(sb_event, game_dt)
+                                    formatted_date = _format_game_date(
+                                        game_dt.astimezone(hass_timezone),
+                                        datetime.now(hass_timezone),
+                                        time_valid=time_valid,
+                                    )
                                 except (ValueError, KeyError, TypeError, AttributeError):
                                     formatted_date = sb_status.get("detail", "TBD")
                             else:
                                 formatted_date = sb_status.get("detail", "TBD")
 
-                            venue = sb_comp.get("venue", {}).get("fullName", "")
+                            venue = _extract_venue(sb_comp, sb_event)
                             broadcast = _extract_broadcast(sb_comp, sb_event)
                             is_home = (home_name == full_name)
                             opponent = away_name if is_home else home_name
@@ -534,10 +590,15 @@ async def get_sports_info(
                         game_date_str = fut_event.get("date", "")
                         try:
                             game_dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
-                            formatted_date = _format_game_date(game_dt.astimezone(hass_timezone), now_local)
+                            time_valid = not _is_time_tbd(fut_event, game_dt)
+                            formatted_date = _format_game_date(
+                                game_dt.astimezone(hass_timezone),
+                                now_local,
+                                time_valid=time_valid,
+                            )
                         except (ValueError, KeyError, TypeError, AttributeError):
                             formatted_date = "TBD"
-                        venue = fut_comp.get("venue", {}).get("fullName", "")
+                        venue = _extract_venue(fut_comp, fut_event)
                         broadcast = _extract_broadcast(fut_comp, fut_event)
                         is_home = (home_name == full_name)
                         opponent = away_name if is_home else home_name
@@ -655,10 +716,14 @@ async def get_sports_info(
                             comp = next_game.get("competitions", [{}])[0]
                             competitors = comp.get("competitors", [])
                             home_name, away_name, _, _ = _extract_competitors(competitors)
+                            time_valid = not _is_time_tbd(next_game, next_game_date)
                             formatted_date = _format_game_date(
-                                next_game_date.astimezone(hass_timezone), datetime.now(hass_timezone))
+                                next_game_date.astimezone(hass_timezone),
+                                datetime.now(hass_timezone),
+                                time_valid=time_valid,
+                            )
 
-                            venue = comp.get("venue", {}).get("fullName", "")
+                            venue = _extract_venue(comp, next_game)
                             broadcast = _extract_broadcast(comp, next_game)
                             is_home = (home_name == full_name)
                             opponent = away_name if is_home else home_name
@@ -997,8 +1062,9 @@ async def list_league_games(
                 if game_date_str:
                     try:
                         game_dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
-                        game_dt_local = game_dt.astimezone(hass_timezone)
-                        time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
+                        if not _is_time_tbd(event, game_dt):
+                            game_dt_local = game_dt.astimezone(hass_timezone)
+                            time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
                     except:
                         pass
                 summary = f"{away_name} @ {home_name} - {time_str}"
