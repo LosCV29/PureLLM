@@ -128,15 +128,23 @@ def _format_moneyline(ml) -> str:
 
 
 def _extract_odds(competition: dict, home_name: str, away_name: str) -> tuple[str, str]:
-    """Pull betting favorite + moneyline from a competition.
+    """Pull betting favorite + moneyline from a competition or pickcenter dict.
 
-    Returns (favorite_team_name, formatted_moneyline) or ("", "") if odds
-    aren't published yet.  ESPN's first ``odds`` entry is the featured book.
+    Accepts either a competition (with ``odds`` array) or a pickcenter entry
+    (with ``homeTeamOdds``/``awayTeamOdds`` directly).  Returns
+    (favorite_team_name, formatted_moneyline) or ("", "") if odds aren't
+    available.
     """
-    odds_list = competition.get("odds") or []
-    if not odds_list:
-        return "", ""
-    odds = odds_list[0] or {}
+    # Pickcenter entries have homeTeamOdds at the top level; competition events
+    # nest them under ``odds[0]``.
+    if "homeTeamOdds" in competition or "awayTeamOdds" in competition:
+        odds = competition
+    else:
+        odds_list = competition.get("odds") or []
+        if not odds_list:
+            return "", ""
+        odds = odds_list[0] or {}
+
     home_odds = odds.get("homeTeamOdds") or {}
     away_odds = odds.get("awayTeamOdds") or {}
     home_ml = home_odds.get("moneyLine")
@@ -160,6 +168,35 @@ def _extract_odds(competition: dict, home_name: str, away_name: str) -> tuple[st
         except (TypeError, ValueError):
             pass
     return "", ""
+
+
+async def _fetch_event_odds(
+    session: "aiohttp.ClientSession",
+    sport: str,
+    league: str,
+    event_id: str,
+    home_name: str,
+    away_name: str,
+) -> tuple[str, str]:
+    """Fetch betting odds for a single event via ESPN's summary endpoint.
+
+    The scoreboard and team schedule endpoints don't include ``odds``; that
+    data lives only under ``pickcenter`` on the per-event summary endpoint.
+    """
+    if not event_id or not sport or not league:
+        return "", ""
+    try:
+        url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/summary?event={event_id}"
+        data, status = await fetch_json(session, url, headers=ESPN_HEADERS, cache_ttl=CACHE_TTL_SHORT)
+        if not data or status != 200:
+            return "", ""
+        pickcenter = data.get("pickcenter") or []
+        if not pickcenter:
+            return "", ""
+        return _extract_odds(pickcenter[0] or {}, home_name, away_name)
+    except Exception as e:
+        _LOGGER.debug("Failed to fetch event odds for %s: %s", event_id, e)
+        return "", ""
 
 
 def _extract_broadcast(competition: dict, event: dict = None) -> str:
@@ -577,7 +614,9 @@ async def get_sports_info(
 
                             venue = _extract_venue(sb_comp, sb_event)
                             broadcast = _extract_broadcast(sb_comp, sb_event)
-                            odds_fav, odds_ml = _extract_odds(sb_comp, home_name, away_name)
+                            odds_fav, odds_ml = await _fetch_event_odds(
+                                session, sb_sport, sb_league, sb_event.get("id"), home_name, away_name,
+                            )
                             is_home = (home_name == full_name)
                             opponent = away_name if is_home else home_name
                             home_away = "home" if is_home else "away"
@@ -648,7 +687,9 @@ async def get_sports_info(
                             formatted_date = "TBD"
                         venue = _extract_venue(fut_comp, fut_event)
                         broadcast = _extract_broadcast(fut_comp, fut_event)
-                        odds_fav, odds_ml = _extract_odds(fut_comp, home_name, away_name)
+                        odds_fav, odds_ml = await _fetch_event_odds(
+                            session, found_sport, found_league, fut_event.get("id"), home_name, away_name,
+                        )
                         is_home = (home_name == full_name)
                         opponent = away_name if is_home else home_name
                         home_away = "home" if is_home else "away"
@@ -777,7 +818,9 @@ async def get_sports_info(
 
                             venue = _extract_venue(comp, next_game)
                             broadcast = _extract_broadcast(comp, next_game)
-                            odds_fav, odds_ml = _extract_odds(comp, home_name, away_name)
+                            odds_fav, odds_ml = await _fetch_event_odds(
+                                session, best["sport"], best["league"], next_game.get("id"), home_name, away_name,
+                            )
                             is_home = (home_name == full_name)
                             opponent = away_name if is_home else home_name
                             home_away = "home" if is_home else "away"
