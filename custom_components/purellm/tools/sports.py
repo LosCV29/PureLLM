@@ -118,6 +118,50 @@ def _extract_competitors(competitors: list) -> tuple:
     )
 
 
+def _format_moneyline(ml) -> str:
+    """Format a moneyline as a signed integer string (e.g. -150, +130)."""
+    try:
+        ml_int = int(ml)
+    except (TypeError, ValueError):
+        return ""
+    return f"+{ml_int}" if ml_int > 0 else str(ml_int)
+
+
+def _extract_odds(competition: dict, home_name: str, away_name: str) -> tuple[str, str]:
+    """Pull betting favorite + moneyline from a competition.
+
+    Returns (favorite_team_name, formatted_moneyline) or ("", "") if odds
+    aren't published yet.  ESPN's first ``odds`` entry is the featured book.
+    """
+    odds_list = competition.get("odds") or []
+    if not odds_list:
+        return "", ""
+    odds = odds_list[0] or {}
+    home_odds = odds.get("homeTeamOdds") or {}
+    away_odds = odds.get("awayTeamOdds") or {}
+    home_ml = home_odds.get("moneyLine")
+    away_ml = away_odds.get("moneyLine")
+
+    if home_odds.get("favorite") and home_ml is not None:
+        ml = _format_moneyline(home_ml)
+        return (home_name, ml) if ml else ("", "")
+    if away_odds.get("favorite") and away_ml is not None:
+        ml = _format_moneyline(away_ml)
+        return (away_name, ml) if ml else ("", "")
+
+    # No explicit favorite flag — infer from moneyline (lower number = favorite)
+    if home_ml is not None and away_ml is not None:
+        try:
+            if int(home_ml) < int(away_ml):
+                ml = _format_moneyline(home_ml)
+                return (home_name, ml) if ml else ("", "")
+            ml = _format_moneyline(away_ml)
+            return (away_name, ml) if ml else ("", "")
+        except (TypeError, ValueError):
+            pass
+    return "", ""
+
+
 def _extract_broadcast(competition: dict, event: dict = None) -> str:
     """Extract TV broadcast channel from competition or event data."""
     # Check both competition and event levels
@@ -533,11 +577,13 @@ async def get_sports_info(
 
                             venue = _extract_venue(sb_comp, sb_event)
                             broadcast = _extract_broadcast(sb_comp, sb_event)
+                            odds_fav, odds_ml = _extract_odds(sb_comp, home_name, away_name)
                             is_home = (home_name == full_name)
                             opponent = away_name if is_home else home_name
                             home_away = "home" if is_home else "away"
                             venue_str = f" at {venue}" if venue else ""
                             broadcast_str = f", airing on {broadcast}" if broadcast else ""
+                            odds_str = f", betting odds {odds_fav} {odds_ml}" if odds_fav else ""
                             result["next_game"] = {
                                 "date": formatted_date,
                                 "home_team": home_name,
@@ -545,7 +591,9 @@ async def get_sports_info(
                                 "venue": venue,
                                 "broadcast": broadcast,
                                 "home_away": home_away,
-                                "summary": f"{full_name} vs {opponent} ({home_away}) {formatted_date}{venue_str}{broadcast_str}"
+                                "odds_favorite": odds_fav,
+                                "odds_moneyline": odds_ml,
+                                "summary": f"{full_name} vs {opponent} ({home_away}) {formatted_date}{venue_str}{broadcast_str}{odds_str}"
                             }
                             next_game_from_scoreboard = True
 
@@ -600,11 +648,13 @@ async def get_sports_info(
                             formatted_date = "TBD"
                         venue = _extract_venue(fut_comp, fut_event)
                         broadcast = _extract_broadcast(fut_comp, fut_event)
+                        odds_fav, odds_ml = _extract_odds(fut_comp, home_name, away_name)
                         is_home = (home_name == full_name)
                         opponent = away_name if is_home else home_name
                         home_away = "home" if is_home else "away"
                         venue_str = f" at {venue}" if venue else ""
                         broadcast_str = f", airing on {broadcast}" if broadcast else ""
+                        odds_str = f", betting odds {odds_fav} {odds_ml}" if odds_fav else ""
                         result["next_game"] = {
                             "date": formatted_date,
                             "home_team": home_name,
@@ -612,7 +662,9 @@ async def get_sports_info(
                             "venue": venue,
                             "broadcast": broadcast,
                             "home_away": home_away,
-                            "summary": f"{full_name} vs {opponent} ({home_away}) {formatted_date}{venue_str}{broadcast_str}"
+                            "odds_favorite": odds_fav,
+                            "odds_moneyline": odds_ml,
+                            "summary": f"{full_name} vs {opponent} ({home_away}) {formatted_date}{venue_str}{broadcast_str}{odds_str}"
                         }
                         next_game_from_scoreboard = True
                         break
@@ -725,11 +777,13 @@ async def get_sports_info(
 
                             venue = _extract_venue(comp, next_game)
                             broadcast = _extract_broadcast(comp, next_game)
+                            odds_fav, odds_ml = _extract_odds(comp, home_name, away_name)
                             is_home = (home_name == full_name)
                             opponent = away_name if is_home else home_name
                             home_away = "home" if is_home else "away"
                             venue_str = f" at {venue}" if venue else ""
                             broadcast_str = f", airing on {broadcast}" if broadcast else ""
+                            odds_str = f", betting odds {odds_fav} {odds_ml}" if odds_fav else ""
                             result["next_game"] = {
                                 "date": formatted_date,
                                 "home_team": home_name,
@@ -737,7 +791,9 @@ async def get_sports_info(
                                 "venue": venue,
                                 "broadcast": broadcast,
                                 "home_away": home_away,
-                                "summary": f"{full_name} vs {opponent} ({home_away}) {formatted_date}{venue_str}{broadcast_str}"
+                                "odds_favorite": odds_fav,
+                                "odds_moneyline": odds_ml,
+                                "summary": f"{full_name} vs {opponent} ({home_away}) {formatted_date}{venue_str}{broadcast_str}{odds_str}"
                             }
 
         # Build response text
@@ -791,6 +847,10 @@ async def get_sports_info(
                 next_text = f"The next {full_name} game is {ng['date']} against {opponent}{venue_part}"
             if broadcast_part:
                 next_text += f",{broadcast_part}"
+            odds_fav = ng.get("odds_favorite", "")
+            odds_ml = ng.get("odds_moneyline", "")
+            if odds_fav and odds_ml:
+                next_text += f". The betting odds are {odds_fav} {odds_ml}"
             response_parts.append(next_text)
 
         result["response_text"] = ". ".join(response_parts) if response_parts else f"No game info found for {full_name}"
