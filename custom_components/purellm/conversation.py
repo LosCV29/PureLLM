@@ -95,6 +95,30 @@ _LANG_CODE_TO_NAME: dict[str, str] = {
 # while preserving apostrophes needed for "that's all", "i'm good", etc.
 _PUNCT_RE = re.compile(r"[^\w\s']")
 
+# Known Whisper STT misrecognitions mapped to their correct forms.
+# Keys are what Whisper says, values are what was actually spoken.
+# Replacements are whole-word only (case-insensitive) to avoid false matches.
+# Add entries here whenever Whisper consistently mishears an artist/word.
+_STT_WORD_CORRECTIONS: dict[str, str] = {
+    "PZ": "Peezy",
+}
+_STT_CORRECTIONS_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in _STT_WORD_CORRECTIONS) + r")\b",
+    re.IGNORECASE,
+)
+
+
+def _apply_stt_corrections(text: str) -> str:
+    """Replace known Whisper misrecognitions with their correct forms."""
+    if not _STT_WORD_CORRECTIONS:
+        return text
+    def _replace(m: re.Match) -> str:
+        # Preserve the correct replacement regardless of input case
+        return _STT_WORD_CORRECTIONS[next(
+            k for k in _STT_WORD_CORRECTIONS if k.lower() == m.group(0).lower()
+        )]
+    return _STT_CORRECTIONS_RE.sub(_replace, text)
+
 
 def _clean_for_match(text: str) -> str:
     """Normalize user text for dismissal matching.
@@ -1350,7 +1374,7 @@ class PureLLMConversationEntity(ConversationEntity):
         Uses simple non-streaming calls for cloud providers (more reliable).
         Supports continuing conversations with conversation_id tracking.
         """
-        user_text = user_input.text.strip()
+        user_text = _apply_stt_corrections(user_input.text.strip())
         self._current_user_query = user_text
         self._current_user_input = user_input
 
