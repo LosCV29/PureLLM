@@ -30,7 +30,6 @@
         "menu_options": {
           "connection": "Connection & Provider",
           "model": "Model Settings",
-          "vision": "Vision LLM (Cameras)",
           "features": "Enable/Disable Features",
           "entities": "PureLLM Default Entities",
           "voice_scripts": "Voice Scripts",
@@ -45,10 +44,10 @@
       },
       "connection": {
         "title": "Connection & Provider Settings",
-        "description": "Change LLM provider or API settings",
+        "description": "Change LLM provider, server URL/port, or API key. The URL is tested on save — if your local server (LM Studio / vLLM) is reachable but on a non-default port like 1237, edit the URL here.",
         "data": {
           "provider": "LLM Provider",
-          "base_url": "API Base URL",
+          "base_url": "API Base URL (e.g., http://192.168.1.50:1237/v1)",
           "api_key": "API Key"
         }
       },
@@ -139,15 +138,6 @@
           "elevenlabs_speaker_boost": "Speaker Boost (enhances voice clarity)",
           "elevenlabs_output_format": "Output Format",
           "elevenlabs_text_normalization": "Text Normalization (auto = let API decide, on = always normalize, off = skip)"
-        }
-      },
-      "vision": {
-        "title": "Vision LLM (Cameras)",
-        "description": "Separate model used only for camera scene description. The orchestration LLM decides when to call check_camera; the captured video clip is sent here for analysis.",
-        "data": {
-          "vision_base_url": "Vision API Base URL (e.g., http://localhost:8000/v1)",
-          "vision_api_key": "Vision API Key",
-          "vision_model": "Vision Model (e.g., qwen2.5-vl-7b-instruct)"
         }
       },
       "notifications": {

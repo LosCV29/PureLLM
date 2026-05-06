@@ -116,18 +116,6 @@ CONF_CAMERA_ENTITIES: Final = "camera_entities"  # Deprecated - kept for config 
 CONF_FRIGATE_URL: Final = "frigate_url"
 CONF_CAMERA_RTSP_URLS: Final = "camera_rtsp_urls"
 
-# Vision LLM (separate model used only for camera scene description).
-# When ``check_camera`` is invoked, the orchestration LLM (CONF_BASE_URL /
-# CONF_API_KEY / CONF_MODEL) decides the tool call, but the captured video
-# clip is sent to this vision endpoint for analysis.
-CONF_VISION_BASE_URL: Final = "vision_base_url"
-CONF_VISION_API_KEY: Final = "vision_api_key"
-CONF_VISION_MODEL: Final = "vision_model"
-
-DEFAULT_VISION_BASE_URL: Final = ""
-DEFAULT_VISION_API_KEY: Final = ""
-DEFAULT_VISION_MODEL: Final = ""
-
 # Thermostat settings - user-configurable temperature range and step
 CONF_THERMOSTAT_MIN_TEMP: Final = "thermostat_min_temp"
 CONF_THERMOSTAT_MAX_TEMP: Final = "thermostat_max_temp"

@@ -112,13 +112,6 @@ from .const import (
     # Frigate
     CONF_FRIGATE_URL,
     DEFAULT_FRIGATE_URL,
-    # Vision LLM (separate model for camera scene description)
-    CONF_VISION_BASE_URL,
-    CONF_VISION_API_KEY,
-    CONF_VISION_MODEL,
-    DEFAULT_VISION_BASE_URL,
-    DEFAULT_VISION_API_KEY,
-    DEFAULT_VISION_MODEL,
     # SofaBaton Activities
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
@@ -223,6 +216,36 @@ async def fetch_provider_models(
         return []
 
 
+async def _test_provider_connection(
+    provider: str, base_url: str, api_key: str
+) -> bool:
+    """Test connection to the LLM provider via its /models endpoint.
+
+    Returns True on a 200/401 (server reachable, auth may differ) and on
+    connection errors for local providers (LM Studio may simply be off).
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            if provider == PROVIDER_ANTHROPIC:
+                headers = {
+                    "x-api-key": api_key,
+                    "anthropic-version": ANTHROPIC_API_VERSION,
+                }
+            else:
+                headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            async with session.get(
+                f"{base_url}/models",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                return response.status in (200, 401)
+    except Exception as e:
+        _LOGGER.warning("Connection test exception: %s", e)
+        if provider == PROVIDER_LM_STUDIO:
+            return True
+        return False
+
+
 class PureLLMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for PureLLM."""
 
@@ -276,7 +299,7 @@ class PureLLMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             
             # Validate connection
             try:
-                valid = await self._test_connection(
+                valid = await _test_provider_connection(
                     provider,
                     self._data.get(CONF_BASE_URL, PROVIDER_BASE_URLS.get(provider)),
                     self._data.get(CONF_API_KEY, ""),
@@ -336,37 +359,6 @@ class PureLLMConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             },
         )
 
-    async def _test_connection(self, provider: str, base_url: str, api_key: str) -> bool:
-        """Test connection to the LLM provider."""
-        try:
-            async with aiohttp.ClientSession() as session:
-                if provider == PROVIDER_ANTHROPIC:
-                    headers = {
-                        "x-api-key": api_key,
-                        "anthropic-version": ANTHROPIC_API_VERSION,
-                    }
-                    async with session.get(
-                        f"{base_url}/models",
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as response:
-                        return response.status in (200, 401)
-                else:
-                    # OpenAI-compatible (LM Studio / vLLM)
-                    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-                    async with session.get(
-                        f"{base_url}/models",
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as response:
-                        return response.status in (200, 401)
-        except Exception as e:
-            _LOGGER.warning("Connection test exception: %s", e)
-            # For local providers, connection refused is expected if server isn't running
-            if provider == PROVIDER_LM_STUDIO:
-                return True  # Allow setup even if server isn't running
-            return False
-
     @staticmethod
     @callback
     def async_get_options_flow(
@@ -392,7 +384,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             menu_options={
                 "connection": "Connection Settings",
                 "model": "Model Settings",
-                "vision": "Vision LLM (Cameras)",
                 "features": "Enable/Disable Features",
                 "entities": "PureLLM Default Entities",
                 "voice_scripts": "Voice Scripts",
@@ -409,24 +400,45 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_connection(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        """Handle connection settings including provider change."""
-        if user_input is not None:
-            # If provider changed, update base_url to default for new provider
-            new_provider = user_input.get(CONF_PROVIDER)
-            old_provider = self._entry.data.get(CONF_PROVIDER) or self._entry.options.get(CONF_PROVIDER)
-            
-            if new_provider and new_provider != old_provider:
-                # Set default URL for new provider unless custom URL provided
-                if not user_input.get(CONF_BASE_URL) or user_input.get(CONF_BASE_URL) == PROVIDER_BASE_URLS.get(old_provider):
-                    user_input[CONF_BASE_URL] = PROVIDER_BASE_URLS.get(new_provider, DEFAULT_BASE_URL)
-            
-            new_options = {**self._entry.options, **user_input}
-            return self.async_create_entry(title="", data=new_options)
+        """Handle connection settings (provider, base URL, API key).
 
+        Validates the URL by hitting ``/models`` so a wrong host/port surfaces
+        as ``cannot_connect`` instead of silently saving and breaking voice
+        commands on the next reload.
+        """
+        errors: dict[str, str] = {}
         current = {**self._entry.data, **self._entry.options}
         current_provider = current.get(CONF_PROVIDER, DEFAULT_PROVIDER)
 
-        # Build provider options for selector
+        if user_input is not None:
+            new_provider = user_input.get(CONF_PROVIDER, current_provider)
+            old_provider = current_provider
+
+            # If the provider changed and the URL is empty or still the old
+            # provider's default, swap in the new provider's default URL.
+            if new_provider != old_provider:
+                submitted_url = user_input.get(CONF_BASE_URL, "")
+                if not submitted_url or submitted_url == PROVIDER_BASE_URLS.get(old_provider):
+                    user_input[CONF_BASE_URL] = PROVIDER_BASE_URLS.get(
+                        new_provider, DEFAULT_BASE_URL
+                    )
+
+            base_url = (user_input.get(CONF_BASE_URL) or "").strip()
+            api_key = user_input.get(CONF_API_KEY, "")
+
+            valid = await _test_provider_connection(new_provider, base_url, api_key)
+            if not valid:
+                errors["base"] = "cannot_connect"
+            else:
+                user_input[CONF_BASE_URL] = base_url
+                new_options = {**self._entry.options, **user_input}
+                return self.async_create_entry(title="", data=new_options)
+
+            # Re-render with the user's submitted values so they don't lose
+            # their typing while fixing the error.
+            current = {**current, **user_input}
+            current_provider = new_provider
+
         provider_options = [
             selector.SelectOptionDict(value=p, label=PROVIDER_NAMES[p])
             for p in ALL_PROVIDERS
@@ -434,6 +446,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
 
         return self.async_show_form(
             step_id="connection",
+            errors=errors,
             data_schema=vol.Schema(
                 {
                     vol.Required(
@@ -447,11 +460,18 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     ),
                     vol.Required(
                         CONF_BASE_URL,
-                        default=current.get(CONF_BASE_URL, PROVIDER_BASE_URLS.get(current_provider, DEFAULT_BASE_URL)),
+                        description={
+                            "suggested_value": current.get(
+                                CONF_BASE_URL,
+                                PROVIDER_BASE_URLS.get(current_provider, DEFAULT_BASE_URL),
+                            )
+                        },
                     ): str,
                     vol.Required(
                         CONF_API_KEY,
-                        default=current.get(CONF_API_KEY, DEFAULT_API_KEY),
+                        description={
+                            "suggested_value": current.get(CONF_API_KEY, DEFAULT_API_KEY)
+                        },
                     ): str,
                 }
             ),
@@ -516,41 +536,6 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_TOP_P,
                         default=current.get(CONF_TOP_P, DEFAULT_TOP_P),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
-                }
-            ),
-        )
-
-    async def async_step_vision(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Configure a separate vision LLM used only for camera scene description.
-
-        The orchestration LLM (Connection / Model steps) decides when to call
-        ``check_camera``; the captured video clip is then sent to this endpoint
-        for analysis. Leave fields blank if you don't use camera checks.
-        """
-        if user_input is not None:
-            new_options = {**self._entry.options, **user_input}
-            return self.async_create_entry(title="", data=new_options)
-
-        current = {**self._entry.data, **self._entry.options}
-
-        return self.async_show_form(
-            step_id="vision",
-            data_schema=vol.Schema(
-                {
-                    vol.Optional(
-                        CONF_VISION_BASE_URL,
-                        default=current.get(CONF_VISION_BASE_URL, DEFAULT_VISION_BASE_URL),
-                    ): str,
-                    vol.Optional(
-                        CONF_VISION_API_KEY,
-                        default=current.get(CONF_VISION_API_KEY, DEFAULT_VISION_API_KEY),
-                    ): str,
-                    vol.Optional(
-                        CONF_VISION_MODEL,
-                        default=current.get(CONF_VISION_MODEL, DEFAULT_VISION_MODEL),
-                    ): str,
                 }
             ),
         )
