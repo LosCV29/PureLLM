@@ -112,6 +112,13 @@ from .const import (
     # Frigate
     CONF_FRIGATE_URL,
     DEFAULT_FRIGATE_URL,
+    # Vision LLM (separate model for camera scene description)
+    CONF_VISION_BASE_URL,
+    CONF_VISION_API_KEY,
+    CONF_VISION_MODEL,
+    DEFAULT_VISION_BASE_URL,
+    DEFAULT_VISION_API_KEY,
+    DEFAULT_VISION_MODEL,
     # SofaBaton Activities
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
@@ -385,6 +392,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             menu_options={
                 "connection": "Connection Settings",
                 "model": "Model Settings",
+                "vision": "Vision LLM (Cameras)",
                 "features": "Enable/Disable Features",
                 "entities": "PureLLM Default Entities",
                 "voice_scripts": "Voice Scripts",
@@ -508,6 +516,41 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_TOP_P,
                         default=current.get(CONF_TOP_P, DEFAULT_TOP_P),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
+                }
+            ),
+        )
+
+    async def async_step_vision(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure a separate vision LLM used only for camera scene description.
+
+        The orchestration LLM (Connection / Model steps) decides when to call
+        ``check_camera``; the captured video clip is then sent to this endpoint
+        for analysis. Leave fields blank if you don't use camera checks.
+        """
+        if user_input is not None:
+            new_options = {**self._entry.options, **user_input}
+            return self.async_create_entry(title="", data=new_options)
+
+        current = {**self._entry.data, **self._entry.options}
+
+        return self.async_show_form(
+            step_id="vision",
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(
+                        CONF_VISION_BASE_URL,
+                        default=current.get(CONF_VISION_BASE_URL, DEFAULT_VISION_BASE_URL),
+                    ): str,
+                    vol.Optional(
+                        CONF_VISION_API_KEY,
+                        default=current.get(CONF_VISION_API_KEY, DEFAULT_VISION_API_KEY),
+                    ): str,
+                    vol.Optional(
+                        CONF_VISION_MODEL,
+                        default=current.get(CONF_VISION_MODEL, DEFAULT_VISION_MODEL),
+                    ): str,
                 }
             ),
         )
