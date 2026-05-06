@@ -30,7 +30,6 @@
         "menu_options": {
           "connection": "Connection & Provider",
           "model": "Model Settings",
-          "vision": "Vision LLM (Cameras)",
           "features": "Enable/Disable Features",
           "entities": "PureLLM Default Entities",
           "elevenlabs": "ElevenLabs TTS",
@@ -88,15 +87,6 @@
           "thermostat_min_temp": "Thermostat Minimum Temperature",
           "thermostat_max_temp": "Thermostat Maximum Temperature",
           "thermostat_temp_step": "Temperature Adjustment Step"
-        }
-      },
-      "vision": {
-        "title": "Vision LLM (Cameras)",
-        "description": "Separate model used only for camera scene description. The orchestration LLM decides when to call check_camera; the captured video clip is sent here for analysis.",
-        "data": {
-          "vision_base_url": "Vision API Base URL (e.g., http://localhost:8000/v1)",
-          "vision_api_key": "Vision API Key",
-          "vision_model": "Vision Model (e.g., qwen2.5-vl-7b-instruct)"
         }
       },
       "music_rooms": {
