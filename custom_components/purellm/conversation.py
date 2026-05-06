@@ -213,6 +213,12 @@ from .const import (
     DEFAULT_FRIGATE_URL,
     CONF_CAMERA_RTSP_URLS,
     DEFAULT_CAMERA_RTSP_URLS,
+    CONF_VISION_BASE_URL,
+    CONF_VISION_API_KEY,
+    CONF_VISION_MODEL,
+    DEFAULT_VISION_BASE_URL,
+    DEFAULT_VISION_API_KEY,
+    DEFAULT_VISION_MODEL,
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
     DEFAULT_API_KEY,
@@ -513,6 +519,13 @@ class PureLLMConversationEntity(ConversationEntity):
         # Optional manual RTSP URL overrides (camera_name: rtsp://...)
         rtsp_urls_str = config.get(CONF_CAMERA_RTSP_URLS, DEFAULT_CAMERA_RTSP_URLS)
         self.camera_rtsp_urls = parse_entity_config(rtsp_urls_str) if rtsp_urls_str else {}
+
+        # Vision LLM — separate endpoint used only for camera scene description.
+        # Independent of the orchestration LLM so a text-only tool-calling model
+        # can drive ``check_camera`` while a VLM produces the description.
+        self.vision_base_url = config.get(CONF_VISION_BASE_URL, DEFAULT_VISION_BASE_URL)
+        self.vision_api_key = config.get(CONF_VISION_API_KEY, DEFAULT_VISION_API_KEY)
+        self.vision_model = config.get(CONF_VISION_MODEL, DEFAULT_VISION_MODEL)
 
         # SofaBaton activities configuration
         self.sofabaton_activities = _parse_json_list(CONF_SOFABATON_ACTIVITIES, DEFAULT_SOFABATON_ACTIVITIES)
@@ -2302,12 +2315,14 @@ class PureLLMConversationEntity(ConversationEntity):
                     arguments, self._session, self.google_places_api_key,
                     latitude, longitude
                 ),
-                # Camera via Frigate API + local vision LLM analysis
+                # Camera via Frigate API + dedicated vision LLM analysis.
+                # Orchestration uses the main LLM (self.base_url/api_key/model);
+                # the captured clip is sent to the separate vision endpoint.
                 "check_camera": lambda: camera_tool.check_camera(
                     arguments, self._session, self.frigate_url,
-                    llm_base_url=self.base_url,
-                    llm_api_key=self.api_key,
-                    llm_model=self.model,
+                    llm_base_url=self.vision_base_url,
+                    llm_api_key=self.vision_api_key,
+                    llm_model=self.vision_model,
                     config_dir=self.hass.config.config_dir,
                     camera_rtsp_urls=self.camera_rtsp_urls or None,
                 ),
