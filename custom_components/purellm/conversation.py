@@ -271,23 +271,19 @@ from .tools import lists as lists_tool
 from .tools import sofabaton as sofabaton_tool
 from .tools import search as search_tool
 from .tools import plants as plants_tool
-from .tts import (
-    TTS_PLAYBACK_STARTUP_BUFFER,
-    TTS_PLAYBACK_TAIL_BUFFER,
-    subscribe_next_tts,
-)
 
 if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
-# How long to wait for the TTS entity to report audio duration before falling
-# back to a character-count estimate. If nothing arrives in this window, assume
-# the TTS engine doesn't surface duration and estimate it ourselves.
-_TTS_SIGNAL_TIMEOUT = 3.0
-# Average speech rate for the char-count fallback: ~15 chars/sec ≈ 180 wpm.
+# Average speech rate for char-count duration estimation: ~15 chars/sec ≈ 180 wpm.
 _TTS_CHARS_PER_SECOND = 15.0
+# Latency between audio bytes being returned to HA and the satellite actually
+# starting playback (file cache → URL → media_player.play_media → stream),
+# plus a small tail so music doesn't start at the exact sample the voice ends.
+_TTS_PLAYBACK_STARTUP_BUFFER = 0.4
+_TTS_PLAYBACK_TAIL_BUFFER = 0.25
 
 
 async def _play_after_tts_finishes(
@@ -297,34 +293,18 @@ async def _play_after_tts_finishes(
 ) -> None:
     """Run play_action once the upcoming TTS announcement has finished playing.
 
-    Subscribes to the TTS entity's one-shot completion signal to get the exact
-    audio duration; if the configured TTS engine isn't ours, falls back to a
-    character-count estimate so the behavior degrades gracefully.
+    Estimates duration from the speech text length since the configured TTS
+    engine is external (no completion signal available).
     """
-    duration_event = asyncio.Event()
-    reported = [0.0]
-
-    async def _on_tts(duration: float) -> None:
-        reported[0] = duration
-        duration_event.set()
-
-    unsubscribe = subscribe_next_tts(hass, _on_tts)
-
-    try:
-        await asyncio.wait_for(duration_event.wait(), timeout=_TTS_SIGNAL_TIMEOUT)
-        duration = reported[0]
-        _LOGGER.debug("Play-after-TTS: using measured duration %.2fs", duration)
-    except asyncio.TimeoutError:
-        unsubscribe()
-        duration = max(1.0, len(speech_text) / _TTS_CHARS_PER_SECOND)
-        _LOGGER.debug(
-            "Play-after-TTS: no duration signal, estimating %.2fs from %d chars",
-            duration, len(speech_text),
-        )
+    duration = max(1.0, len(speech_text) / _TTS_CHARS_PER_SECOND)
+    _LOGGER.debug(
+        "Play-after-TTS: estimating %.2fs from %d chars",
+        duration, len(speech_text),
+    )
 
     try:
         await asyncio.sleep(
-            TTS_PLAYBACK_STARTUP_BUFFER + duration + TTS_PLAYBACK_TAIL_BUFFER,
+            _TTS_PLAYBACK_STARTUP_BUFFER + duration + _TTS_PLAYBACK_TAIL_BUFFER,
         )
         await play_action()
     except Exception as err:
