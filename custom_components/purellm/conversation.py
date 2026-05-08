@@ -154,7 +154,7 @@ def _is_negative(cleaned: str) -> bool:
 
 
 def _normalize_for_tts(text: str) -> str:
-    """Pass-through — text normalization is now handled by ElevenLabs API."""
+    """Pass-through — text normalization is delegated to the configured TTS engine."""
     return text
 
 
@@ -282,10 +282,9 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# How long to wait for our TTS entity to report audio duration before falling
-# back to a character-count estimate. ElevenLabs synthesis normally returns in
-# well under a second; if nothing arrives in this window, assume a different
-# TTS engine is handling speech and estimate duration ourselves.
+# How long to wait for the TTS entity to report audio duration before falling
+# back to a character-count estimate. If nothing arrives in this window, assume
+# the TTS engine doesn't surface duration and estimate it ourselves.
 _TTS_SIGNAL_TIMEOUT = 3.0
 # Average speech rate for the char-count fallback: ~15 chars/sec ≈ 180 wpm.
 _TTS_CHARS_PER_SECOND = 15.0
