@@ -153,9 +153,236 @@ def _is_negative(cleaned: str) -> bool:
     return cleaned in _NEGATIVE_TOKENS
 
 
+_ONES_WORDS = (
+    "", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+    "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen",
+    "seventeen", "eighteen", "nineteen",
+)
+_TENS_WORDS = (
+    "", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+)
+
+
+def _under_thousand_to_words(n: int) -> str:
+    if n < 20:
+        return _ONES_WORDS[n]
+    if n < 100:
+        rem = n % 10
+        return _TENS_WORDS[n // 10] + ("" if rem == 0 else " " + _ONES_WORDS[rem])
+    rem = n % 100
+    return _ONES_WORDS[n // 100] + " hundred" + ("" if rem == 0 else " " + _under_thousand_to_words(rem))
+
+
+def _int_to_words(n: int) -> str:
+    """Render a non-negative int <= 999_999_999_999 as English words (no 'and')."""
+    if n == 0:
+        return "zero"
+    if n < 0:
+        return "minus " + _int_to_words(-n)
+    parts: list[str] = []
+    for divisor, label in (
+        (1_000_000_000_000, "trillion"),
+        (1_000_000_000, "billion"),
+        (1_000_000, "million"),
+        (1_000, "thousand"),
+        (1, ""),
+    ):
+        if n >= divisor:
+            count = n // divisor
+            n %= divisor
+            chunk = _under_thousand_to_words(count)
+            parts.append(chunk + (" " + label if label else ""))
+    return " ".join(parts).strip()
+
+
+def _year_to_words(year: int) -> str:
+    """Pronounce a 4-digit year naturally (1999 -> nineteen ninety-nine, 2024 -> twenty twenty-four)."""
+    if 1100 <= year <= 1999 or 2010 <= year <= 2099:
+        first = year // 100
+        second = year % 100
+        if second == 0:
+            return _under_thousand_to_words(first) + " hundred"
+        if second < 10:
+            # 2005 -> "two thousand five" reads more natural than "twenty oh five"
+            return _int_to_words(year)
+        return _under_thousand_to_words(first) + " " + _under_thousand_to_words(second)
+    return _int_to_words(year)
+
+
+def _decimal_to_words(integer_part: str, fractional_part: str) -> str:
+    int_words = _int_to_words(int(integer_part)) if integer_part else "zero"
+    frac_digits = " ".join(_ONES_WORDS[int(d)] if d != "0" else "zero" for d in fractional_part)
+    return f"{int_words} point {frac_digits}"
+
+
+def _spoken_time(hour: int, minute: int, period: str | None) -> str:
+    """Render a clock time. period is 'AM'/'PM' or None for 24h format."""
+    period_word = ""
+    if period:
+        period_word = " " + period.upper()
+        if hour == 12 and minute == 0 and period.upper() == "AM":
+            return "midnight"
+        if hour == 12 and minute == 0 and period.upper() == "PM":
+            return "noon"
+    h_word = _int_to_words(hour)
+    if minute == 0:
+        return f"{h_word} o'clock{period_word}" if not period else f"{h_word}{period_word}"
+    if minute < 10:
+        return f"{h_word} oh {_ONES_WORDS[minute]}{period_word}"
+    return f"{h_word} {_under_thousand_to_words(minute)}{period_word}"
+
+
+def _money_to_words(dollars_str: str, cents_str: str | None) -> str:
+    dollars = int(dollars_str.replace(",", ""))
+    if cents_str:
+        cents = int(cents_str)
+        if dollars == 0 and cents > 0:
+            return f"{_int_to_words(cents)} cent{'s' if cents != 1 else ''}"
+        if cents == 0:
+            return f"{_int_to_words(dollars)} dollar{'s' if dollars != 1 else ''}"
+        return f"{_int_to_words(dollars)} dollar{'s' if dollars != 1 else ''} and {_int_to_words(cents)} cent{'s' if cents != 1 else ''}"
+    return f"{_int_to_words(dollars)} dollar{'s' if dollars != 1 else ''}"
+
+
+# Compiled patterns (module-level — cheap to reuse).
+_RE_TIME_12H = re.compile(r"\b(\d{1,2}):(\d{2})\s*([AaPp]\.?[Mm]\.?)\b")
+_RE_TIME_24H = re.compile(r"(?<![\d])(\d{1,2}):(\d{2})(?![\d:])")
+_RE_TIME_HOUR_PERIOD = re.compile(r"\b(\d{1,2})\s*([AaPp]\.?[Mm]\.?)\b")
+_RE_PHONE = re.compile(r"\b(\d{3})[-.\s](\d{3})[-.\s](\d{4})\b")
+_RE_PHONE_PAREN = re.compile(r"\(\s*(\d{3})\s*\)\s*(\d{3})[-.\s]?(\d{4})\b")
+_RE_MONEY = re.compile(r"\$\s*(\d{1,3}(?:,\d{3})*|\d+)(?:\.(\d{1,2}))?")
+_RE_PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_RE_YEAR = re.compile(r"(?<![\w/.])(1[1-9]\d{2}|20\d{2})(?![\d.])")
+_RE_RANGE = re.compile(r"(?<![\w-])(\d+(?:\.\d+)?)\s*[-–—]\s*(\d+(?:\.\d+)?)\b")
+_RE_SIGNED_NUMBER = re.compile(r"(?<![\w.])([-–—−+])(\d+(?:\.\d+)?)\b")
+_RE_DECIMAL = re.compile(r"(?<![\w])(\d*)\.(\d+)(?!\d*\s*(?:GB|MB|KB|TB|MHz|GHz|kHz|km|mph|kmh|°))")
+_RE_BIG_INT = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+|\d{4,})(?!\w)")
+_RE_SMALL_INT = re.compile(r"(?<![\w.])(\d{1,3})(?!\w)")
+_RE_DEGREES = re.compile(r"(\d+)\s*°\s*([FCK]?)")
+_RE_AMPERSAND = re.compile(r"\s&\s")
+_RE_HASH_NUMBER = re.compile(r"#(\d+)")
+_RE_MARKDOWN_BOLD = re.compile(r"\*\*([^*]+)\*\*")
+_RE_MARKDOWN_ITALIC = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
+_RE_MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_RE_MARKDOWN_HEADER = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_RE_MULTI_SPACE = re.compile(r"\s{2,}")
+
+
 def _normalize_for_tts(text: str) -> str:
-    """Pass-through — text normalization is delegated to the configured TTS engine."""
+    """Convert text to a form spoken correctly by general-purpose TTS engines.
+
+    TTS engines (Chatterbox, Piper, etc.) don't normalize digits, times, currency,
+    or punctuation — they read the raw token stream. This function rewrites those
+    tokens into their spoken English equivalents so the audio sounds natural.
+
+    Order matters: structured patterns (times, phones, money) are handled before
+    generic numbers so we don't double-convert. Hyphens are disambiguated by
+    context — number-hyphen-number is a range ("to"), digit-prefixed hyphen is
+    a sign ("minus"), word-hyphen-word is left alone.
+    """
+    if not text:
+        return text
+
+    # 1. Strip markdown that the LLM emits — TTS reads asterisks aloud otherwise.
+    text = _RE_MARKDOWN_LINK.sub(r"\1", text)
+    text = _RE_MARKDOWN_BOLD.sub(r"\1", text)
+    text = _RE_MARKDOWN_ITALIC.sub(r"\1", text)
+    text = _RE_MARKDOWN_HEADER.sub("", text)
+
+    # 2. Phone numbers (before generic number handling).
+    def _phone_repl(m: re.Match) -> str:
+        digits = m.group(1) + m.group(2) + m.group(3)
+        return ", ".join(" ".join(_ONES_WORDS[int(d)] if d != "0" else "zero" for d in chunk) for chunk in (digits[:3], digits[3:6], digits[6:]))
+
+    text = _RE_PHONE_PAREN.sub(_phone_repl, text)
+    text = _RE_PHONE.sub(_phone_repl, text)
+
+    # 3. Times — 12h with AM/PM first, then bare HH:MM (24h).
+    def _time12_repl(m: re.Match) -> str:
+        h, mn, period = int(m.group(1)), int(m.group(2)), m.group(3).replace(".", "").upper()
+        return _spoken_time(h, mn, period)
+
+    def _time24_repl(m: re.Match) -> str:
+        h, mn = int(m.group(1)), int(m.group(2))
+        # Only treat as time if it looks like one (hour 0-23, minute 0-59).
+        if 0 <= h <= 23 and 0 <= mn <= 59:
+            return _spoken_time(h, mn, None)
+        return m.group(0)
+
+    def _hour_period_repl(m: re.Match) -> str:
+        h, period = int(m.group(1)), m.group(2).replace(".", "").upper()
+        return _spoken_time(h, 0, period)
+
+    text = _RE_TIME_12H.sub(_time12_repl, text)
+    text = _RE_TIME_24H.sub(_time24_repl, text)
+    text = _RE_TIME_HOUR_PERIOD.sub(_hour_period_repl, text)
+
+    # 4. Money — must come before percent and generic numbers.
+    def _money_repl(m: re.Match) -> str:
+        return _money_to_words(m.group(1), m.group(2))
+
+    text = _RE_MONEY.sub(_money_repl, text)
+
+    # 5. Percentages.
+    def _percent_repl(m: re.Match) -> str:
+        num = m.group(1)
+        if "." in num:
+            i, f = num.split(".")
+            return _decimal_to_words(i, f) + " percent"
+        return _int_to_words(int(num)) + " percent"
+
+    text = _RE_PERCENT.sub(_percent_repl, text)
+
+    # 6. Degrees.
+    def _deg_repl(m: re.Match) -> str:
+        scale = {"F": "Fahrenheit", "C": "Celsius", "K": "Kelvin"}.get(m.group(2), "")
+        return _int_to_words(int(m.group(1))) + " degrees" + (" " + scale if scale else "")
+
+    text = _RE_DEGREES.sub(_deg_repl, text)
+
+    # 7. Hash-number ("issue #123" -> "issue number one twenty three").
+    text = _RE_HASH_NUMBER.sub(lambda m: "number " + _int_to_words(int(m.group(1))), text)
+
+    # 8. Standalone ampersand (between spaces) — common in "AT&T", "R&D".
+    text = _RE_AMPERSAND.sub(" and ", text)
+
+    # 9. Years (4 digits in plausible range, before generic int handling).
+    text = _RE_YEAR.sub(lambda m: _year_to_words(int(m.group(1))), text)
+
+    # 10. Number ranges ("5-7 days", "21-14 score") -> "five to seven", "twenty one to fourteen".
+    text = _RE_RANGE.sub(lambda m: f"{_decimal_or_int(m.group(1))} to {_decimal_or_int(m.group(2))}", text)
+
+    # 11. Signed numbers ("-110" -> "minus one ten", "+150" -> "plus one fifty").
+    # Handles ASCII hyphen, en-dash, em-dash, and Unicode minus.
+    def _signed_repl(m: re.Match) -> str:
+        sign = "minus" if m.group(1) in "-–—−" else "plus"
+        return f"{sign} {_decimal_or_int(m.group(2))}"
+
+    text = _RE_SIGNED_NUMBER.sub(_signed_repl, text)
+
+    # 12. Decimals not already consumed.
+    def _decimal_repl(m: re.Match) -> str:
+        i, f = m.group(1), m.group(2)
+        return _decimal_to_words(i, f)
+
+    text = _RE_DECIMAL.sub(_decimal_repl, text)
+
+    # 13. Big integers (1,000+ or 4+ digits) -> spoken form.
+    text = _RE_BIG_INT.sub(lambda m: _int_to_words(int(m.group(0).replace(",", ""))), text)
+
+    # 14. Small integers (1-999).
+    text = _RE_SMALL_INT.sub(lambda m: _int_to_words(int(m.group(1))), text)
+
+    # 15. Collapse whitespace introduced by substitutions.
+    text = _RE_MULTI_SPACE.sub(" ", text).strip()
     return text
+
+
+def _decimal_or_int(s: str) -> str:
+    if "." in s:
+        i, f = s.split(".")
+        return _decimal_to_words(i, f)
+    return _int_to_words(int(s))
 
 
 from homeassistant.components import conversation
