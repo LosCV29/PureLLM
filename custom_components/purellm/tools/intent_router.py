@@ -67,6 +67,11 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "la liga", "standings", "league games",
         "heat play", "dolphins", "marlins", "panthers",
         "inter miami", "hurricanes",
+        # Postseason terms — without these, "what is the X playoff series at?"
+        # only matches the greedy "what is the " in knowledge intent and the
+        # sports tool never gets exposed.
+        " playoff", " series", " seed", "semifinal",
+        "conference final", " finals",
     ],
     "timer": [
         "timer", "set a timer", "countdown",

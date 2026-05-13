@@ -170,6 +170,32 @@ def _extract_odds(competition: dict, home_name: str, away_name: str) -> tuple[st
     return "", ""
 
 
+def _extract_series_from_summary(summary_data: dict) -> dict:
+    """Pull playoff series state from ESPN's per-event /summary response.
+
+    The summary endpoint exposes a ``header.competitions[0].series`` array
+    with two entries during the playoffs: one ``type=season`` and one
+    ``type=playoff``. Both carry identical ``summary``/``description``,
+    but we prefer the playoff entry. The team schedule endpoint omits
+    ``series`` entirely, so this is the only reliable way to get
+    "Series tied 2-2" for upcoming games not yet on today's scoreboard.
+    """
+    header = summary_data.get("header") or {}
+    comps = header.get("competitions") or []
+    if not comps:
+        return {}
+    series_list = comps[0].get("series") or []
+    if not series_list:
+        return {}
+    playoff = next((s for s in series_list if s.get("type") == "playoff"), None)
+    chosen = playoff or series_list[0]
+    summary = (chosen or {}).get("summary", "")
+    if not summary:
+        return {}
+    description = (chosen or {}).get("description", "")
+    return {"summary": summary, "round": description}
+
+
 async def _fetch_event_odds(
     session: "aiohttp.ClientSession",
     sport: str,
@@ -177,41 +203,63 @@ async def _fetch_event_odds(
     event_id: str,
     home_name: str,
     away_name: str,
-) -> tuple[str, str]:
-    """Fetch betting odds for a single event via ESPN's summary endpoint.
+) -> tuple[str, str, dict]:
+    """Fetch betting odds + playoff series state from ESPN's summary endpoint.
 
-    The scoreboard and team schedule endpoints don't include ``odds``; that
-    data lives only under ``pickcenter`` on the per-event summary endpoint.
+    Returns ``(favorite, moneyline, series_dict)``. The scoreboard and
+    team schedule endpoints don't include odds; that data lives under
+    ``pickcenter`` on the per-event summary. The schedule endpoint also
+    omits ``series.summary``, which is why we extract it here in the
+    same round-trip.
     """
+    empty: tuple[str, str, dict] = ("", "", {})
     if not event_id or not sport or not league:
-        return "", ""
+        return empty
     try:
         url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/summary?event={event_id}"
         data, status = await fetch_json(session, url, headers=ESPN_HEADERS, cache_ttl=CACHE_TTL_SHORT)
         if not data or status != 200:
-            return "", ""
+            return empty
+        series = _extract_series_from_summary(data)
         pickcenter = data.get("pickcenter") or []
         if not pickcenter:
-            return "", ""
-        return _extract_odds(pickcenter[0] or {}, home_name, away_name)
+            return ("", "", series)
+        odds_fav, odds_ml = _extract_odds(pickcenter[0] or {}, home_name, away_name)
+        return (odds_fav, odds_ml, series)
     except Exception as e:
-        _LOGGER.debug("Failed to fetch event odds for %s: %s", event_id, e)
-        return "", ""
+        _LOGGER.debug("Failed to fetch event details for %s: %s", event_id, e)
+        return ("", "", {})
 
 
 def _extract_broadcast(competition: dict, event: dict = None) -> str:
-    """Extract TV broadcast channel from competition or event data."""
-    # Check both competition and event levels
+    """Extract TV broadcast channel from competition or event data.
+
+    Within geoBroadcasts, prefer TV → Streaming → (never Radio). ESPN
+    occasionally orders Radio first (e.g. "ERADM"), and naively taking the
+    first entry surfaced that to the user as the broadcast channel.
+    """
     sources = [competition]
     if event:
         sources.append(event)
 
     for source in sources:
-        # Try geoBroadcasts first
+        tv_name = ""
+        stream_name = ""
         for gb in source.get("geoBroadcasts", []):
             name = gb.get("media", {}).get("shortName", "")
-            if name:
-                return name
+            if not name:
+                continue
+            gb_type = gb.get("type", {}).get("shortName", "")
+            if gb_type == "TV" and not tv_name:
+                tv_name = name
+            elif gb_type == "Streaming" and not stream_name:
+                stream_name = name
+            # Radio entries (e.g. "ERADM") are intentionally skipped
+        if tv_name:
+            return tv_name
+        if stream_name:
+            return stream_name
+
         # Fallback to broadcasts array — prefer TV type over subscriptions
         broadcasts = source.get("broadcasts", [])
         tv_name = ""
@@ -219,7 +267,6 @@ def _extract_broadcast(competition: dict, event: dict = None) -> str:
         for b in broadcasts:
             name = b.get("media", {}).get("shortName", "")
             if not name:
-                # Legacy format: names array
                 names = b.get("names", [])
                 name = names[0] if names else ""
             if not name:
@@ -235,6 +282,27 @@ def _extract_broadcast(competition: dict, event: dict = None) -> str:
             return fallback_name
 
     return ""
+
+
+def _extract_playoff_series(competition: dict, event: dict = None) -> dict:
+    """Pull playoff series state from a competition / event.
+
+    ESPN attaches series state to playoff events as ``series.summary``
+    (e.g. "Series tied 2-2") with the round label in ``notes[0].headline``
+    ("West Semifinals - Game 5"). Returns ``{}`` for regular-season games
+    where series data is absent.
+    """
+    series = competition.get("series") or {}
+    summary = series.get("summary") or ""
+    if not summary:
+        return {}
+    notes = competition.get("notes") or []
+    if not notes and event:
+        notes = event.get("notes") or []
+    round_label = ""
+    if notes:
+        round_label = (notes[0] or {}).get("headline", "") or ""
+    return {"summary": summary, "round": round_label}
 
 # Approximate sport seasons by month (1=Jan, 12=Dec)
 # Used to disambiguate when the same team name exists in multiple leagues
@@ -566,6 +634,10 @@ async def get_sports_info(
                         _LOGGER.debug("Sports: Found team match on scoreboard, state=%s", sb_state)
                         home_name, away_name, home_team_sb, away_team_sb = _extract_competitors(sb_competitors)
 
+                        playoff_series = _extract_playoff_series(sb_comp, sb_event)
+                        if playoff_series and "playoff_series" not in result:
+                            result["playoff_series"] = playoff_series
+
                         if sb_state == "in":
                             home_score = home_team_sb.get("score", "0")
                             away_score = away_team_sb.get("score", "0")
@@ -614,9 +686,11 @@ async def get_sports_info(
 
                             venue = _extract_venue(sb_comp, sb_event)
                             broadcast = _extract_broadcast(sb_comp, sb_event)
-                            odds_fav, odds_ml = await _fetch_event_odds(
+                            odds_fav, odds_ml, summary_series = await _fetch_event_odds(
                                 session, sb_sport, sb_league, sb_event.get("id"), home_name, away_name,
                             )
+                            if summary_series and "playoff_series" not in result:
+                                result["playoff_series"] = summary_series
                             is_home = (home_name == full_name)
                             opponent = away_name if is_home else home_name
                             home_away = "home" if is_home else "away"
@@ -687,9 +761,11 @@ async def get_sports_info(
                             formatted_date = "TBD"
                         venue = _extract_venue(fut_comp, fut_event)
                         broadcast = _extract_broadcast(fut_comp, fut_event)
-                        odds_fav, odds_ml = await _fetch_event_odds(
+                        odds_fav, odds_ml, summary_series = await _fetch_event_odds(
                             session, found_sport, found_league, fut_event.get("id"), home_name, away_name,
                         )
+                        if summary_series and "playoff_series" not in result:
+                            result["playoff_series"] = summary_series
                         is_home = (home_name == full_name)
                         opponent = away_name if is_home else home_name
                         home_away = "home" if is_home else "away"
@@ -742,6 +818,9 @@ async def get_sports_info(
 
                         if last_game:
                             comp = last_game.get("competitions", [{}])[0]
+                            playoff_series = _extract_playoff_series(comp, last_game)
+                            if playoff_series and "playoff_series" not in result:
+                                result["playoff_series"] = playoff_series
                             competitors = comp.get("competitors", [])
                             home_name, away_name, home_team, away_team = _extract_competitors(competitors)
                             home_score_raw = home_team.get("score", "0")
@@ -777,7 +856,10 @@ async def get_sports_info(
                             result["no_last_game"] = True
 
                     # Find next upcoming game from schedule if not found on scoreboard
-                    if not next_game_from_scoreboard and query_type in ["next_game", "both"]:
+                    # "standings" is included so playoff series state still
+                    # gets attached for teams whose next playoff game falls
+                    # outside today's scoreboard window.
+                    if not next_game_from_scoreboard and query_type in ["next_game", "both", "standings"]:
                         now_utc = datetime.now(timezone.utc)
                         next_game = None
                         next_game_date = None
@@ -807,6 +889,9 @@ async def get_sports_info(
 
                         if next_game:
                             comp = next_game.get("competitions", [{}])[0]
+                            playoff_series = _extract_playoff_series(comp, next_game)
+                            if playoff_series and "playoff_series" not in result:
+                                result["playoff_series"] = playoff_series
                             competitors = comp.get("competitors", [])
                             home_name, away_name, _, _ = _extract_competitors(competitors)
                             time_valid = not _is_time_tbd(next_game, next_game_date)
@@ -818,9 +903,11 @@ async def get_sports_info(
 
                             venue = _extract_venue(comp, next_game)
                             broadcast = _extract_broadcast(comp, next_game)
-                            odds_fav, odds_ml = await _fetch_event_odds(
+                            odds_fav, odds_ml, summary_series = await _fetch_event_odds(
                                 session, best["sport"], best["league"], next_game.get("id"), home_name, away_name,
                             )
+                            if summary_series and "playoff_series" not in result:
+                                result["playoff_series"] = summary_series
                             is_home = (home_name == full_name)
                             opponent = away_name if is_home else home_name
                             home_away = "home" if is_home else "away"
@@ -841,6 +928,13 @@ async def get_sports_info(
 
         # Build response text
         response_parts = []
+        if "playoff_series" in result:
+            ps = result["playoff_series"]
+            ps_round = ps.get("round", "")
+            if ps_round:
+                response_parts.append(f"{full_name} playoff series ({ps_round}): {ps['summary']}")
+            else:
+                response_parts.append(f"{full_name} playoff series: {ps['summary']}")
         if "standings" in result:
             response_parts.append(result["standings"]["summary"])
         if "live_game" in result:
@@ -880,16 +974,17 @@ async def get_sports_info(
             venue = ng.get("venue", "")
             broadcast = ng.get("broadcast", "")
             opponent = ng.get("away_team") if home_away == "home" else ng.get("home_team", "")
-            # Single sentence with all details baked in so the LLM can't drop parts
+            # Broadcast must come BEFORE the venue: Qwen3.6 truncates the
+            # sentence at the arena name and drops any trailing "airing on
+            # NBC" clause, so we braid broadcast into the middle where the
+            # model can't drop it without also dropping the opponent.
             ha_label = "home" if home_away == "home" else "away" if home_away else ""
-            venue_part = f" at {venue}" if venue else ""
             broadcast_part = f" on {broadcast}" if broadcast else ""
+            venue_part = f" at {venue}" if venue else ""
             if ha_label:
-                next_text = f"The next {full_name} {ha_label} game is {ng['date']} against {opponent}{venue_part}"
+                next_text = f"The next {full_name} {ha_label} game is {ng['date']}{broadcast_part} against {opponent}{venue_part}"
             else:
-                next_text = f"The next {full_name} game is {ng['date']} against {opponent}{venue_part}"
-            if broadcast_part:
-                next_text += f",{broadcast_part}"
+                next_text = f"The next {full_name} game is {ng['date']}{broadcast_part} against {opponent}{venue_part}"
             odds_fav = ng.get("odds_favorite", "")
             odds_ml = ng.get("odds_moneyline", "")
             if odds_fav and odds_ml:
