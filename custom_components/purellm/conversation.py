@@ -1973,12 +1973,13 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             if tools:
                 kwargs["tools"] = tools
-                # Force tool calling on first iteration to prevent hallucination.
-                # Dismissals are already short-circuited before reaching here.
-                if not is_dismissal and iteration == 0:
-                    kwargs["tool_choice"] = "required"
-                else:
-                    kwargs["tool_choice"] = "auto"
+                # Always use "auto" tool choice. OpenAI-compatible servers
+                # (notably vLLM) leak tool calls into message content as raw
+                # JSON when tool_choice="required" is combined with streaming,
+                # which PureLLM would then speak verbatim. "auto" returns proper
+                # structured tool_calls. Tool use on the first turn is already
+                # enforced by the system prompt rules.
+                kwargs["tool_choice"] = "auto"
 
             accumulated_content = ""
             tool_calls_buffer: list[dict] = []
