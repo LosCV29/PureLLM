@@ -14,9 +14,11 @@ from homeassistant.components.update import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 
 from .const import DOMAIN, get_version
 
@@ -135,42 +137,83 @@ class PureLLMUpdateEntity(UpdateEntity):
         except Exception as err:
             _LOGGER.error("Failed to check for updates: %s", err)
 
+    def _find_hacs_update_entity(self) -> str | None:
+        """Find the HACS-managed update entity for this repository.
+
+        HACS creates its own update entity for every downloaded repository.
+        It is matched here by the GitHub repo slug in its release_url
+        attribute, since HACS's entity unique_id is an opaque numeric id.
+        """
+        registry = er.async_get(self.hass)
+        repo = GITHUB_REPO.lower()
+        for entry in registry.entities.values():
+            if entry.domain != "update" or entry.platform != "hacs":
+                continue
+            state = self.hass.states.get(entry.entity_id)
+            if state is None:
+                continue
+            release_url = (state.attributes.get("release_url") or "").lower()
+            if repo in release_url:
+                return entry.entity_id
+        return None
+
     async def async_install(
         self, version: str | None, backup: bool, **kwargs: Any
     ) -> None:
-        """Install the update via HACS."""
-        # Trigger HACS update if available
-        try:
-            # Try to call HACS download service
-            await self.hass.services.async_call(
-                "hacs",
-                "download",
-                {
-                    "repository": GITHUB_REPO,
-                },
-                blocking=True,
-            )
-            _LOGGER.info("PureLLM update triggered via HACS")
+        """Install the update by delegating to HACS.
 
-            # Show notification to restart
-            await self.hass.services.async_call(
-                "persistent_notification",
-                "create",
-                {
-                    "title": "PureLLM Updated",
-                    "message": f"PureLLM has been updated to version {version}. Please restart Home Assistant to complete the update.",
-                    "notification_id": "purellm_update",
-                },
+        HACS removed the ``hacs.download`` service in HACS 2.0, so the
+        integration can no longer trigger its own download directly.
+        Instead we locate the HACS-managed update entity for this
+        repository and call the standard ``update.install`` service on it.
+        """
+        hacs_entity = self._find_hacs_update_entity()
+
+        if hacs_entity is None:
+            # No HACS update entity found (e.g. a manual install).
+            # Fall back to instructing the user to update manually.
+            _LOGGER.warning(
+                "HACS update entity for %s not found; manual update required",
+                GITHUB_REPO,
             )
-        except Exception as err:
-            _LOGGER.error("Failed to trigger HACS update: %s", err)
-            # Fallback: show notification with instructions
             await self.hass.services.async_call(
                 "persistent_notification",
                 "create",
                 {
                     "title": "PureLLM Update Available",
-                    "message": f"Please update PureLLM to version {version} via HACS:\n\n1. Go to HACS → Integrations\n2. Find PureLLM\n3. Click Update\n4. Restart Home Assistant",
+                    "message": (
+                        f"Please update PureLLM to version {version} via HACS:\n\n"
+                        "1. Go to HACS\n2. Find PureLLM\n3. Click Update\n"
+                        "4. Restart Home Assistant"
+                    ),
                     "notification_id": "purellm_update",
                 },
             )
+            return
+
+        try:
+            await self.hass.services.async_call(
+                "update",
+                "install",
+                {"entity_id": hacs_entity},
+                blocking=True,
+            )
+        except Exception as err:
+            _LOGGER.error("Failed to install update via HACS: %s", err)
+            raise HomeAssistantError(
+                f"HACS failed to download the PureLLM update: {err}"
+            ) from err
+
+        _LOGGER.info("PureLLM update installed via HACS (%s)", hacs_entity)
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "title": "PureLLM Updated",
+                "message": (
+                    f"PureLLM has been updated to version {version}. "
+                    "Please restart Home Assistant to complete the update."
+                ),
+                "notification_id": "purellm_update",
+            },
+        )
