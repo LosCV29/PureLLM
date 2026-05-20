@@ -387,10 +387,12 @@ def _decimal_or_int(s: str) -> str:
 
 from homeassistant.components import conversation
 from homeassistant.components.conversation import ChatLog, ConversationEntity
+from homeassistant.components.conversation.chat_log import async_get_chat_log
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import intent
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.chat_session import async_get_chat_session
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import dt as dt_util
 
@@ -560,7 +562,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
     _attr_has_entity_name = True
     _attr_name = None
-    _attr_supports_streaming = False  # Disabled: prevents voice pipeline timing issues with micro wake words
+    _attr_supports_streaming = True   # Stream LLM token deltas to HA chat_log so wyoming_openai can fire parallel TTS chunks as sentences complete
 
     @property
     def supported_languages(self) -> list[str] | str:
@@ -1419,7 +1421,11 @@ class PureLLMConversationEntity(ConversationEntity):
                 conversation_id=user_input.conversation_id or str(uuid.uuid4()),
             )
 
-        return await self._async_handle_message(user_input, None)
+        with (
+            async_get_chat_session(self.hass, user_input.conversation_id) as session,
+            async_get_chat_log(self.hass, session, user_input) as chat_log,
+        ):
+            return await self._async_handle_message(user_input, chat_log)
 
     async def _try_ask_and_act_match(
         self,
@@ -1732,9 +1738,29 @@ class PureLLMConversationEntity(ConversationEntity):
                 )
 
                 final_response = ""
-                async for delta in stream:
-                    if "content" in delta:
-                        final_response += delta["content"]
+                if chat_log is not None:
+                    # Forward LLM token deltas to HA's chat_log so the assist pipeline
+                    # can stream sentence boundaries to wyoming_openai in real time.
+                    # wyoming_openai's pySBD-based chunker only triggers parallel
+                    # TTS_CONCURRENT_REQUESTS=3 dispatch when it sees SynthesizeChunk
+                    # events with sentence breaks — which only arrive if we stream.
+                    async def _deltas_for_chat_log():
+                        yield {"role": "assistant"}
+                        async for d in stream:
+                            if "content" in d:
+                                yield {"content": d["content"]}
+
+                    async for content in chat_log.async_add_delta_content_stream(
+                        self.entity_id, _deltas_for_chat_log()
+                    ):
+                        # AssistantContent has a .content attribute with the assembled text
+                        if getattr(content, "content", None):
+                            final_response += content.content
+                else:
+                    # Fallback: no chat_log (legacy path). Drain stream into final_response only.
+                    async for delta in stream:
+                        if "content" in delta:
+                            final_response += delta["content"]
 
             elif self.provider == PROVIDER_ANTHROPIC:
                 final_response = await self._call_anthropic(
