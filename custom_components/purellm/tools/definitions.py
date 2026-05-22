@@ -185,7 +185,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Room-based music. Rooms: {rooms_list}. Room required for play/shuffle; auto-detected for stop/pause/resume/skip/volume. media_type required for play. For specific devices use control_device.",
+            f"Room-based music. Rooms: {rooms_list}. Room required for play/shuffle; auto-detected for stop/pause/resume/skip/volume. media_type required for play. For specific devices use control_device. Curated kids playlists: pass the phrase as query to play pinned baby-safe music — 'lullabies' (baby lullabies) and 'children's classical'/'Baby Einstein' (soothing classical for babies).",
             {
                 "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle", "volume_up", "volume_down", "set_volume"]},
                 "media_type": {"type": "string", "enum": ["artist", "album", "track"]},

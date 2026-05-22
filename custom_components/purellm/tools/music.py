@@ -438,6 +438,59 @@ def _parse_ordinal_theme(text: str) -> tuple[int | None, str | None]:
     return ordinal, theme
 
 
+# =============================================================================
+# CURATED MEDIA — phrase shortcuts that play an exact pinned playlist/artist
+# instead of a fuzzy catalog search. Guarantees reliable, kid-safe results
+# (e.g. lullabies, baby classical) every time, regardless of search ranking.
+# Generic apple_music:// URIs are used so they survive an Apple Music re-auth.
+# =============================================================================
+CURATED_MEDIA: list[dict] = [
+    {
+        "id": "lullabies",
+        "name": "lullabies",
+        # Apple Music editorial playlist "Lullaby Essentials"
+        "uri": "apple_music://playlist/pl.bb55dfb4bc4b4247ae7ef9cb9b01fad4",
+        "media_type": "playlist",
+        "match_any": ["lullaby", "lullabies"],
+    },
+    {
+        "id": "baby_classical",
+        "name": "Baby Einstein",
+        # The Baby Einstein Music Box Orchestra — soothing classical for babies.
+        # Played as an artist with radio_mode off so it stays on Baby Einstein.
+        "uri": "apple_music://artist/6839896",
+        "media_type": "artist",
+        "match_any": ["baby einstein"],
+        # ...or "classical" together with a baby/kid word
+        # ("children's classical", "classical for babies", "kids classical").
+        "match_all_groups": [
+            ["classical"],
+            ["baby", "babies", "kid", "kids", "child", "children", "childrens", "children's"],
+        ],
+    },
+]
+
+
+def _match_curated(text: str) -> dict | None:
+    """Return a CURATED_MEDIA entry if the text names a curated playlist/artist.
+
+    Uses lowercased, accent-stripped substring checks so it works regardless of
+    how the LLM split the request across query/artist/album. An entry matches
+    when any 'match_any' phrase is present, OR every group in 'match_all_groups'
+    has at least one keyword present.
+    """
+    if not text:
+        return None
+    t = _strip_accents(text.lower())
+    for entry in CURATED_MEDIA:
+        if any(kw in t for kw in entry.get("match_any", [])):
+            return entry
+        groups = entry.get("match_all_groups")
+        if groups and all(any(kw in t for kw in group) for group in groups):
+            return entry
+    return None
+
+
 class MusicController:
     """Controller for music playback operations.
 
@@ -613,6 +666,16 @@ class MusicController:
             target_players = self._find_target_players(room)
 
             if action == "play":
+                # Curated shortcuts (lullabies, baby classical, ...) — play exact
+                # pinned media, bypassing fuzzy search for reliable kid-safe results.
+                curated = _match_curated(" ".join(filter(None, [query, artist, album, user_text])))
+                if curated:
+                    if not target_players:
+                        return {"error": f"Which room? Available: {', '.join(self._players.keys())}"}
+                    await self._play_on_players(target_players, curated["uri"], curated["media_type"], shuffle=False)
+                    _LOGGER.info("MUSIC: Curated shortcut '%s' → %s", curated["id"], curated["uri"])
+                    return {"status": "playing", "response_text": f"Playing {curated['name']} in the {room}"}
+
                 # Try themed/ordinal album search if detected
                 # e.g. "play Kelly Clarkson's first christmas album"
                 if (ordinal is not None or theme) and artist and media_type == "album":
