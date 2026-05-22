@@ -95,7 +95,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
             ["person_name"]
         ))
         tools.append(_tool(
-            "get_wikipedia_summary", "Get Wikipedia info.",
+            "get_wikipedia_summary", "Encyclopedic background on a SPECIFIC named entity (a person, place, organization, or well-defined concept). NOT for how/when/should/can questions, advice, recommendations, or current info — use web_search for those.",
             {"topic": {"type": "string"}},
             ["topic"]
         ))
@@ -275,7 +275,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     # ===== WEB SEARCH =====
     if config.enable_search and config.tavily_api_key:
         tools.append(_tool(
-            "web_search", "Web search for news, reviews, current events.",
+            "web_search", "General web search to ANSWER factual questions — current events, news, reviews, prices, and how/when/should/can questions, advice, and recommendations. Prefer this for any question Wikipedia cannot directly answer (anything beyond background on a single named entity).",
             {
                 "query": {"type": "string"},
                 "days": {"type": "integer", "description": "Limit to last N days"},
