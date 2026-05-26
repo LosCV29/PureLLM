@@ -1154,6 +1154,31 @@ class MusicController:
         re.IGNORECASE,
     )
 
+    # DJ-mix / continuous-mix compilation markers. These tracks are pre-faded
+    # for back-to-back playback, so when MA plays one in isolation it cross-
+    # mixes out at the boundary instead of ending cleanly. Apple Music tags
+    # the individual tracks "(Mixed)" and the parent album "(DJ Mix)".
+    _DJ_MIX_KEYWORDS = re.compile(
+        r'\(\s*mixed\s*\)'                                   # "Song (Mixed)"
+        r'|\b(?:dj|continuous|nonstop|in\s+the)\s*mix\b'     # "DJ Mix", "Continuous Mix", ...
+        r'|\bmegamix\b',
+        re.IGNORECASE,
+    )
+
+    # Non-album version markers — anything that signals a re-recording, edit, or
+    # alternate take rather than the canonical studio-album cut. Apple Music
+    # encodes these as parentheticals on the track name (e.g. "Song (Live)",
+    # "Song (2009 Remaster)", "Song (Radio Edit)"). We default-prefer the bare
+    # album version unless the user's query explicitly asks for a variant.
+    _NON_ALBUM_VERSION_KEYWORDS = re.compile(
+        r'\b(?:live|remix(?:ed)?|remaster(?:ed)?|acoustic|unplugged|demo'
+        r'|radio\s*edit|single\s+(?:version|edit)|extended\s+(?:version|mix)'
+        r'|alternate(?:\s+(?:take|version|mix))?'
+        r'|mono(?:\s+version)?|stereo\s+version|early\s+version'
+        r'|re[\s-]?record(?:ed|ing)?)\b',
+        re.IGNORECASE,
+    )
+
     def _pick_best_match(
         self, results: list[dict], query_lower: str, artist_lower: str,
     ) -> dict | None:
@@ -1166,6 +1191,8 @@ class MusicController:
 
         # Check once whether the user actually asked for a variant version
         user_wants_variant = bool(self._VARIANT_KEYWORDS.search(query_lower))
+        user_wants_djmix = bool(self._DJ_MIX_KEYWORDS.search(query_lower))
+        user_wants_non_album = bool(self._NON_ALBUM_VERSION_KEYWORDS.search(query_lower))
 
         best_score = 0
         best = None
@@ -1202,11 +1229,47 @@ class MusicController:
             # Penalize instrumental/karaoke/etc. variants when user didn't ask for one.
             # Check both track name and the version tag (MA often stores "Instrumental" there).
             variant_penalty = 0
+            item_version = (item.get("version") or "").lower()
             if not user_wants_variant:
-                item_version = (item.get("version") or "").lower()
                 if self._VARIANT_KEYWORDS.search(item_name) or self._VARIANT_KEYWORDS.search(item_version):
                     variant_penalty = -500
                     _LOGGER.debug("MUSIC: Variant penalty applied to '%s' (version='%s')", item_name, item_version)
+
+            # Penalize DJ-mix / continuous-mix compilation tracks (they cross-fade
+            # out at the boundary instead of ending). Look in track name, version
+            # tag, and the parent album name (Apple Music puts "(DJ Mix)" there).
+            album_info = item.get("album") or {}
+            if isinstance(album_info, dict):
+                item_album = (album_info.get("name") or album_info.get("title") or "").lower()
+            elif isinstance(album_info, str):
+                item_album = album_info.lower()
+            else:
+                item_album = ""
+
+            if not user_wants_djmix:
+                if (self._DJ_MIX_KEYWORDS.search(item_name)
+                        or self._DJ_MIX_KEYWORDS.search(item_version)
+                        or self._DJ_MIX_KEYWORDS.search(item_album)):
+                    variant_penalty -= 800
+                    _LOGGER.debug(
+                        "MUSIC: DJ-mix penalty applied to '%s' (version='%s', album='%s')",
+                        item_name, item_version, item_album,
+                    )
+
+            # Default-prefer the canonical studio-album cut: penalize live /
+            # remix / remaster / acoustic / demo / radio-edit / etc. unless
+            # the user explicitly asked for that variant. Checked against the
+            # track name, MA's version tag, and the album name (e.g. an album
+            # titled "MTV Unplugged" or "Live at Wembley").
+            if not user_wants_non_album:
+                if (self._NON_ALBUM_VERSION_KEYWORDS.search(item_name)
+                        or self._NON_ALBUM_VERSION_KEYWORDS.search(item_version)
+                        or self._NON_ALBUM_VERSION_KEYWORDS.search(item_album)):
+                    variant_penalty -= 400
+                    _LOGGER.debug(
+                        "MUSIC: Non-album-version penalty applied to '%s' (version='%s', album='%s')",
+                        item_name, item_version, item_album,
+                    )
 
             # Prefer explicit over clean when both versions of the same song exist.
             # Apple Music returns explicit as top-level field: True/False/None.
