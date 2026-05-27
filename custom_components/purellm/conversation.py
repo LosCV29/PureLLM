@@ -1095,15 +1095,6 @@ class PureLLMConversationEntity(ConversationEntity):
         "ambient noise": "white",
     }
     _WHITE_NOISE_ROOM_RE = re.compile(r"\s+in\s+the\s+(?P<room>.+?)[.\s]*$", re.IGNORECASE)
-    # Core play pattern: "(play|shuffle) [track/song]? [query] [by artist]? [in the room]?"
-    _MUSIC_PLAY_RE = re.compile(
-        r"(?P<verb>play|shuffle)\s+(?:(?:the\s+)?(?:track|song)\s+)?"
-        r"(?P<query>.+?)"
-        r"(?:\s+by\s+(?P<artist>.+?))?"
-        r"(?:\s+in\s+the\s+(?P<room>.+?))?"
-        r"[.\s]*$",
-        re.IGNORECASE,
-    )
 
     async def _try_white_noise_shortcircuit(
         self,
@@ -1111,12 +1102,11 @@ class PureLLMConversationEntity(ConversationEntity):
         user_input: conversation.ConversationInput,
         conversation_id: str,
     ) -> conversation.ConversationResult | None:
-        """Catch ambient-sound requests before the music short-circuit.
+        """Catch ambient-sound requests before they reach the LLM.
 
-        Without this, "play white noise" is parsed by _MUSIC_PLAY_RE as
-        query="white noise" and handed to control_music — which then picks
-        whatever song happens to be titled "White Noise" on the user's
-        streaming providers (Joyner Lucas, Disclosure, etc.).
+        Without this, "play white noise" is handed to control_music — which
+        then picks whatever song happens to be titled "White Noise" on the
+        user's streaming providers (Joyner Lucas, Disclosure, etc.).
         """
         if not self._white_noise_controller:
             return None
@@ -1195,86 +1185,6 @@ class PureLLMConversationEntity(ConversationEntity):
             self.hass.async_create_task(
                 _play_after_tts_finishes(self.hass, speech, play_action),
                 name="purellm_play_white_noise_after_tts",
-            )
-
-        return conversation.ConversationResult(
-            response=response,
-            conversation_id=conversation_id,
-            continue_conversation=False,
-        )
-
-    async def _try_music_play_shortcircuit(
-        self,
-        user_text: str,
-        user_input: conversation.ConversationInput,
-        conversation_id: str,
-    ) -> conversation.ConversationResult | None:
-        """Short-circuit 'play X by Y in Z' commands to the music tool.
-
-        Local LLMs often fail to call control_music for play commands,
-        instead generating text like "I couldn't find that track."
-        This bypasses the LLM and calls control_music directly.
-        """
-        text = self._PLAY_PREFIX_STRIP.sub("", user_text.strip())
-
-        m = self._MUSIC_PLAY_RE.match(text)
-        if not m:
-            return None
-
-        verb = (m.group("verb") or "play").strip().lower()
-        query = m.group("query").strip()
-        artist = (m.group("artist") or "").strip()
-        room = (m.group("room") or "").strip().rstrip(".,!?;:")
-        shuffle = verb == "shuffle"
-
-        if not query:
-            return None
-
-        # Detect album requests
-        media_type = "track"
-        album = ""
-        if re.search(r'\balbum\b', query, re.IGNORECASE):
-            media_type = "album"
-            query = re.sub(r'\balbum\b', '', query, flags=re.IGNORECASE).strip()
-            album = query
-
-        # Use satellite room if no room specified
-        satellite_room = self._resolve_satellite_room(user_input.device_id)
-        if not room and satellite_room:
-            room = satellite_room
-
-        arguments = {
-            "action": "play", "query": query, "media_type": media_type,
-            "room": room, "shuffle": shuffle, "_user_text": user_text.strip(),
-        }
-        if artist:
-            arguments["artist"] = artist
-        if album:
-            arguments["album"] = album
-
-        _LOGGER.info(
-            "Music play short-circuit: '%s' → verb='%s', query='%s', artist='%s', room='%s', shuffle=%s",
-            user_text, verb, query, artist, room, shuffle,
-        )
-
-        play_action: Callable[[], Awaitable[None]] | None = None
-        try:
-            if not self._music_controller:
-                return None
-            result, play_action = await self._music_controller.control_music_deferred(arguments)
-            _LOGGER.info("Music play short-circuit result: %s", result)
-            speech = result.get("response_text", "Done.") if "error" not in result else result["error"]
-        except Exception as err:
-            _LOGGER.error("Music play short-circuit failed: %s", err)
-            speech = "Sorry, I couldn't play that."
-
-        response = intent.IntentResponse(language=user_input.language)
-        response.async_set_speech(speech)
-
-        if play_action is not None:
-            self.hass.async_create_task(
-                _play_after_tts_finishes(self.hass, speech, play_action),
-                name="purellm_play_music_after_tts",
             )
 
         return conversation.ConversationResult(
@@ -1699,16 +1609,6 @@ class PureLLMConversationEntity(ConversationEntity):
         )
         if white_noise_result is not None:
             return white_noise_result
-
-        # --- Short-circuit "play X by Y in Z" music commands ---
-        # Local LLMs often fail to call control_music for play commands,
-        # responding with text like "I couldn't find that track" without
-        # ever invoking the tool.  Bypass the LLM and call directly.
-        music_play_result = await self._try_music_play_shortcircuit(
-            user_text, user_input, conversation_id
-        )
-        if music_play_result is not None:
-            return music_play_result
 
         self._current_user_text = user_text  # For tool handlers that need original utterance
 

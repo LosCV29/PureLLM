@@ -185,7 +185,18 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         rooms_list = ", ".join(config.room_player_mapping.keys())
         tools.append(_tool(
             "control_music",
-            f"Room-based music. Rooms: {rooms_list}. room is OPTIONAL — default is the speaker that heard the request; pass room ONLY when the user explicitly names a different one (e.g. 'in the master bathroom', 'on the Shield'). Auto-detected for stop/pause/resume/skip/volume. media_type required for play. For specific devices use control_device. Curated kids playlists: pass the phrase as query to play pinned baby-safe music — 'lullabies' (baby lullabies) and 'children's classical'/'Baby Einstein' (soothing classical for babies).",
+            (
+                f"Room-based music. Rooms: {rooms_list}. "
+                "ROUTING (follow exactly): "
+                "(1) User says 'shuffle X' → action='shuffle', query=X. ALWAYS use shuffle when the user says 'shuffle'; this plays an official Apple Music playlist like 'X Essentials' in shuffle mode. Never substitute action='play' for a shuffle request. "
+                "(2) 'play <artist-name>' with no specific song named → action='play', media_type='artist', artist=<artist-name>. This plays the artist's discography/radio; do NOT pick media_type='track' just because a song happens to share the artist's name. "
+                "(3) 'play <song> by <artist>' → action='play', media_type='track', query=<song>, artist=<artist>. "
+                "(4) 'play <album> album' or '<album> album by <artist>' → action='play', media_type='album', album=<album>. "
+                "room is OPTIONAL — default is the speaker that heard the request; pass room ONLY when the user explicitly names a different one (e.g. 'in the master bathroom', 'on the Shield'). "
+                "Auto-detected for stop/pause/resume/skip/volume. "
+                "For specific devices use control_device. "
+                "Curated kids playlists: pass the phrase as query — 'lullabies' (baby lullabies) and 'children's classical'/'Baby Einstein' (soothing classical for babies)."
+            ),
             {
                 "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle", "volume_up", "volume_down", "set_volume"]},
                 "media_type": {"type": "string", "enum": ["artist", "album", "track"]},
