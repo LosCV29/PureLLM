@@ -211,7 +211,6 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
                 "query": {"type": "string", "description": "Track/artist/album name. For ordinal/themed (e.g. 'first christmas album') use the full phrase."},
                 "album": {"type": "string"},
                 "artist": {"type": "string"},
-                "song_on_album": {"type": "string", "description": "Find the album containing this song."},
                 "room": {"type": "string"},
                 "volume": {"type": "integer", "description": "0-100"},
             },

@@ -548,7 +548,7 @@ class MusicController:
         """Control music playback.
 
         Args:
-            arguments: Tool arguments (action, query, room, media_type, shuffle)
+            arguments: Tool arguments (action, query, room, media_type, artist, album, volume)
 
         Returns:
             Result dict
@@ -557,7 +557,6 @@ class MusicController:
         query = arguments.get("query", "")
         media_type = arguments.get("media_type", "artist")
         room = arguments.get("room", "").lower() if arguments.get("room") else ""
-        shuffle = arguments.get("shuffle", False)
         artist = arguments.get("artist", "")
         album = arguments.get("album", "")
 
@@ -613,26 +612,10 @@ class MusicController:
 
         _LOGGER.debug("MUSIC: Final - action='%s', query='%s', room='%s'", action, query, room)
 
-        # DEFENSIVE: If user said "album" in their original request, ensure album param
-        # is set so _play() treats it as an album request. The LLM often strips "album"
-        # from the query param and may set media_type wrong, which causes the smart
-        # override in _play() to convert to "track" (playing a single song).
-        # Check BOTH the original user text AND the LLM's query for "album".
+        # Pop the original utterance off the args so it doesn't leak into search
+        # strings later. The tool description tells the LLM to route "album"
+        # requests itself via media_type='album'; we no longer second-guess it.
         user_text = arguments.pop("_user_text", "")
-        album_pattern = r'\balbum\b'
-        has_album_intent = (
-            action == "play" and
-            media_type != "album" and
-            (re.search(album_pattern, user_text, flags=re.IGNORECASE) or
-             re.search(album_pattern, query, flags=re.IGNORECASE))
-        )
-        if has_album_intent:
-            _LOGGER.info("MUSIC: Detected 'album' in user text, forcing media_type='album'")
-            media_type = "album"
-            # Strip "album" from query if present so it doesn't interfere with search
-            query = re.sub(album_pattern, '', query, flags=re.IGNORECASE).strip()
-            if not album:
-                album = query
 
         # Detect ordinal/themed album requests from original user text
         # e.g. "play Kelly Clarkson's first christmas album in the living room"
@@ -672,7 +655,7 @@ class MusicController:
                 if curated:
                     if not target_players:
                         return {"error": f"Which room? Available: {', '.join(self._players.keys())}"}
-                    await self._play_on_players(target_players, curated["uri"], curated["media_type"], shuffle=False)
+                    await self._play_on_players(target_players, curated["uri"], curated["media_type"])
                     _LOGGER.info("MUSIC: Curated shortcut '%s' → %s", curated["id"], curated["uri"])
                     return {"status": "playing", "response_text": f"Playing {curated['name']} in the {room}"}
 
@@ -687,12 +670,12 @@ class MusicController:
                         if found_uri:
                             if not target_players:
                                 return {"error": f"Unknown room: {room}. Available: {', '.join(self._players.keys())}"}
-                            await self._play_on_players(target_players, found_uri, "album", shuffle=shuffle)
+                            await self._play_on_players(target_players, found_uri, "album")
                             display_name = f"{found_name} by {found_artist}"
                             return {"status": "playing", "response_text": f"Playing {display_name} in the {room}"}
                     _LOGGER.info("MUSIC: Themed album search failed, falling back to normal search")
 
-                return await self._play(query, media_type, room, shuffle, target_players, artist, album)
+                return await self._play(query, media_type, room, target_players, artist, album)
             elif action == "pause":
                 return await self._pause(all_players, target_players if target_players else None)
             elif action == "resume":
@@ -854,8 +837,8 @@ class MusicController:
 
         return True
 
-    async def _play_on_players(self, target_players: list[str], uri: str, media_type: str, shuffle: bool = False) -> None:
-        """Play media on target players with appropriate shuffle setting."""
+    async def _play_on_players(self, target_players: list[str], uri: str, media_type: str) -> None:
+        """Play media on target players."""
         for player in target_players:
             # Clear any lingering repeat mode (e.g. left on by white noise) so a
             # single track doesn't loop forever.
@@ -868,17 +851,13 @@ class MusicController:
             except Exception as err:  # noqa: BLE001
                 _LOGGER.debug("repeat_set not supported on %s: %s", player, err)
 
-            # Set shuffle BEFORE playing so the album starts from track 1
+            # Albums must start at track 1 — clear any inherited shuffle state
+            # before we kick playback so the player doesn't open the album
+            # mid-tracklist.
             if media_type == "album":
                 await self._hass.services.async_call(
                     "media_player", "shuffle_set",
                     {"entity_id": player, "shuffle": False},
-                    blocking=True
-                )
-            elif shuffle:
-                await self._hass.services.async_call(
-                    "media_player", "shuffle_set",
-                    {"entity_id": player, "shuffle": True},
                     blocking=True
                 )
             await self._play_media(player, uri, media_type)
@@ -1294,7 +1273,7 @@ class MusicController:
             return {"name": found_name, "artist": found_artist, "uri": found_uri, "score": best_score}
         return None
 
-    async def _play(self, query: str, media_type: str, room: str, shuffle: bool, target_players: list[str], artist: str = "", album: str = "") -> dict:
+    async def _play(self, query: str, media_type: str, room: str, target_players: list[str], artist: str = "", album: str = "") -> dict:
         """Play music via Music Assistant.
 
         Strategy:
@@ -1315,8 +1294,6 @@ class MusicController:
             media_type = "artist"
         if album and media_type != "album":
             media_type = "album"
-        if artist and query and media_type == "artist":
-            media_type = "track"
         if media_type == "album" and query and not album:
             album = query
 
@@ -1353,7 +1330,7 @@ class MusicController:
             found_artist = match.get("artist")
             found_uri = match["uri"]
             display_name = f"{found_name} by {found_artist}" if found_artist and media_type in ("track", "album") else found_name
-            await self._play_on_players(target_players, found_uri, media_type, shuffle=shuffle)
+            await self._play_on_players(target_players, found_uri, media_type)
 
             return {"status": "playing", "response_text": f"Playing {display_name} in the {room}"}
 
