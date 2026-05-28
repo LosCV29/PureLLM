@@ -2478,6 +2478,15 @@ class PureLLMConversationEntity(ConversationEntity):
             if tool_name == "control_music":
                 return await self._execute_control_music(arguments)
 
+            if tool_name == "search_music":
+                if not self._music_controller:
+                    return {"error": "Music control not configured"}
+                return await self._music_controller.search_catalog(
+                    arguments.get("query", ""),
+                    arguments.get("media_type", "track"),
+                    arguments.get("artist", ""),
+                )
+
             if tool_name == "control_white_noise":
                 return await self._execute_control_white_noise(arguments)
 

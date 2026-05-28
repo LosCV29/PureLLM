@@ -156,7 +156,7 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
 
 # Map intent categories → tool function names
 _INTENT_TO_TOOLS: dict[str, list[str]] = {
-    "music": ["control_music", "control_white_noise"],
+    "music": ["control_music", "search_music", "control_white_noise"],
     "white_noise": ["control_white_noise"],
     "weather": ["get_weather_forecast"],
     "thermostat": ["control_thermostat"],

@@ -192,6 +192,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
                 "(2) 'play <artist-name>' with no specific song named → action='play', media_type='artist', artist=<artist-name>. This plays the artist's discography/radio; do NOT pick media_type='track' just because a song happens to share the artist's name. "
                 "(3) 'play <song> by <artist>' → action='play', media_type='track', query=<song>, artist=<artist>. "
                 "(4) 'play <album> album' or '<album> album by <artist>' → action='play', media_type='album', album=<album>. "
+                "(5) To play a result returned by search_music: action='play' (or 'shuffle' for a playlist), media_uri=<the candidate's media_uri>, media_type=<the candidate's media_type>, and set query=<the candidate's name> so it can be announced. When media_uri is set, no search runs — the exact item plays. "
                 "ACTION SYNONYMS — when the user says any of these, ALWAYS call control_music with the mapped action (do NOT respond 'didn't catch that' for music intent; if the utterance is about audio playback at all, route it here): "
                 "skip_previous ← 'previous track', 'previous song', 'go back', 'go back a song', 'skip back', 'bring it back', 'bring the track back', 'bring the song back', 'last song', 'back one'. "
                 "skip_next ← 'next', 'next track', 'next song', 'skip', 'skip ahead', 'skip this', 'forward'. "
@@ -208,13 +209,36 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
             {
                 "action": {"type": "string", "enum": ["play", "pause", "resume", "stop", "skip_next", "skip_previous", "restart_track", "what_playing", "transfer", "shuffle", "volume_up", "volume_down", "set_volume"]},
                 "media_type": {"type": "string", "enum": ["artist", "album", "track"]},
-                "query": {"type": "string", "description": "Track/artist/album name. For ordinal/themed (e.g. 'first christmas album') use the full phrase."},
+                "query": {"type": "string", "description": "Track/artist/album name. For ordinal/themed (e.g. 'first christmas album') use the full phrase. When playing a search_music result, set this to the candidate's name for the announcement."},
                 "album": {"type": "string"},
                 "artist": {"type": "string"},
+                "media_uri": {"type": "string", "description": "Exact media_uri from a search_music result. With action='play' or 'shuffle', plays it directly with no re-search."},
                 "room": {"type": "string"},
                 "volume": {"type": "integer", "description": "0-100"},
             },
             ["action"]
+        ))
+
+        tools.append(_tool(
+            "search_music",
+            (
+                "Find the exact track, album, artist, or playlist to play BEFORE playing it. "
+                "Use this whenever a request is vague, possibly misheard, or when an artist name "
+                "could collide with a song title (e.g. 'Gucci Mane' is both an artist and a track). "
+                "Queries are resolved through MusicBrainz, so loose, partial, or misspelled names "
+                "still resolve to the real thing. Returns a ranked list of candidates, each with a "
+                "'media_uri', 'media_type', name, and artist. "
+                "Then play your pick: control_music(action='play', media_uri=<candidate media_uri>, "
+                "media_type=<candidate media_type>, query=<candidate name>). "
+                "For a playlist candidate, use action='shuffle' instead of 'play'. "
+                "Note: MusicBrainz has no playlists — playlist candidates come straight from Apple Music."
+            ),
+            {
+                "query": {"type": "string", "description": "Song, album, artist, or playlist name. Vague/partial/misspelled is fine."},
+                "media_type": {"type": "string", "enum": ["track", "album", "artist", "playlist"], "description": "What kind of item to find."},
+                "artist": {"type": "string", "description": "Artist name when known, to narrow results."},
+            },
+            ["query"]
         ))
 
     # ===== WHITE NOISE / AMBIENT SOUNDS =====

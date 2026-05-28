@@ -471,6 +471,28 @@ CURATED_MEDIA: list[dict] = [
 ]
 
 
+# Music Assistant item URIs are "<provider>://<media_type>/<id>" (e.g.
+# "apple_music://song/123", "library://album/5"). Map the path segment back to
+# our media_type vocabulary so a media_uri can be played without re-searching.
+_URI_TYPE_MAP = {
+    "song": "track", "songs": "track", "track": "track", "tracks": "track",
+    "album": "album", "albums": "album",
+    "artist": "artist", "artists": "artist",
+    "playlist": "playlist", "playlists": "playlist",
+}
+
+
+def _media_type_from_uri(uri: str) -> str | None:
+    """Infer media_type from a Music Assistant item URI, or None if unknown."""
+    if not uri or "://" not in uri:
+        return None
+    try:
+        seg = uri.split("://", 1)[1].split("/", 1)[0].lower()
+    except (IndexError, AttributeError):
+        return None
+    return _URI_TYPE_MAP.get(seg)
+
+
 def _match_curated(text: str) -> dict | None:
     """Return a CURATED_MEDIA entry if the text names a curated playlist/artist.
 
@@ -647,6 +669,31 @@ class MusicController:
 
             # Determine target player(s)
             target_players = self._find_target_players(room)
+
+            # Direct play of a search_music result: the LLM echoes the chosen
+            # candidate's media_uri, so we skip all searching and play it as-is.
+            media_uri = (arguments.get("media_uri") or "").strip()
+            if media_uri and action in ("play", "shuffle"):
+                if not target_players:
+                    return {"error": f"Which room? Available: {', '.join(self._players.keys())}"}
+                uri_type = _media_type_from_uri(media_uri) or (
+                    media_type if media_type in ("track", "album", "artist", "playlist") else "track"
+                )
+                label = (_normalize_unicode(query) or album or artist or "your music").strip()
+                room_suffix = f" in the {room}" if room else ""
+                if action == "shuffle":
+                    for player in target_players:
+                        await self._hass.services.async_call(
+                            "media_player", "shuffle_set",
+                            {"entity_id": player, "shuffle": True}, blocking=True,
+                        )
+                        await self._play_media(player, media_uri, uri_type)
+                    _LOGGER.info("MUSIC: Direct shuffle of '%s' (uri=%s, type=%s)", label, media_uri, uri_type)
+                    return {"status": "shuffling", "playlist_title": label,
+                            "response_text": f"Playing {label}{room_suffix}"}
+                await self._play_on_players(target_players, media_uri, uri_type)
+                _LOGGER.info("MUSIC: Direct play of '%s' (uri=%s, type=%s)", label, media_uri, uri_type)
+                return {"status": "playing", "response_text": f"Playing {label}{room_suffix}"}
 
             if action == "play":
                 # Curated shortcuts (lullabies, baby classical, ...) — play exact
@@ -1158,108 +1205,119 @@ class MusicController:
         re.IGNORECASE,
     )
 
-    def _pick_best_match(
-        self, results: list[dict], query_lower: str, artist_lower: str,
-    ) -> dict | None:
-        """Score MA results and return best match with uri, name, artist. Returns None if no good match."""
+    def _score_item(
+        self, item: dict, query_lower: str, artist_lower: str,
+    ) -> tuple[int, int]:
+        """Score one MA result against the query/artist.
+
+        Returns (total_score, name_score). name_score > 0 means the item's name
+        actually matched the query — artist-only matches (name_score == 0) play
+        the wrong song and must be rejected by callers.
+        """
 
         def _prefix_match(word_a: str, word_b: str) -> bool:
             """Two words match if one is a 4+ char prefix of the other."""
             min_len = min(len(word_a), len(word_b))
             return min_len >= 4 and (word_a.startswith(word_b) or word_b.startswith(word_a))
 
-        # Check once whether the user actually asked for a variant version
+        # Did the user actually ask for a variant version?
         user_wants_variant = bool(self._VARIANT_KEYWORDS.search(query_lower))
         user_wants_djmix = bool(self._DJ_MIX_KEYWORDS.search(query_lower))
         user_wants_non_album = bool(self._NON_ALBUM_VERSION_KEYWORDS.search(query_lower))
 
+        name_score = 0
+        artist_score = 0
+        item_name = _normalize_numerals(_strip_accents((item.get("name") or item.get("title") or "").lower()))
+        item_artist = _strip_accents(_extract_artist(item, lowercase=True))
+
+        # Name scoring
+        if query_lower == item_name:
+            name_score = 100
+        elif query_lower in item_name:
+            name_score = 50
+        else:
+            query_words = [w for w in query_lower.split() if len(w) > 2]
+            if query_words:
+                matches = sum(1 for w in query_words
+                              if w in item_name or any(_prefix_match(w, t) for t in re.split(r"[\s'']+", item_name) if t))
+                if matches == len(query_words):
+                    name_score = 40
+                elif matches > 0:
+                    name_score = 20 * matches
+
+        # Artist scoring — use centralized fuzzy match
+        if artist_lower:
+            if artist_lower == item_artist:
+                artist_score = 100
+            elif _artist_names_match(artist_lower, item_artist):
+                artist_score = 50
+            elif item_artist:
+                artist_score = -200
+
+        # Penalize instrumental/karaoke/etc. variants when user didn't ask for one.
+        # Check both track name and the version tag (MA often stores "Instrumental" there).
+        variant_penalty = 0
+        item_version = (item.get("version") or "").lower()
+        if not user_wants_variant:
+            if self._VARIANT_KEYWORDS.search(item_name) or self._VARIANT_KEYWORDS.search(item_version):
+                variant_penalty = -500
+                _LOGGER.debug("MUSIC: Variant penalty applied to '%s' (version='%s')", item_name, item_version)
+
+        # Penalize DJ-mix / continuous-mix compilation tracks (they cross-fade
+        # out at the boundary instead of ending). Look in track name, version
+        # tag, and the parent album name (Apple Music puts "(DJ Mix)" there).
+        album_info = item.get("album") or {}
+        if isinstance(album_info, dict):
+            item_album = (album_info.get("name") or album_info.get("title") or "").lower()
+        elif isinstance(album_info, str):
+            item_album = album_info.lower()
+        else:
+            item_album = ""
+
+        if not user_wants_djmix:
+            if (self._DJ_MIX_KEYWORDS.search(item_name)
+                    or self._DJ_MIX_KEYWORDS.search(item_version)
+                    or self._DJ_MIX_KEYWORDS.search(item_album)):
+                variant_penalty -= 800
+                _LOGGER.debug(
+                    "MUSIC: DJ-mix penalty applied to '%s' (version='%s', album='%s')",
+                    item_name, item_version, item_album,
+                )
+
+        # Default-prefer the canonical studio-album cut: penalize live /
+        # remix / remaster / acoustic / demo / radio-edit / etc. unless
+        # the user explicitly asked for that variant. Checked against the
+        # track name, MA's version tag, and the album name (e.g. an album
+        # titled "MTV Unplugged" or "Live at Wembley").
+        if not user_wants_non_album:
+            if (self._NON_ALBUM_VERSION_KEYWORDS.search(item_name)
+                    or self._NON_ALBUM_VERSION_KEYWORDS.search(item_version)
+                    or self._NON_ALBUM_VERSION_KEYWORDS.search(item_album)):
+                variant_penalty -= 400
+                _LOGGER.debug(
+                    "MUSIC: Non-album-version penalty applied to '%s' (version='%s', album='%s')",
+                    item_name, item_version, item_album,
+                )
+
+        # Prefer explicit over clean when both versions of the same song exist.
+        # Apple Music returns explicit as top-level field: True/False/None.
+        explicit_bonus = 0
+        if item.get("explicit") is True:
+            explicit_bonus = 15
+        elif item.get("explicit") is False or re.search(r'\bclean\b', item_name):
+            explicit_bonus = -15
+
+        return name_score + artist_score + variant_penalty + explicit_bonus, name_score
+
+    def _pick_best_match(
+        self, results: list[dict], query_lower: str, artist_lower: str,
+    ) -> dict | None:
+        """Score MA results and return best match with uri, name, artist. Returns None if no good match."""
         best_score = 0
         best = None
         for item in results:
-            name_score = 0
-            artist_score = 0
-            item_name = _normalize_numerals(_strip_accents((item.get("name") or item.get("title") or "").lower()))
-            item_artist = _strip_accents(_extract_artist(item, lowercase=True))
-
-            # Name scoring
-            if query_lower == item_name:
-                name_score = 100
-            elif query_lower in item_name:
-                name_score = 50
-            else:
-                query_words = [w for w in query_lower.split() if len(w) > 2]
-                if query_words:
-                    matches = sum(1 for w in query_words
-                                  if w in item_name or any(_prefix_match(w, t) for t in re.split(r"[\s'']+", item_name) if t))
-                    if matches == len(query_words):
-                        name_score = 40
-                    elif matches > 0:
-                        name_score = 20 * matches
-
-            # Artist scoring — use centralized fuzzy match
-            if artist_lower:
-                if artist_lower == item_artist:
-                    artist_score = 100
-                elif _artist_names_match(artist_lower, item_artist):
-                    artist_score = 50
-                elif item_artist:
-                    artist_score = -200
-
-            # Penalize instrumental/karaoke/etc. variants when user didn't ask for one.
-            # Check both track name and the version tag (MA often stores "Instrumental" there).
-            variant_penalty = 0
-            item_version = (item.get("version") or "").lower()
-            if not user_wants_variant:
-                if self._VARIANT_KEYWORDS.search(item_name) or self._VARIANT_KEYWORDS.search(item_version):
-                    variant_penalty = -500
-                    _LOGGER.debug("MUSIC: Variant penalty applied to '%s' (version='%s')", item_name, item_version)
-
-            # Penalize DJ-mix / continuous-mix compilation tracks (they cross-fade
-            # out at the boundary instead of ending). Look in track name, version
-            # tag, and the parent album name (Apple Music puts "(DJ Mix)" there).
-            album_info = item.get("album") or {}
-            if isinstance(album_info, dict):
-                item_album = (album_info.get("name") or album_info.get("title") or "").lower()
-            elif isinstance(album_info, str):
-                item_album = album_info.lower()
-            else:
-                item_album = ""
-
-            if not user_wants_djmix:
-                if (self._DJ_MIX_KEYWORDS.search(item_name)
-                        or self._DJ_MIX_KEYWORDS.search(item_version)
-                        or self._DJ_MIX_KEYWORDS.search(item_album)):
-                    variant_penalty -= 800
-                    _LOGGER.debug(
-                        "MUSIC: DJ-mix penalty applied to '%s' (version='%s', album='%s')",
-                        item_name, item_version, item_album,
-                    )
-
-            # Default-prefer the canonical studio-album cut: penalize live /
-            # remix / remaster / acoustic / demo / radio-edit / etc. unless
-            # the user explicitly asked for that variant. Checked against the
-            # track name, MA's version tag, and the album name (e.g. an album
-            # titled "MTV Unplugged" or "Live at Wembley").
-            if not user_wants_non_album:
-                if (self._NON_ALBUM_VERSION_KEYWORDS.search(item_name)
-                        or self._NON_ALBUM_VERSION_KEYWORDS.search(item_version)
-                        or self._NON_ALBUM_VERSION_KEYWORDS.search(item_album)):
-                    variant_penalty -= 400
-                    _LOGGER.debug(
-                        "MUSIC: Non-album-version penalty applied to '%s' (version='%s', album='%s')",
-                        item_name, item_version, item_album,
-                    )
-
-            # Prefer explicit over clean when both versions of the same song exist.
-            # Apple Music returns explicit as top-level field: True/False/None.
-            explicit_bonus = 0
-            if item.get("explicit") is True:
-                explicit_bonus = 15
-            elif item.get("explicit") is False or re.search(r'\bclean\b', item_name):
-                explicit_bonus = -15
-
+            score, name_score = self._score_item(item, query_lower, artist_lower)
             # Require name to actually match — artist-only matches play wrong songs
-            score = name_score + artist_score + variant_penalty + explicit_bonus
             if score > best_score and name_score > 0:
                 best_score = score
                 best = item
@@ -1272,6 +1330,166 @@ class MusicController:
                          found_name, found_artist, found_uri, best_score)
             return {"name": found_name, "artist": found_artist, "uri": found_uri, "score": best_score}
         return None
+
+    async def _ma_search_raw(
+        self, config_entry_id: str, name: str, media_type: str, limit: int = 10,
+    ) -> list:
+        """Run a single Music Assistant search and return the parsed result list."""
+        if not name:
+            return []
+        search_result = await self._hass.services.async_call(
+            "music_assistant", "search",
+            {"config_entry_id": config_entry_id, "name": name, "media_type": [media_type], "limit": limit},
+            blocking=True, return_response=True,
+        )
+        return _parse_ma_results(search_result, media_type)
+
+    def _rank_matches(
+        self, results: list[dict], query_lower: str, artist_lower: str,
+        media_type: str, limit: int = 5,
+    ) -> list[dict]:
+        """Score and rank MA results, returning the top `limit` as candidate dicts.
+
+        Each candidate carries the fields the LLM needs to pick and play:
+        name, artist, album, media_type, media_uri, explicit.
+        """
+        scored: list[tuple[int, dict]] = []
+        for item in results:
+            score, name_score = self._score_item(item, query_lower, artist_lower)
+            if name_score <= 0 or score <= 0:
+                continue
+            scored.append((score, item))
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        out: list[dict] = []
+        seen_uris: set[str] = set()
+        for score, item in scored:
+            uri = item.get("uri") or item.get("media_id")
+            if not uri or uri in seen_uris:
+                continue
+            seen_uris.add(uri)
+            album_info = item.get("album") or {}
+            if isinstance(album_info, dict):
+                album_name = _normalize_unicode(album_info.get("name") or album_info.get("title") or "")
+            elif isinstance(album_info, str):
+                album_name = _normalize_unicode(album_info)
+            else:
+                album_name = ""
+            candidate = {
+                "name": _normalize_unicode(item.get("name") or item.get("title")),
+                "artist": _extract_artist(item),
+                "media_type": media_type,
+                "media_uri": uri,
+                "explicit": bool(item.get("explicit")),
+            }
+            if media_type == "track" and album_name:
+                candidate["album"] = album_name
+            out.append(candidate)
+            if len(out) >= limit:
+                break
+        return out
+
+    async def search_catalog(
+        self, query: str, media_type: str = "track", artist: str = "",
+    ) -> dict:
+        """Master search for the search_music tool.
+
+        Resolves vague/misheard queries through MusicBrainz (for track/album/
+        artist), then searches Music Assistant for playable candidates. Returns
+        {"results": [candidate, ...]} where each candidate has a media_uri the
+        LLM echoes back to control_music to play. Playlists are MA-only since
+        MusicBrainz does not index streaming playlists.
+        """
+        query = (query or "").strip()
+        if not query:
+            return {"error": "No search query specified"}
+        if media_type not in ("track", "album", "artist", "playlist"):
+            media_type = "track"
+        artist = (artist or "").strip()
+
+        ma_entries = self._hass.config_entries.async_entries("music_assistant")
+        if not ma_entries:
+            return {"error": "Music Assistant integration not found"}
+        ma_config_entry_id = ma_entries[0].entry_id
+
+        # Playlists: Apple Music / MA only (not in MusicBrainz).
+        if media_type == "playlist":
+            return await self._search_playlists_for_tool(ma_config_entry_id, query)
+
+        # Resolve voice artist name to MA canonical (Tupac → 2Pac).
+        resolved_artist = await self._resolve_artist_name(ma_config_entry_id, artist) if artist else ""
+
+        # Gather candidates from MA using the raw query (+ artist variants).
+        seen_uris: set[str] = set()
+        candidates: list[dict] = []
+
+        def _add(items: list) -> None:
+            for it in items:
+                uri = it.get("uri") or it.get("media_id")
+                if uri and uri not in seen_uris:
+                    seen_uris.add(uri)
+                    candidates.append(it)
+
+        if resolved_artist and media_type != "artist":
+            _add(await self._ma_search_raw(ma_config_entry_id, f"{query} {resolved_artist}", media_type))
+        _add(await self._ma_search_raw(ma_config_entry_id, query, media_type))
+
+        # MusicBrainz canonicalization for vague/misheard track & album names.
+        if media_type in ("track", "album"):
+            try:
+                session = async_get_clientsession(self._hass)
+                mb_title, mb_artist = await _musicbrainz_resolve(
+                    session, query, resolved_artist, media_type,
+                )
+                if mb_title and mb_title.lower() != query.lower():
+                    _LOGGER.info("SEARCH: MusicBrainz resolved '%s' → '%s' (artist: '%s')",
+                                 query, mb_title, mb_artist or resolved_artist)
+                    _add(await self._ma_search_raw(
+                        ma_config_entry_id, f"{mb_title} {mb_artist or resolved_artist}".strip(), media_type,
+                    ))
+                    _add(await self._ma_search_raw(ma_config_entry_id, mb_title, media_type))
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("SEARCH: MusicBrainz resolution failed: %s", err)
+
+        query_lower = _normalize_numerals(_strip_accents(query.lower()))
+        artist_lower = _strip_accents(resolved_artist.lower()) if resolved_artist else ""
+        ranked = self._rank_matches(candidates, query_lower, artist_lower, media_type, limit=5)
+
+        if not ranked:
+            return {"results": [], "message": f"No {media_type} found for '{query}'"
+                    + (f" by {artist}" if artist else "")}
+        _LOGGER.info("SEARCH: %d candidates for %s '%s': %s", len(ranked), media_type, query,
+                     [c["name"] for c in ranked])
+        return {"results": ranked}
+
+    async def _search_playlists_for_tool(
+        self, config_entry_id: str, query: str,
+    ) -> dict:
+        """Find playlist candidates for search_music (official Apple Music first)."""
+        results = await self._ma_search_raw(config_entry_id, query, "playlist", limit=15)
+        seen_uris: set[str] = set()
+        out: list[dict] = []
+        for p in results:
+            uri = p.get("uri") or p.get("media_id")
+            name = p.get("name") or p.get("title") or ""
+            if not uri or uri in seen_uris or "radio" in name.lower():
+                continue
+            seen_uris.add(uri)
+            name_l = name.lower()
+            official = ("apple" in (p.get("owner") or "").lower()
+                        or name_l.endswith("essentials") or name_l.startswith("best of"))
+            out.append({
+                "name": _normalize_unicode(name),
+                "owner": p.get("owner", ""),
+                "media_type": "playlist",
+                "media_uri": uri,
+                "official": official,
+            })
+        # Official curated playlists first, then the rest.
+        out.sort(key=lambda x: 0 if x["official"] else 1)
+        if not out:
+            return {"results": [], "message": f"No playlist found for '{query}'"}
+        return {"results": out[:5]}
 
     async def _play(self, query: str, media_type: str, room: str, target_players: list[str], artist: str = "", album: str = "") -> dict:
         """Play music via Music Assistant.
