@@ -320,6 +320,29 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         ["action"],
     ))
 
+    # Dedicated fan speed/preset tool — small and single-purpose so weak local
+    # models reliably set fan speed instead of missing it inside control_device's
+    # large action enum (which can't express a numeric percentage or preset mode
+    # at all). Use control_device only to turn a fan fully on/off.
+    tools.append(_tool(
+        "set_fan_speed",
+        "Set a FAN's speed or preset mode. Use for 'set the fan to 20 percent', "
+        "'set the ceiling fan to high/low', 'turn the fan up/down', 'set the fan to "
+        "fresh/nature mode'. Pass the fan's name in `device` (e.g. 'ceiling fan'); "
+        "omit only if there's a single fan. For exact numbers use `percentage`; for "
+        "low/medium/high use `level`; for a named mode use `preset_mode`. Use "
+        "control_device (turn_on/turn_off) only to switch a fan fully on or off.",
+        {
+            "device": {"type": "string", "description": "Fuzzy-matched fan name, e.g. 'ceiling fan'."},
+            "entity_id": {"type": "string"},
+            "action": {"type": "string", "enum": ["set", "up", "down"], "description": "up/down steps the speed; omit for set."},
+            "percentage": {"type": "integer", "description": "Exact speed 0-100 when the user gives a number."},
+            "level": {"type": "string", "enum": ["low", "medium", "high", "auto"], "description": "Named speed."},
+            "preset_mode": {"type": "string", "description": "Named preset mode the fan supports, e.g. 'fresh' or 'nature'."},
+        },
+        [],
+    ))
+
     # ===== SOFABATON ACTIVITIES =====
     if config.sofabaton_activities:
         activity_names = [a.get("name", "") for a in config.sofabaton_activities if a.get("name")]

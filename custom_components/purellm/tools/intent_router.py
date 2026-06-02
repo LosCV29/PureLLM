@@ -172,7 +172,7 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
     "places": ["find_nearby_places"],
     "knowledge": ["calculate_age", "get_wikipedia_summary"],
     "datetime": ["get_current_datetime"],
-    "device": ["control_device", "check_device_status", "set_speaker_volume"],
+    "device": ["control_device", "check_device_status", "set_speaker_volume", "set_fan_speed"],
     "device_status": ["check_device_status"],
     "search": ["web_search"],
     "sofabaton": ["control_sofabaton", "control_device"],
