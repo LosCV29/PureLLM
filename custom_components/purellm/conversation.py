@@ -493,6 +493,7 @@ from .tools import calendar as calendar_tool
 from .tools import camera as camera_tool
 from .tools import thermostat as thermostat_tool
 from .tools import device as device_tool
+from .tools import speaker_volume as speaker_volume_tool
 from .tools.music import MusicController
 from .tools.white_noise import WhiteNoiseController
 from .tools import timer as timer_tool
@@ -2330,6 +2331,11 @@ class PureLLMConversationEntity(ConversationEntity):
                     arguments, self.hass, self._current_user_query
                 ),
                 "control_device": lambda: self._execute_control_device(arguments),
+                "set_speaker_volume": lambda: speaker_volume_tool.set_speaker_volume(
+                    arguments, self.hass,
+                    device_id=self._current_user_input.device_id if self._current_user_input else None,
+                    room_player_mapping=self.room_player_mapping,
+                ),
                 "control_timer": lambda: timer_tool.control_timer(
                     arguments, self.hass,
                     device_id=self._current_user_input.device_id if self._current_user_input else None,

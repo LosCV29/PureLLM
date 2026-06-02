@@ -118,6 +118,7 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "volume up", "volume down",
         "set volume", "set the volume", "speaker volume", "voice volume",
         "your volume", "raise your", "lower your",
+        "louder", "quieter", "speak up",
     ],
     "device_status": [
         "is the ", "is my ", "status of",
@@ -171,7 +172,7 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
     "places": ["find_nearby_places"],
     "knowledge": ["calculate_age", "get_wikipedia_summary"],
     "datetime": ["get_current_datetime"],
-    "device": ["control_device", "check_device_status"],
+    "device": ["control_device", "check_device_status", "set_speaker_volume"],
     "device_status": ["check_device_status"],
     "search": ["web_search"],
     "sofabaton": ["control_sofabaton", "control_device"],

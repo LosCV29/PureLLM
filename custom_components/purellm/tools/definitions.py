@@ -304,6 +304,22 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         ["action", "device"]
     ))
 
+    # Dedicated speaker/voice volume tool — small and single-purpose so weak
+    # local models reliably call it instead of missing the volume action inside
+    # control_device's large enum. Targets the satellite that heard the request.
+    tools.append(_tool(
+        "set_speaker_volume",
+        "Set, raise, or lower the volume of THIS speaker — the voice satellite the user is "
+        "talking to. Use for 'set your volume to N', 'set the speaker volume to N', "
+        "'turn your volume up/down', 'louder', 'quieter'. Do NOT use for music volume "
+        "(use control_music) or for other named devices/TVs (use control_device).",
+        {
+            "action": {"type": "string", "enum": ["set", "up", "down"]},
+            "level": {"type": "integer", "description": "Target volume 0-100; required when action=set."},
+        },
+        ["action"],
+    ))
+
     # ===== SOFABATON ACTIVITIES =====
     if config.sofabaton_activities:
         activity_names = [a.get("name", "") for a in config.sofabaton_activities if a.get("name")]
