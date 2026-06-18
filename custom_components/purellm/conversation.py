@@ -1795,6 +1795,7 @@ class PureLLMConversationEntity(ConversationEntity):
         messages.append({"role": "user", "content": user_text})
 
         called_tools: set[str] = set()
+        last_tool_speech: str | None = None
 
         for iteration in range(5):  # Max 5 tool iterations
             kwargs = {
@@ -1940,6 +1941,11 @@ class PureLLMConversationEntity(ConversationEntity):
                         # check includes an instruction to ask a follow-up).
                         if isinstance(result, dict):
                             content = json.dumps(result, ensure_ascii=False)
+                            # Remember a tool-provided spoken response so we can fall
+                            # back to it if the LLM returns an empty synthesis turn
+                            # (some local model templates do this after tool calls).
+                            if result.get("response_text"):
+                                last_tool_speech = result["response_text"]
                         else:
                             content = str(result)
 
@@ -1968,7 +1974,14 @@ class PureLLMConversationEntity(ConversationEntity):
                 yield {"content": "Sorry, there was an error processing your request."}
                 return
 
-        # If we get here, the LLM failed to produce a response after all iterations
+        # If we get here, the LLM failed to produce a response after all iterations.
+        # Fall back to the last tool's response_text if it provided one — the action
+        # already ran, so speak its confirmation instead of an error. (Covers local
+        # models that emit an empty synthesis turn after a successful tool call.)
+        if last_tool_speech:
+            _LOGGER.info("LLM gave no final text; speaking tool response_text fallback")
+            yield {"content": last_tool_speech}
+            return
         _LOGGER.error("LLM produced no response after %d iterations", iteration + 1)
         yield {"content": "Sorry, the LLM failed to respond. Please try again."}
 
