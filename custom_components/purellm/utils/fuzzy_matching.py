@@ -299,6 +299,10 @@ def _find_entity_by_query(
                 elif _words_match(query_lower, alias.lower()):
                     _LOGGER.info("Partial alias match%s: '%s' contains '%s' -> %s", "" if exposed else " (non-exposed)", alias, query_lower, entity_entry.entity_id)
                     partial_matches.append((2 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or alias))
+                elif " " in alias and alias.lower().replace(" ", "") == query_lower.replace(" ", ""):
+                    # Despaced match: LLM collapses spaces, e.g. "backdoor" -> alias "Back Door"
+                    _LOGGER.info("Despaced alias match%s: '%s' ~ '%s' -> %s", "" if exposed else " (non-exposed)", alias, query_lower, entity_entry.entity_id)
+                    partial_matches.append((2 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or alias))
 
         # PRIORITY 3/13: Exact match on friendly name
         if friendly_name:
@@ -306,6 +310,9 @@ def _find_entity_by_query(
             if fn_lower == query_lower:
                 partial_matches.append((3 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
             elif _words_match(query_lower, fn_lower):
+                partial_matches.append((4 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
+            elif " " in friendly_name and fn_lower.replace(" ", "") == query_lower.replace(" ", ""):
+                # Despaced match: "backdoor" -> friendly name "Back Door"
                 partial_matches.append((4 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
 
         # PRIORITY 5/15: Exact match on entity_id suffix (the part after the dot).
