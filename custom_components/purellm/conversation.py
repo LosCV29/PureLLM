@@ -1911,7 +1911,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     # Add assistant message with tool calls to conversation
                     messages.append({
                         "role": "assistant",
-                        "content": accumulated_content if accumulated_content else None,
+                        "content": accumulated_content if accumulated_content else "",
                         "tool_calls": unique_tool_calls
                     })
 
