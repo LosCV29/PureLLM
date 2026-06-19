@@ -128,7 +128,16 @@ async def control_thermostat(
         else:
             response_text = f"I've lowered the thermostat to {format_temp_func(new_temp)}."
 
-        return {"response_text": response_text, "instruction": "Confirm briefly and stop. Do NOT ask a follow-up question."}
+        return {
+            "response_text": response_text,
+            "new_temperature": format_temp_func(new_temp),
+            "instruction": (
+                f"CRITICAL: You MUST tell the user the new target temperature, which is exactly "
+                f"{format_temp_func(new_temp)}. State that exact number, for example: '{response_text}'. "
+                f"Never give a vague confirmation like 'I turned it up' without saying {format_temp_func(new_temp)}. "
+                f"Do NOT ask a follow-up question."
+            ),
+        }
 
     except Exception as err:
         _LOGGER.error("Error controlling thermostat: %s", err, exc_info=True)
