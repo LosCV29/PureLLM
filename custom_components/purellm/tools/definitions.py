@@ -104,9 +104,9 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     if config.enable_sports:
         tools.append(_tool(
             "get_sports_info",
-            "Team schedule, scores, standings, and playoff series state. Use for 'next/last game', 'record', 'seed', 'series score', 'playoff series', 'how many games up'. Do NOT use Wikipedia for these. Include sport for ambiguous names; include 'Champions League' for European games.",
+            "Team schedule, scores, standings, and playoff series state. Use for 'next/last game', 'record', 'seed', 'series score', 'playoff series', 'how many games up'. Works for club teams AND national/international soccer teams (e.g. USMNT, USWNT, Mexico, Brazil, England) including World Cup, friendlies, qualifiers, Nations League, Gold Cup, Euros, and Copa America. Do NOT use Wikipedia for these. Include sport for ambiguous names; include 'Champions League' for European club games.",
             {
-                "team_name": {"type": "string", "description": "Team + sport/competition"},
+                "team_name": {"type": "string", "description": "Team + sport/competition (e.g. 'Miami Heat', 'USMNT', 'Mexico national team')"},
                 "query_type": {"type": "string", "enum": ["last_game", "next_game", "standings", "schedule", "both"]}
             },
             ["team_name"]

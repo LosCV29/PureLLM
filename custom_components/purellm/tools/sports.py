@@ -370,6 +370,428 @@ async def _fetch_soccer_scoreboard_for_date(
 # ============ ESPN API Functions ============
 
 
+def _build_response_text(result: dict, full_name: str) -> str:
+    """Assemble the spoken sports summary from a result dict.
+
+    Shared by the club path (``get_sports_info``) and the national-team path
+    (``get_international_soccer_info``) so both phrase games identically.
+    """
+    response_parts = []
+    if "playoff_series" in result:
+        ps = result["playoff_series"]
+        ps_round = ps.get("round", "")
+        if ps_round:
+            response_parts.append(f"{full_name} playoff series ({ps_round}): {ps['summary']}")
+        else:
+            response_parts.append(f"{full_name} playoff series: {ps['summary']}")
+    if "standings" in result:
+        response_parts.append(result["standings"]["summary"])
+    if "live_game" in result:
+        response_parts.append(result["live_game"]["summary"])
+    # Explicitly report when no last_game data found (prevents LLM hallucination)
+    if result.get("no_last_game"):
+        response_parts.append(f"No recent completed game data available for {full_name}")
+    elif "last_game" in result:
+        lg = result["last_game"]
+        date_str = lg['date']
+        # Build natural sentence for last game
+        home = lg['home_team']
+        away = lg['away_team']
+        h_score = lg['home_score']
+        a_score = lg['away_score']
+        # Determine winner and build natural response
+        try:
+            if int(h_score) > int(a_score):
+                winner, loser = home, away
+                w_score, l_score = h_score, a_score
+            elif int(a_score) > int(h_score):
+                winner, loser = away, home
+                w_score, l_score = a_score, h_score
+            else:
+                # Draws are common in soccer; "beat" would be wrong.
+                if date_str in ["today", "yesterday"]:
+                    response_parts.append(f"{home} drew {away} {h_score}-{a_score} {date_str}")
+                else:
+                    response_parts.append(f"{home} drew {away} {h_score}-{a_score} on {date_str}")
+                winner = None
+            if winner is not None:
+                # Natural phrasing the LLM won't want to change
+                if date_str in ["today", "yesterday"]:
+                    response_parts.append(f"{winner} beat {loser} {w_score}-{l_score} {date_str}")
+                else:
+                    response_parts.append(f"{winner} beat {loser} {w_score}-{l_score} on {date_str}")
+        except ValueError:
+            if date_str in ["today", "yesterday"]:
+                response_parts.append(f"{lg['summary']} {date_str}")
+            else:
+                response_parts.append(f"{lg['summary']} on {date_str}")
+    if "next_game" in result:
+        ng = result["next_game"]
+        home_away = ng.get("home_away", "")
+        venue = ng.get("venue", "")
+        broadcast = ng.get("broadcast", "")
+        opponent = ng.get("away_team") if home_away == "home" else ng.get("home_team", "")
+        # Broadcast must come BEFORE the venue: Qwen3.6 truncates the
+        # sentence at the arena name and drops any trailing "airing on
+        # NBC" clause, so we braid broadcast into the middle where the
+        # model can't drop it without also dropping the opponent.
+        ha_label = "home" if home_away == "home" else "away" if home_away else ""
+        broadcast_part = f" on {broadcast}" if broadcast else ""
+        venue_part = f" at {venue}" if venue else ""
+        # National-team fixtures carry the competition (e.g. "FIFA World Cup")
+        # so "their next game" reads with context instead of a bare date.
+        comp_label = ng.get("competition", "")
+        comp_part = f" in the {comp_label}" if comp_label else ""
+        if ha_label:
+            next_text = f"The next {full_name} {ha_label} game is {ng['date']}{broadcast_part} against {opponent}{venue_part}{comp_part}"
+        else:
+            next_text = f"The next {full_name} game is {ng['date']}{broadcast_part} against {opponent}{venue_part}{comp_part}"
+        odds_fav = ng.get("odds_favorite", "")
+        odds_ml = ng.get("odds_moneyline", "")
+        if odds_fav and odds_ml:
+            next_text += f". The betting odds are {odds_fav} {odds_ml}"
+        response_parts.append(next_text)
+
+    return ". ".join(response_parts) if response_parts else f"No game info found for {full_name}"
+
+
+# ---- International / national-team soccer ----------------------------------
+# National teams (USMNT, Mexico, England, Brazil, etc.) never appear in any
+# club league's team list, and their fixtures are spread across many
+# competitions at once (World Cup + friendlies + qualifiers). So we resolve
+# the team from ESPN's friendly directory (a near-complete national-team
+# roster) and gather fixtures by scanning every relevant competition's
+# scoreboard over a date window.
+INTL_SOCCER_DIRECTORY_MEN = "fifa.friendly"
+INTL_SOCCER_DIRECTORY_WOMEN = "fifa.friendly.w"
+
+INTL_SOCCER_LEAGUES_MEN = [
+    "fifa.world",            # FIFA World Cup
+    "fifa.friendly",         # Men's international friendlies
+    "fifa.worldq.concacaf",  # World Cup qualifying - CONCACAF
+    "fifa.worldq.uefa",      # World Cup qualifying - UEFA
+    "fifa.worldq.conmebol",  # World Cup qualifying - CONMEBOL
+    "fifa.worldq.afc",       # World Cup qualifying - AFC
+    "fifa.worldq.caf",       # World Cup qualifying - CAF
+    "fifa.worldq.ofc",       # World Cup qualifying - OFC
+    "concacaf.nations",      # CONCACAF Nations League
+    "concacaf.gold",         # Gold Cup
+    "conmebol.america",      # Copa America
+    "uefa.euro",             # UEFA European Championship
+    "uefa.nations",          # UEFA Nations League
+    "caf.nations",           # Africa Cup of Nations
+    "afc.asian",             # AFC Asian Cup
+]
+INTL_SOCCER_LEAGUES_WOMEN = [
+    "fifa.wwc",                       # FIFA Women's World Cup
+    "fifa.friendly.w",                # Women's international friendlies
+    "concacaf.womens.championship",   # CONCACAF W Championship / Gold Cup
+    "uefa.weuro",                     # UEFA Women's Euro
+]
+
+# Keywords that signal a women's national-team query.
+_WOMEN_KEYWORDS = ("women", "women's", "womens", "uswnt", "ladies", "female", "girls")
+
+# Spoken aliases ESPN's displayName search won't catch, mapped to the name
+# ESPN actually uses in its national-team directory.
+_NATIONAL_TEAM_ALIASES = {
+    "usmnt": "united states",
+    "uswnt": "united states",
+    "team usa": "united states",
+    "usa soccer": "united states",
+    "us soccer": "united states",
+    "us national": "united states",
+    "american national": "united states",
+    "three lions": "england",
+    "les bleus": "france",
+    "la albiceleste": "argentina",
+    "albiceleste": "argentina",
+    "el tri": "mexico",
+    "la roja": "spain",
+    "selecao": "brazil",
+    "die mannschaft": "germany",
+    "azzurri": "italy",
+    "samurai blue": "japan",
+    "oranje": "netherlands",
+    "socceroos": "australia",
+}
+
+# Words that signal the user means a NATIONAL team, not a club.
+_INTL_INTENT_WORDS = ("national team", "national side", "world cup",
+                      "international", "usmnt", "uswnt")
+
+# How far back / forward to scan international scoreboards (days). National
+# fixtures cluster in windows weeks apart, so the lookahead is generous.
+_INTL_LOOKBACK_DAYS = 40
+_INTL_LOOKAHEAD_DAYS = 80
+
+
+def _looks_international(team_name: str) -> bool:
+    """Heuristic: does this query refer to a national team rather than a club?"""
+    t = team_name.lower()
+    if any(w in t for w in _INTL_INTENT_WORDS):
+        return True
+    return any(a in t for a in _NATIONAL_TEAM_ALIASES)
+
+
+def _normalize_intl_query(team_name: str) -> tuple[str, bool]:
+    """Strip national-team noise and apply spoken aliases.
+
+    Returns ``(normalized_name, wants_women)``.
+    """
+    key = team_name.lower().strip()
+    wants_women = any(w in key for w in _WOMEN_KEYWORDS)
+    # Apply aliases longest-first so "us soccer" wins over a bare "us".
+    for alias in sorted(_NATIONAL_TEAM_ALIASES, key=len, reverse=True):
+        if alias in key:
+            key = key.replace(alias, _NATIONAL_TEAM_ALIASES[alias])
+    noise = {"national", "team", "side", "mens", "men's", "womens", "women's",
+             "soccer", "football", "international", "world", "cup", "fixtures",
+             "fixture", "schedule", "match", "game", "next", "last", "the", "of",
+             "results", "result", "play", "playing"}
+    key = " ".join(w for w in key.split() if w not in noise)
+    return key.strip(), wants_women
+
+
+async def _resolve_national_team(
+    session: "aiohttp.ClientSession",
+    directory_league: str,
+    normalized_name: str,
+) -> dict | None:
+    """Resolve a national-team name to its ESPN id via a friendly directory."""
+    _, _, teams = await _fetch_teams_for_league(session, "soccer", directory_league)
+    if not teams:
+        return None
+    words = normalized_name.split()
+    if not words:
+        return None
+    for match_type in ("abbrev", "name"):
+        for team in teams:
+            t = team.get("team", {})
+            if match_type == "abbrev":
+                ok = normalized_name == t.get("abbreviation", "").lower()
+            else:
+                combined = (
+                    f"{t.get('displayName', '')} "
+                    f"{t.get('shortDisplayName', '')} "
+                    f"{t.get('name', '')}"
+                ).lower()
+                ok = all(w in combined for w in words)
+            if ok:
+                return {
+                    "team_id": t.get("id", ""),
+                    "team_abbrev": t.get("abbreviation", "").lower(),
+                    "full_name": t.get("displayName", normalized_name),
+                }
+    return None
+
+
+async def _fetch_intl_scoreboard_range(
+    session: "aiohttp.ClientSession",
+    league: str,
+    date_range: str,
+) -> tuple[str, str, list]:
+    """Fetch one international competition's scoreboard over a date range.
+
+    Returns ``(sport, league, events)``. A single ranged scoreboard call
+    (``dates=YYYYMMDD-YYYYMMDD``) returns both completed and upcoming games,
+    so one request per competition covers a national team's whole window.
+    Unknown/off-season league slugs return [] and are skipped.
+    """
+    url = (
+        f"https://site.api.espn.com/apis/site/v2/sports/soccer/{league}"
+        f"/scoreboard?dates={date_range}"
+    )
+    data, status = await fetch_json(session, url, headers=ESPN_HEADERS, cache_ttl=CACHE_TTL_SHORT)
+    if data and status == 200:
+        return ("soccer", league, data.get("events", []))
+    return ("soccer", league, [])
+
+
+def _league_display_name(events: list, league_slug: str) -> str:
+    """Pull the human league name (e.g. 'FIFA World Cup') from scoreboard data."""
+    for ev in events:
+        comp_league = ev.get("league") or {}
+        name = comp_league.get("name") or comp_league.get("shortName")
+        if name:
+            return name
+    return ""
+
+
+async def get_international_soccer_info(
+    arguments: dict[str, Any],
+    session: "aiohttp.ClientSession",
+    hass_timezone,
+    team_name: str,
+    query_type: str,
+) -> dict[str, Any] | None:
+    """Get schedule / results for a national (international) soccer team.
+
+    Returns a result dict in the same shape as ``get_sports_info`` (with a
+    ``response_text``), or ``None`` if the team can't be resolved as a
+    national team so the caller can fall back to club handling.
+    """
+    normalized, wants_women = _normalize_intl_query(team_name)
+    if not normalized:
+        return None
+
+    best = await _resolve_national_team(
+        session,
+        INTL_SOCCER_DIRECTORY_WOMEN if wants_women else INTL_SOCCER_DIRECTORY_MEN,
+        normalized,
+    )
+    if not best:
+        return None
+
+    team_id = best["team_id"]
+    team_abbrev = best["team_abbrev"]
+    full_name = best["full_name"]
+    leagues = INTL_SOCCER_LEAGUES_WOMEN if wants_women else INTL_SOCCER_LEAGUES_MEN
+
+    now_local = datetime.now(hass_timezone)
+    now_utc = datetime.now(timezone.utc)
+    start = (now_local - timedelta(days=_INTL_LOOKBACK_DAYS)).strftime("%Y%m%d")
+    end = (now_local + timedelta(days=_INTL_LOOKAHEAD_DAYS)).strftime("%Y%m%d")
+    date_range = f"{start}-{end}"
+
+    tasks = [_fetch_intl_scoreboard_range(session, lg, date_range) for lg in leagues]
+    league_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Collect this team's events across every competition, dedup by event id.
+    seen_ids: set = set()
+    team_events: list[dict] = []
+    for res in league_results:
+        if isinstance(res, Exception):
+            continue
+        sport, league, events = res
+        league_label = _league_display_name(events, league)
+        for ev in events:
+            comp = ev.get("competitions", [{}])[0]
+            competitors = comp.get("competitors", [])
+            if not _match_team_in_competitors(competitors, team_id, team_abbrev, full_name):
+                continue
+            eid = ev.get("id")
+            if eid in seen_ids:
+                continue
+            try:
+                game_dt = datetime.fromisoformat(ev.get("date", "").replace("Z", "+00:00"))
+            except (ValueError, AttributeError):
+                continue
+            seen_ids.add(eid)
+            team_events.append({
+                "dt": game_dt,
+                "state": comp.get("status", {}).get("type", {}).get("state", ""),
+                "event": ev,
+                "comp": comp,
+                "sport": sport,
+                "league": league,
+                "league_label": league_label,
+            })
+
+    if not team_events:
+        return {
+            "team": full_name,
+            "response_text": f"I couldn't find any recent or upcoming games for {full_name}.",
+        }
+
+    team_events.sort(key=lambda x: x["dt"])
+    result: dict[str, Any] = {"team": full_name}
+
+    live = next((te for te in team_events if te["state"] == "in"), None)
+    completed = [te for te in team_events if te["state"] == "post"]
+    last = completed[-1] if completed else None
+    upcoming = [te for te in team_events if te["state"] == "pre" and te["dt"] > now_utc]
+    nxt = upcoming[0] if upcoming else None
+
+    want_last = query_type in ("last_game", "both", "standings")
+    want_next = query_type in ("next_game", "both", "standings")
+
+    # ---- Live game ----
+    if live:
+        comp = live["comp"]
+        competitors = comp.get("competitors", [])
+        home_name, away_name, home_team, away_team = _extract_competitors(competitors)
+        home_score = home_team.get("score", "0")
+        away_score = away_team.get("score", "0")
+        if isinstance(home_score, dict):
+            home_score = home_score.get("displayValue", "0")
+        if isinstance(away_score, dict):
+            away_score = away_score.get("displayValue", "0")
+        status_full = comp.get("status", {})
+        status_detail = status_full.get("type", {}).get("detail", "In Progress")
+        result["live_game"] = {
+            "home_team": home_name,
+            "away_team": away_name,
+            "home_score": home_score,
+            "away_score": away_score,
+            "status": status_detail,
+            "summary": f"LIVE: {away_name} {away_score} @ {home_name} {home_score} ({status_detail})",
+        }
+
+    # ---- Last completed game (results) ----
+    if want_last and last:
+        comp = last["comp"]
+        competitors = comp.get("competitors", [])
+        home_name, away_name, home_team, away_team = _extract_competitors(competitors)
+        home_score_raw = home_team.get("score", "0")
+        away_score_raw = away_team.get("score", "0")
+        home_score = home_score_raw.get("displayValue", home_score_raw) if isinstance(home_score_raw, dict) else home_score_raw
+        away_score = away_score_raw.get("displayValue", away_score_raw) if isinstance(away_score_raw, dict) else away_score_raw
+        formatted_last_date = _format_game_date(
+            last["dt"].astimezone(hass_timezone), now_local, include_time=False,
+        )
+        result["last_game"] = {
+            "date": formatted_last_date,
+            "home_team": home_name,
+            "away_team": away_name,
+            "home_score": home_score,
+            "away_score": away_score,
+            "summary": f"{away_name} {away_score} @ {home_name} {home_score}",
+        }
+    elif want_last and query_type == "last_game":
+        result["no_last_game"] = True
+
+    # ---- Next upcoming game (schedule) ----
+    if want_next and nxt:
+        comp = nxt["comp"]
+        event = nxt["event"]
+        competitors = comp.get("competitors", [])
+        home_name, away_name, _, _ = _extract_competitors(competitors)
+        time_valid = not _is_time_tbd(event, nxt["dt"])
+        formatted_date = _format_game_date(
+            nxt["dt"].astimezone(hass_timezone), now_local, time_valid=time_valid,
+        )
+        venue = _extract_venue(comp, event)
+        broadcast = _extract_broadcast(comp, event)
+        odds_fav, odds_ml, _ = await _fetch_event_odds(
+            session, nxt["sport"], nxt["league"], event.get("id"), home_name, away_name,
+        )
+        is_home = (home_name == full_name)
+        opponent = away_name if is_home else home_name
+        home_away = "home" if is_home else "away"
+        venue_str = f" at {venue}" if venue else ""
+        broadcast_str = f", airing on {broadcast}" if broadcast else ""
+        odds_str = f", betting odds {odds_fav} {odds_ml}" if odds_fav else ""
+        comp_label = nxt["league_label"]
+        comp_str = f" [{comp_label}]" if comp_label else ""
+        result["next_game"] = {
+            "date": formatted_date,
+            "home_team": home_name,
+            "away_team": away_name,
+            "venue": venue,
+            "broadcast": broadcast,
+            "home_away": home_away,
+            "competition": comp_label,
+            "odds_favorite": odds_fav,
+            "odds_moneyline": odds_ml,
+            "summary": f"{full_name} vs {opponent} ({home_away}) {formatted_date}{venue_str}{broadcast_str}{odds_str}{comp_str}",
+        }
+
+    result["response_text"] = _build_response_text(result, full_name)
+    _LOGGER.info("International soccer info for %s: %s", full_name, result.get("response_text", ""))
+    return result
+
+
 async def get_sports_info(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
@@ -392,6 +814,16 @@ async def get_sports_info(
         return {"error": "No team name provided"}
 
     try:
+        # National teams (USMNT, Mexico, Brazil, etc.) live in international
+        # competitions, not club leagues. When the query clearly names one,
+        # handle it directly so a loose club-name match can't hijack it.
+        if _looks_international(team_name):
+            intl = await get_international_soccer_info(
+                arguments, session, hass_timezone, team_name, query_type
+            )
+            if intl is not None:
+                return intl
+
         team_key = team_name.lower().strip()
 
         # Detect sport type from query BEFORE removing noise words
@@ -501,7 +933,14 @@ async def get_sports_info(
         if not all_matches:
             if wants_ucl:
                 return {"error": f"Team '{team_name}' not found in UEFA Champions League."}
-            return {"error": f"Team '{team_name}' not found. Try the full team name (e.g., 'Miami Heat', 'Manchester City', 'Real Madrid')."}
+            # No club matched — it may be a national team named without an
+            # obvious cue (e.g. "Brazil schedule", "when does Croatia play").
+            intl = await get_international_soccer_info(
+                arguments, session, hass_timezone, team_name, query_type
+            )
+            if intl is not None:
+                return intl
+            return {"error": f"Team '{team_name}' not found. Try the full team name (e.g., 'Miami Heat', 'Manchester City', 'Real Madrid', or a national team like 'USMNT')."}
 
         # Pick best match - prefer in-season sports when team name is ambiguous
         if len(all_matches) == 1:
@@ -926,72 +1365,8 @@ async def get_sports_info(
                                 "summary": f"{full_name} vs {opponent} ({home_away}) {formatted_date}{venue_str}{broadcast_str}{odds_str}"
                             }
 
-        # Build response text
-        response_parts = []
-        if "playoff_series" in result:
-            ps = result["playoff_series"]
-            ps_round = ps.get("round", "")
-            if ps_round:
-                response_parts.append(f"{full_name} playoff series ({ps_round}): {ps['summary']}")
-            else:
-                response_parts.append(f"{full_name} playoff series: {ps['summary']}")
-        if "standings" in result:
-            response_parts.append(result["standings"]["summary"])
-        if "live_game" in result:
-            response_parts.append(result["live_game"]["summary"])
-        # Explicitly report when no last_game data found (prevents LLM hallucination)
-        if result.get("no_last_game"):
-            response_parts.append(f"No recent completed game data available for {full_name}")
-        elif "last_game" in result:
-            lg = result["last_game"]
-            date_str = lg['date']
-            # Build natural sentence for last game
-            home = lg['home_team']
-            away = lg['away_team']
-            h_score = lg['home_score']
-            a_score = lg['away_score']
-            # Determine winner and build natural response
-            try:
-                if int(h_score) > int(a_score):
-                    winner, loser = home, away
-                    w_score, l_score = h_score, a_score
-                else:
-                    winner, loser = away, home
-                    w_score, l_score = a_score, h_score
-                # Natural phrasing the LLM won't want to change
-                if date_str in ["today", "yesterday"]:
-                    response_parts.append(f"{winner} beat {loser} {w_score}-{l_score} {date_str}")
-                else:
-                    response_parts.append(f"{winner} beat {loser} {w_score}-{l_score} on {date_str}")
-            except ValueError:
-                if date_str in ["today", "yesterday"]:
-                    response_parts.append(f"{lg['summary']} {date_str}")
-                else:
-                    response_parts.append(f"{lg['summary']} on {date_str}")
-        if "next_game" in result:
-            ng = result["next_game"]
-            home_away = ng.get("home_away", "")
-            venue = ng.get("venue", "")
-            broadcast = ng.get("broadcast", "")
-            opponent = ng.get("away_team") if home_away == "home" else ng.get("home_team", "")
-            # Broadcast must come BEFORE the venue: Qwen3.6 truncates the
-            # sentence at the arena name and drops any trailing "airing on
-            # NBC" clause, so we braid broadcast into the middle where the
-            # model can't drop it without also dropping the opponent.
-            ha_label = "home" if home_away == "home" else "away" if home_away else ""
-            broadcast_part = f" on {broadcast}" if broadcast else ""
-            venue_part = f" at {venue}" if venue else ""
-            if ha_label:
-                next_text = f"The next {full_name} {ha_label} game is {ng['date']}{broadcast_part} against {opponent}{venue_part}"
-            else:
-                next_text = f"The next {full_name} game is {ng['date']}{broadcast_part} against {opponent}{venue_part}"
-            odds_fav = ng.get("odds_favorite", "")
-            odds_ml = ng.get("odds_moneyline", "")
-            if odds_fav and odds_ml:
-                next_text += f". The betting odds are {odds_fav} {odds_ml}"
-            response_parts.append(next_text)
-
-        result["response_text"] = ". ".join(response_parts) if response_parts else f"No game info found for {full_name}"
+        # Build response text (shared with the international/national-team path)
+        result["response_text"] = _build_response_text(result, full_name)
 
         _LOGGER.info("Sports info for %s: %s", full_name, result.get("response_text", ""))
         return result
