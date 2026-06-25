@@ -4,9 +4,12 @@ Fetches camera names and RTSP URLs directly from Frigate's ``/api/config``
 endpoint so that camera resolution uses the actual names configured in the
 Frigate integration rather than requiring manual mapping in PureLLM.
 
-Captures video clips from camera RTSP streams and sends them to Qwen3-VL
-(via vLLM) for real-time scene analysis.  Live snapshots are fetched from
-Frigate's ``/api/<camera>/latest.jpg`` endpoint for still-image display.
+Captures a short sequence of still frames from camera RTSP streams and sends
+them as multiple images to a vision LLM for real-time scene analysis.  Sending
+images (rather than an MP4) keeps this compatible with image-only inference
+backends such as llama.cpp, which cannot decode video.  Live snapshots are
+fetched from Frigate's ``/api/<camera>/latest.jpg`` endpoint for still-image
+display.
 """
 from __future__ import annotations
 
@@ -23,8 +26,14 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
-# Video clip settings
-VIDEO_CLIP_DURATION = 3  # seconds of video to capture
+# Frame-sequence capture settings.
+# Image-only vision backends (e.g. llama.cpp) can't decode video, so instead of
+# an MP4 we sample a handful of still frames spread evenly across a short span
+# and send them as multiple images.  This gives the LLM temporal context
+# (motion, direction, changes) while staying within image-only model limits.
+FRAME_COUNT = 12              # number of still frames to capture
+FRAME_CAPTURE_DURATION = 4    # seconds spanned by the frames (=> 3 fps)
+FRAME_SCALE_WIDTH = 640       # downscale width sent to the LLM
 
 # Retry settings for go2rtc cold-start latency
 MAX_RETRIES_PER_SOURCE = 3
@@ -144,28 +153,29 @@ def _match_camera(
     return None
 
 
-async def _capture_video_clip(
+async def _capture_frames(
     rtsp_url: str,
-    duration: int = VIDEO_CLIP_DURATION,
-) -> bytes | None:
-    """Capture a video clip from a direct RTSP stream using ffmpeg.
+    count: int = FRAME_COUNT,
+    duration: int = FRAME_CAPTURE_DURATION,
+    scale_width: int = FRAME_SCALE_WIDTH,
+) -> list[bytes] | None:
+    """Capture ``count`` JPEG frames evenly spaced over ``duration`` seconds.
 
-    Connects to the camera's native RTSP stream and transcodes to a compact
-    MP4 suitable for sending to a vision LLM.  The MP4 uses fragmented
-    format so it can be piped to stdout without seeking.
+    Connects to the camera's RTSP stream and samples frames at ``count/duration``
+    fps, returning them as a list of JPEG byte blobs in chronological order so
+    they can be sent to the vision LLM as multiple ``image_url`` items.  Frames
+    are produced via ffmpeg's ``image2pipe`` muxer (concatenated MJPEG on stdout)
+    and split on the JPEG start-of-image marker, avoiding any temp files.
     """
     cmd = [
         "ffmpeg", "-y",
         "-rtsp_transport", "tcp",
-        "-t", str(duration),
         "-i", rtsp_url,
-        "-vf", "scale=640:-2",
-        "-c:v", "libx264",
-        "-preset", "ultrafast",
-        "-crf", "30",
-        "-an",
-        "-movflags", "frag_keyframe+empty_moov",
-        "-f", "mp4",
+        "-vf", f"fps={count}/{duration},scale={scale_width}:-2",
+        "-frames:v", str(count),
+        "-q:v", "5",
+        "-f", "image2pipe",
+        "-c:v", "mjpeg",
         "pipe:1",
     ]
 
@@ -176,36 +186,46 @@ async def _capture_video_clip(
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await asyncio.wait_for(
-            proc.communicate(), timeout=duration + 15
+            proc.communicate(), timeout=duration + 20
         )
 
         if proc.returncode != 0:
             err_msg = stderr.decode(errors="replace")[-500:] if stderr else "unknown"
-            _LOGGER.error("ffmpeg clip capture failed (rc=%s): %s", proc.returncode, err_msg)
+            _LOGGER.error("ffmpeg frame capture failed (rc=%s): %s", proc.returncode, err_msg)
             return None
 
         if not stdout or len(stdout) < 1000:
             _LOGGER.warning("ffmpeg produced too-small output (%s bytes)", len(stdout) if stdout else 0)
             return None
 
+        # Split the concatenated MJPEG stream into individual JPEGs on the
+        # start-of-image marker (0xFFD8).  SOI only appears at the start of each
+        # frame (FF bytes inside scan data are byte-stuffed), so this is safe.
+        soi = b"\xff\xd8"
+        frames = [soi + part for part in stdout.split(soi)[1:] if part]
+
+        if not frames:
+            _LOGGER.warning("No JPEG frames parsed from ffmpeg output (%s bytes)", len(stdout))
+            return None
+
         _LOGGER.info(
-            "Captured %ds video clip (%s bytes)",
-            duration, len(stdout),
+            "Captured %d frames over %ds (%s bytes total)",
+            len(frames), duration, len(stdout),
         )
-        return stdout
+        return frames
 
     except asyncio.TimeoutError:
-        _LOGGER.error("ffmpeg clip capture timed out after %ds", duration + 15)
+        _LOGGER.error("ffmpeg frame capture timed out after %ds", duration + 20)
         try:
             proc.kill()
         except Exception:
             pass
         return None
     except FileNotFoundError:
-        _LOGGER.error("ffmpeg not found - cannot capture video clips")
+        _LOGGER.error("ffmpeg not found - cannot capture frames")
         return None
     except Exception as err:
-        _LOGGER.error("Video clip capture failed: %s", err, exc_info=True)
+        _LOGGER.error("Frame capture failed: %s", err, exc_info=True)
         return None
 
 
@@ -245,37 +265,45 @@ async def _fetch_frigate_snapshot(
         return None
 
 
-async def _analyze_video_with_llm(
+async def _analyze_images_with_llm(
     session: "aiohttp.ClientSession",
-    video_bytes: bytes,
+    frames: list[bytes],
     llm_base_url: str,
     llm_api_key: str,
     llm_model: str,
     location: str,
     query: str = "",
+    duration: int = FRAME_CAPTURE_DURATION,
 ) -> str | None:
-    """Send an MP4 video clip to Qwen3-VL via vLLM's video_url content type."""
+    """Send a sequence of JPEG frames to a vision LLM as multiple images.
+
+    Uses the OpenAI-compatible ``image_url`` content type (one entry per frame),
+    which image-only backends such as llama.cpp support.  The prompt tells the
+    model the frames are chronological so it can infer motion over time.
+    """
     prompt = (
-        f"You are analyzing a live video clip from the {location} security camera. "
-        f"This is {VIDEO_CLIP_DURATION} seconds of real-time footage. "
+        f"You are analyzing {len(frames)} still frames captured in chronological "
+        f"order over about {duration} seconds from the {location} security camera. "
+        "Treat them as a time sequence so you can perceive motion, direction of "
+        "travel, and changes between frames. "
     )
     if query:
         prompt += f"The user specifically wants to know: {query}. "
     prompt += (
-        "Describe what you see: people, vehicles, animals, movement, activity, "
-        "weather/lighting conditions, and anything notable or unusual. "
-        "Be concise but descriptive (2-3 sentences)."
+        "Describe what you see across the sequence: people, vehicles, animals, "
+        "movement and direction, activity, weather/lighting conditions, and "
+        "anything notable or unusual. Be concise but descriptive (2-3 sentences)."
     )
 
-    b64_video = base64.b64encode(video_bytes).decode("utf-8")
-
-    content: list[dict[str, Any]] = [
-        {"type": "text", "text": prompt},
-        {
-            "type": "video_url",
-            "video_url": {"url": f"data:video/mp4;base64,{b64_video}"},
-        },
-    ]
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for frame_bytes in frames:
+        b64_image = base64.b64encode(frame_bytes).decode("utf-8")
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"},
+            }
+        )
 
     payload = {
         "model": llm_model,
@@ -295,20 +323,20 @@ async def _analyze_video_with_llm(
             async with session.post(url, json=payload, headers=headers) as resp:
                 if resp.status != 200:
                     error = await resp.text()
-                    _LOGGER.error("Vision LLM video API error %s: %s", resp.status, error)
+                    _LOGGER.error("Vision LLM image API error %s: %s", resp.status, error)
                     return None
                 data = await resp.json()
 
         choices = data.get("choices", [])
         if not choices:
-            _LOGGER.warning("Vision LLM returned no choices for video")
+            _LOGGER.warning("Vision LLM returned no choices for image sequence")
             return None
 
         text = choices[0].get("message", {}).get("content", "").strip()
         return text if text else None
 
     except Exception as err:
-        _LOGGER.error("Vision LLM video analysis failed: %s", err, exc_info=True)
+        _LOGGER.error("Vision LLM image analysis failed: %s", err, exc_info=True)
         return None
 
 
@@ -350,11 +378,12 @@ async def check_camera(
     config_dir: str = "",
     camera_rtsp_urls: dict[str, str] | None = None,
 ) -> dict[str, Any]:
-    """Check a camera with video scene analysis.
+    """Check a camera with image-sequence scene analysis.
 
-    Fetches camera names from Frigate's ``/api/config`` endpoint and
-    captures video via Frigate's go2rtc restream (``rtsp://<host>:8554/<cam>``)
-    to avoid competing RTSP connections to the NVR.
+    Fetches camera names from Frigate's ``/api/config`` endpoint and captures a
+    sequence of still frames via Frigate's go2rtc restream
+    (``rtsp://<host>:8554/<cam>``) to avoid competing RTSP connections to the
+    NVR.  The frames are sent to the vision LLM as multiple images.
 
     A live snapshot for display is fetched from Frigate's
     ``/api/<camera>/latest.jpg`` endpoint.
@@ -403,7 +432,7 @@ async def check_camera(
     ]
 
     # Try each RTSP source with retries (handles go2rtc cold-start latency)
-    video_clip = None
+    frames = None
     snapshot = None
     last_url = rtsp_candidates[0]
 
@@ -411,20 +440,20 @@ async def check_camera(
         last_url = rtsp_url
         for attempt in range(1, MAX_RETRIES_PER_SOURCE + 1):
             _LOGGER.info(
-                "Capturing %ds clip from %s (attempt %d/%d, url=%s)",
-                VIDEO_CLIP_DURATION, camera_name, attempt,
+                "Capturing %d frames over %ds from %s (attempt %d/%d, url=%s)",
+                FRAME_COUNT, FRAME_CAPTURE_DURATION, camera_name, attempt,
                 MAX_RETRIES_PER_SOURCE, rtsp_url,
             )
 
-            # Run video capture and snapshot fetch in parallel on first attempt
+            # Run frame capture and snapshot fetch in parallel on first attempt
             if snapshot is None:
-                video_task = _capture_video_clip(rtsp_url, VIDEO_CLIP_DURATION)
+                frames_task = _capture_frames(rtsp_url)
                 snapshot_task = _fetch_frigate_snapshot(session, frigate_url, camera_name)
-                video_clip, snapshot = await asyncio.gather(video_task, snapshot_task)
+                frames, snapshot = await asyncio.gather(frames_task, snapshot_task)
             else:
-                video_clip = await _capture_video_clip(rtsp_url, VIDEO_CLIP_DURATION)
+                frames = await _capture_frames(rtsp_url)
 
-            if video_clip:
+            if frames:
                 break
 
             if attempt < MAX_RETRIES_PER_SOURCE:
@@ -435,17 +464,17 @@ async def check_camera(
                 )
                 await asyncio.sleep(RETRY_DELAY_SECONDS)
 
-        if video_clip:
+        if frames:
             break
 
     try:
-        if not video_clip:
-            _LOGGER.error("All video capture attempts failed for %s", camera_name)
+        if not frames:
+            _LOGGER.error("All frame capture attempts failed for %s", camera_name)
             return {
                 "location": friendly_name,
                 "status": "error",
                 "source": "none",
-                "error": f"Failed to capture video clip from {friendly_name} camera after "
+                "error": f"Failed to capture frames from {friendly_name} camera after "
                          f"{MAX_RETRIES_PER_SOURCE} retries per source. Last URL: {last_url}",
             }
 
@@ -456,13 +485,13 @@ async def check_camera(
             except Exception as err:
                 _LOGGER.warning("Failed to save snapshot: %s", err)
 
-        # Analyze with vision LLM
+        # Analyze the frame sequence with the vision LLM
         _LOGGER.info(
-            "Sending video clip (%s bytes) to %s for analysis",
-            len(video_clip), llm_model,
+            "Sending %d frames to %s for analysis",
+            len(frames), llm_model,
         )
-        analysis = await _analyze_video_with_llm(
-            session, video_clip, llm_base_url, llm_api_key, llm_model,
+        analysis = await _analyze_images_with_llm(
+            session, frames, llm_base_url, llm_api_key, llm_model,
             friendly_name, query,
         )
 
@@ -472,8 +501,8 @@ async def check_camera(
                 "location": friendly_name,
                 "status": "error",
                 "source": "none",
-                "error": f"Vision LLM failed to analyze video from {friendly_name} camera. "
-                         "The video was captured but the LLM did not return a response.",
+                "error": f"Vision LLM failed to analyze frames from {friendly_name} camera. "
+                         "The frames were captured but the LLM did not return a response.",
                 "snapshot_url": snapshot_url,
             }
 
@@ -481,7 +510,7 @@ async def check_camera(
             "location": friendly_name,
             "camera_name": camera_name,
             "status": "checked",
-            "source": "video_clip",
+            "source": "image_sequence",
             "description": analysis,
             "snapshot_url": snapshot_url,
         }
