@@ -33,7 +33,7 @@ _LOGGER = logging.getLogger(__name__)
 # (motion, direction, changes) while staying within image-only model limits.
 FRAME_COUNT = 12              # number of still frames to capture
 FRAME_CAPTURE_DURATION = 4    # seconds spanned by the frames (=> 3 fps)
-FRAME_SCALE_WIDTH = 640       # downscale width sent to the LLM
+FRAME_SCALE_HEIGHT = 720      # downscale to 720p (height); width auto by aspect
 
 # Retry settings for go2rtc cold-start latency
 MAX_RETRIES_PER_SOURCE = 3
@@ -157,7 +157,7 @@ async def _capture_frames(
     rtsp_url: str,
     count: int = FRAME_COUNT,
     duration: int = FRAME_CAPTURE_DURATION,
-    scale_width: int = FRAME_SCALE_WIDTH,
+    scale_height: int = FRAME_SCALE_HEIGHT,
 ) -> list[bytes] | None:
     """Capture ``count`` JPEG frames evenly spaced over ``duration`` seconds.
 
@@ -171,7 +171,7 @@ async def _capture_frames(
         "ffmpeg", "-y",
         "-rtsp_transport", "tcp",
         "-i", rtsp_url,
-        "-vf", f"fps={count}/{duration},scale={scale_width}:-2",
+        "-vf", f"fps={count}/{duration},scale=-2:{scale_height}",
         "-frames:v", str(count),
         "-q:v", "5",
         "-f", "image2pipe",
