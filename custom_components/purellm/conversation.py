@@ -2304,11 +2304,29 @@ class PureLLMConversationEntity(ConversationEntity):
 
             # Built-in datetime tool
             if tool_name == "get_current_datetime":
-                now = datetime.now(hass_tz)
+                tz, tz_label = hass_tz, self.hass.config.time_zone
+                req_tz = (arguments or {}).get("timezone")
+                if req_tz:
+                    from zoneinfo import ZoneInfo, available_timezones
+                    resolved = None
+                    try:
+                        resolved, tz_label = ZoneInfo(req_tz), req_tz
+                    except Exception:
+                        # tolerate a bare city/region name (e.g. "London" -> "Europe/London")
+                        key = req_tz.strip().replace(" ", "_").lower()
+                        for z in available_timezones():
+                            if z.lower() == key or z.lower().rsplit("/", 1)[-1] == key:
+                                resolved, tz_label = ZoneInfo(z), z
+                                break
+                    if resolved is None:
+                        return {"error": f"Unknown timezone '{req_tz}'. "
+                                "Provide an IANA name like 'Europe/London'."}
+                    tz = resolved
+                now = datetime.now(tz)
                 return {
                     "date": now.strftime("%A, %B %d, %Y"),
                     "time": now.strftime("%I:%M %p"),
-                    "timezone": self.hass.config.time_zone,
+                    "timezone": tz_label,
                 }
 
             # Sports tools (all use same pattern)

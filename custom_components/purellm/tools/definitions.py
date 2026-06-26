@@ -50,7 +50,19 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         _has_plants = bool(list_plant_names(hass))
 
     # ===== CORE TOOLS (always enabled) =====
-    tools.append(_tool("get_current_datetime", "Get current date/time."))
+    tools.append(_tool(
+        "get_current_datetime",
+        "Get current date/time. Omit timezone for local time; pass an IANA "
+        "timezone (e.g. 'Europe/London', 'Asia/Tokyo', 'America/Los_Angeles') "
+        "to get the current time in another location.",
+        {
+            "timezone": {
+                "type": "string",
+                "description": "IANA timezone name for a non-local location, "
+                "e.g. 'Europe/London', 'Asia/Tokyo'. Omit for local time.",
+            }
+        },
+    ))
 
     # ===== WEATHER =====
     if config.enable_weather and config.openweathermap_api_key:
