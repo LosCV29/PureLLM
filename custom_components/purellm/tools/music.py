@@ -1682,7 +1682,8 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            await self._hass.services.async_call("media_player", "media_next_track", {"entity_id": playing})
+            await self._hass.services.async_call("media_player", "media_next_track", {"entity_id": playing}, blocking=True)
+            await self._resume_if_idle(playing)
             return {"status": "skipped", "response_text": "Skipped to next track"}
         return {"error": "No music is playing to skip"}
 
@@ -1691,9 +1692,25 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
-            await self._hass.services.async_call("media_player", "media_previous_track", {"entity_id": playing})
+            await self._hass.services.async_call("media_player", "media_previous_track", {"entity_id": playing}, blocking=True)
+            await self._resume_if_idle(playing)
             return {"status": "skipped", "response_text": "Previous track"}
         return {"error": "No music is playing"}
+
+    async def _resume_if_idle(self, entity_id: str) -> None:
+        """Restart playback if a manual skip left the player idle.
+
+        Music Assistant queues that stream to a player in flow mode (e.g. an
+        ESPHome speaker driven via MA's Home Assistant provider) advance the
+        queue index on a manual next/previous but do NOT restart the flow
+        stream, so the player falls to 'idle' and goes silent. Nudge it back to
+        playing when that happens. On players that keep playing through a skip
+        this is a no-op (state is already 'playing')."""
+        await asyncio.sleep(1.0)
+        state = self._hass.states.get(entity_id)
+        if state and state.state != "playing":
+            _LOGGER.info("Player %s is '%s' after skip; resuming playback", entity_id, state.state)
+            await self._hass.services.async_call("media_player", "media_play", {"entity_id": entity_id}, blocking=True)
 
     async def _restart_track(self, all_players: list[str]) -> dict:
         """Restart current track from beginning."""
