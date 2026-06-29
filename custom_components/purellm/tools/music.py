@@ -1683,7 +1683,7 @@ class MusicController:
         playing = self._find_player_by_state("playing", all_players)
         if playing:
             await self._hass.services.async_call("media_player", "media_next_track", {"entity_id": playing}, blocking=True)
-            await self._resume_if_idle(playing)
+            self._schedule_resume_if_idle(playing)
             return {"status": "skipped", "response_text": "Skipped to next track"}
         return {"error": "No music is playing to skip"}
 
@@ -1693,9 +1693,15 @@ class MusicController:
         playing = self._find_player_by_state("playing", all_players)
         if playing:
             await self._hass.services.async_call("media_player", "media_previous_track", {"entity_id": playing}, blocking=True)
-            await self._resume_if_idle(playing)
+            self._schedule_resume_if_idle(playing)
             return {"status": "skipped", "response_text": "Previous track"}
         return {"error": "No music is playing"}
+
+    def _schedule_resume_if_idle(self, entity_id: str) -> None:
+        """Fire-and-forget the post-skip resume so the spoken reply isn't delayed."""
+        self._hass.async_create_background_task(
+            self._resume_if_idle(entity_id), name=f"purellm_resume_{entity_id}"
+        )
 
     async def _resume_if_idle(self, entity_id: str) -> None:
         """Restart playback if a manual skip left the player idle.
@@ -1703,14 +1709,17 @@ class MusicController:
         Music Assistant queues that stream to a player in flow mode (e.g. an
         ESPHome speaker driven via MA's Home Assistant provider) advance the
         queue index on a manual next/previous but do NOT restart the flow
-        stream, so the player falls to 'idle' and goes silent. Nudge it back to
-        playing when that happens. On players that keep playing through a skip
-        this is a no-op (state is already 'playing')."""
-        await asyncio.sleep(1.0)
-        state = self._hass.states.get(entity_id)
-        if state and state.state != "playing":
-            _LOGGER.info("Player %s is '%s' after skip; resuming playback", entity_id, state.state)
-            await self._hass.services.async_call("media_player", "media_play", {"entity_id": entity_id}, blocking=True)
+        stream, so the player drops to 'idle' and goes silent. The transition
+        can lag a second or two behind the skip, so poll briefly and nudge
+        playback back on if it goes idle. On players that keep playing through a
+        skip this never fires media_play and just exits."""
+        for _ in range(10):
+            await asyncio.sleep(0.5)
+            state = self._hass.states.get(entity_id)
+            if state and state.state == "idle":
+                _LOGGER.info("Player %s idle after skip; resuming playback", entity_id)
+                await self._hass.services.async_call("media_player", "media_play", {"entity_id": entity_id}, blocking=True)
+                return
 
     async def _restart_track(self, all_players: list[str]) -> dict:
         """Restart current track from beginning."""
