@@ -16,7 +16,7 @@ from homeassistant.components.http import HomeAssistantView
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, Event, SupportsResponse, callback, ServiceCall
-from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import config_validation as cv, entity_registry as er
 
 from .const import DOMAIN
 from .tools.timer import get_registered_timer, unregister_timer
@@ -45,6 +45,7 @@ ASK_AND_ACT_SCHEMA = vol.Schema({
     vol.Required("question"): cv.string,
     vol.Required("answers"): vol.All(cv.ensure_list, [ANSWER_SCHEMA]),
     vol.Optional("tts_entity_id"): cv.entity_id,  # Optional, auto-detected from preferred pipeline
+    vol.Optional("media_player_entity_id"): cv.entity_id,  # Optional, resolved from satellite device
 })
 
 PLATFORMS: list[Platform] = [Platform.CONVERSATION]
@@ -401,6 +402,35 @@ def _resolve_tts_entity(hass: HomeAssistant) -> str | None:
     return None
 
 
+def _resolve_media_player(hass: HomeAssistant, satellite_entity_id: str) -> str | None:
+    """Resolve the media_player entity living on the same device as the satellite.
+
+    Entity IDs are user-renamable, so deriving the media player from the
+    satellite's entity_id breaks after a rename. The device registry link
+    survives renames.
+    """
+    try:
+        ent_reg = er.async_get(hass)
+        sat_entry = ent_reg.async_get(satellite_entity_id)
+        if not sat_entry or not sat_entry.device_id:
+            return None
+        candidates = [
+            entry
+            for entry in er.async_entries_for_device(ent_reg, sat_entry.device_id)
+            if entry.domain == "media_player" and not entry.disabled_by
+        ]
+        # Prefer the sibling from the same platform (e.g. the esphome
+        # media_player, not one contributed by another integration).
+        for entry in candidates:
+            if entry.platform == sat_entry.platform:
+                return entry.entity_id
+        if candidates:
+            return candidates[0].entity_id
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.debug("Could not resolve media_player from device registry: %s", err)
+    return None
+
+
 async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> dict[str, Any]:
     """Handle the ask_and_act service call.
 
@@ -421,18 +451,31 @@ async def async_handle_ask_and_act(hass: HomeAssistant, call: ServiceCall) -> di
     answers = call.data["answers"]
     tts_entity_id = call.data.get("tts_entity_id") or _resolve_tts_entity(hass) or "tts.home_assistant_cloud"
 
-    # Derive media_player from satellite entity ID
-    satellite_suffix = satellite_entity_id.split(".")[-1]
-    if "_assist_satellite" in satellite_suffix:
-        media_player_suffix = satellite_suffix.replace("_assist_satellite", "_media_player")
-        media_player_entity_id = f"media_player.{media_player_suffix}"
-    else:
-        media_player_entity_id = satellite_entity_id.replace(
-            "assist_satellite.", "media_player."
-        ).replace("_assist_satellite", "_media_player")
+    # Resolve the media_player: explicit override > device registry lookup >
+    # legacy entity_id derivation (kept as a last resort for setups where the
+    # satellite entity is not in the registry).
+    media_player_entity_id = call.data.get("media_player_entity_id") or _resolve_media_player(
+        hass, satellite_entity_id
+    )
+    if not media_player_entity_id:
+        satellite_suffix = satellite_entity_id.split(".")[-1]
+        if "_assist_satellite" in satellite_suffix:
+            media_player_suffix = satellite_suffix.replace("_assist_satellite", "_media_player")
+            media_player_entity_id = f"media_player.{media_player_suffix}"
+        else:
+            media_player_entity_id = satellite_entity_id.replace(
+                "assist_satellite.", "media_player."
+            ).replace("_assist_satellite", "_media_player")
 
     _LOGGER.info("ask_and_act: Starting - question='%s', satellite=%s, media_player=%s",
                  question, satellite_entity_id, media_player_entity_id)
+
+    if hass.states.get(media_player_entity_id) is None:
+        _LOGGER.warning(
+            "ask_and_act: media_player %s does not exist - the question will not be "
+            "audible. Pass media_player_entity_id explicitly in the service call.",
+            media_player_entity_id,
+        )
 
     # Build the extra_system_prompt with embedded answers data.
     answers_json = json.dumps(answers)
