@@ -1031,6 +1031,11 @@ class PureLLMConversationEntity(ConversationEntity):
         if not text:
             return None
 
+        # "white noise machine" / "sound machine" is a physical device, not a
+        # request for speaker ambience — let the LLM route it to control_device.
+        if "machine" in text:
+            return None
+
         # Extract action verb (play / stop / shuffle / turn on|off)
         action: str | None = None
         stripped = text

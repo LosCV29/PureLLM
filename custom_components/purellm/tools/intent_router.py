@@ -198,6 +198,12 @@ def classify_intent(user_text: str) -> set[str]:
                 matched.add(intent)
                 break
 
+    # "white noise machine" / "sound machine" is a physical device, not a
+    # request for speaker ambience — swap the ambience tools for device tools.
+    if "machine" in text and "white_noise" in matched:
+        matched.discard("white_noise")
+        matched.add("device")
+
     return matched
 
 
