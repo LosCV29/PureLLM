@@ -253,21 +253,6 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
             ["query"]
         ))
 
-    # ===== WHITE NOISE / AMBIENT SOUNDS =====
-    if config.room_player_mapping:
-        rooms_list = ", ".join(config.room_player_mapping.keys())
-        tools.append(_tool(
-            "control_white_noise",
-            f"Ambient sounds (white/pink/brown noise, rain, ocean, fan, thunder, shushing) for sleep/focus. Rooms: {rooms_list}. Room required for play; optional for stop/volume.",
-            {
-                "action": {"type": "string", "enum": ["play", "stop", "volume_up", "volume_down", "set_volume"]},
-                "sound": {"type": "string", "enum": ["white", "pink", "brown", "rain", "ocean", "fan", "thunder", "shushing"]},
-                "room": {"type": "string"},
-                "volume": {"type": "integer", "description": "0-100"},
-            },
-            ["action"],
-        ))
-
     # ===== TIMERS (always enabled) =====
     tools.append(_tool(
         "control_timer", "Control timers.",

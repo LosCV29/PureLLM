@@ -887,7 +887,7 @@ class MusicController:
     async def _play_on_players(self, target_players: list[str], uri: str, media_type: str) -> None:
         """Play media on target players."""
         for player in target_players:
-            # Clear any lingering repeat mode (e.g. left on by white noise) so a
+            # Clear any lingering repeat mode so a
             # single track doesn't loop forever.
             try:
                 await self._hass.services.async_call(
