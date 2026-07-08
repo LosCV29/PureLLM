@@ -768,6 +768,39 @@ class MusicController:
                     return [pid]
         return []
 
+    async def _ensure_players_available(self, players: list[str]) -> None:
+        """Revive any target player that is 'unavailable'.
+
+        The living-room Shield uses a Snapdroid snapcast client whose
+        connection is intentionally killed by the STOP button (so the TV
+        screensaver can run). Before playing, if a target player is
+        unavailable, fire the HA ``script.ensure_snapclient`` helper (which
+        relaunches the client and waits) and give it a moment to register.
+        """
+        for pid in players:
+            state = self._hass.states.get(pid)
+            if state is not None and state.state != "unavailable":
+                continue
+            _LOGGER.info("Player %s unavailable — running ensure_snapclient", pid)
+            try:
+                await self._hass.services.async_call(
+                    "script", "turn_on",
+                    {"entity_id": "script.ensure_snapclient"},
+                    blocking=True,
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("ensure_snapclient call failed: %s", err)
+                continue
+            # Wait (up to ~16s) for the player to come back.
+            elapsed = 0.0
+            while elapsed < 16.0:
+                state = self._hass.states.get(pid)
+                if state is not None and state.state != "unavailable":
+                    _LOGGER.info("Player %s available after %.1fs", pid, elapsed)
+                    break
+                await asyncio.sleep(0.5)
+                elapsed += 0.5
+
     def _find_player_by_state(self, target_state: str, all_players: list[str]) -> str | None:
         """Find a player in a specific state from configured players only."""
         for pid in all_players:
@@ -886,6 +919,7 @@ class MusicController:
 
     async def _play_on_players(self, target_players: list[str], uri: str, media_type: str) -> None:
         """Play media on target players."""
+        await self._ensure_players_available(target_players)
         for player in target_players:
             # Clear any lingering repeat mode so a
             # single track doesn't loop forever.
@@ -1505,6 +1539,9 @@ class MusicController:
             return {"error": "No music query specified"}
         if not target_players:
             return {"error": f"Unknown room: {room}. Available: {', '.join(self._players.keys())}"}
+
+        # Revive any snapcast player killed by the STOP button before we search.
+        await self._ensure_players_available(target_players)
 
         # Enforce valid media types
         valid_types = {"artist", "album", "track"}
