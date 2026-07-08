@@ -540,6 +540,79 @@ async def _play_after_tts_finishes(
     except Exception as err:
         _LOGGER.error("Play-after-TTS execution failed: %s", err, exc_info=True)
 
+
+def _parse_leaked_xml_tool_calls(content: str) -> list[dict]:
+    """Parse tool calls that leaked into message content as raw markup.
+
+    Some models (notably Qwen3.6 on llama.cpp) occasionally emit a tool call
+    in the Qwen-Coder XML dialect —
+    ``<tool_call><function=name><parameter=key>value</parameter></function></tool_call>``
+    — or as JSON inside ``<tool_call>`` tags, instead of a structured
+    tool_calls delta. The server's parser misses it and the markup arrives as
+    plain content, which would otherwise be spoken verbatim and execute
+    nothing.
+
+    Returns tool-call dicts in the same shape as the streaming buffer
+    (id left None; synthetic ids are assigned downstream).
+    """
+    calls: list[dict] = []
+
+    # Dialect 1: XML function/parameter blocks. Closing tags may be missing
+    # if the stream was cut off, so fall back to end-of-string.
+    for fn_match in re.finditer(
+        r"<function=([\w.\-]+)>(.*?)(?:</function>|$)", content, re.DOTALL
+    ):
+        args: dict[str, Any] = {}
+        for p_match in re.finditer(
+            r"<parameter=([\w.\-]+)>\s*(.*?)\s*(?:</parameter>|$)",
+            fn_match.group(2),
+            re.DOTALL,
+        ):
+            value: Any = p_match.group(2)
+            try:
+                # Coerce numbers/bools/JSON values; keep plain strings as-is.
+                value = json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                pass
+            args[p_match.group(1)] = value
+        calls.append({
+            "id": None,
+            "type": "function",
+            "function": {
+                "name": fn_match.group(1),
+                "arguments": json.dumps(args, ensure_ascii=False),
+            },
+        })
+    if calls:
+        return calls
+
+    # Dialect 2: JSON payload inside <tool_call> tags.
+    for tc_match in re.finditer(
+        r"<tool_call>\s*(\{.*?\})\s*</tool_call>", content, re.DOTALL
+    ):
+        try:
+            payload = json.loads(tc_match.group(1))
+        except json.JSONDecodeError:
+            continue
+        name = payload.get("name")
+        if not name:
+            continue
+        arguments = payload.get("arguments") or payload.get("parameters") or {}
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+        calls.append({
+            "id": None,
+            "type": "function",
+            "function": {
+                "name": name,
+                "arguments": json.dumps(arguments, ensure_ascii=False),
+            },
+        })
+    return calls
+
 # Type for delta dictionaries used in streaming
 ContentDelta = dict[str, Any]
 
@@ -1716,6 +1789,25 @@ class PureLLMConversationEntity(ConversationEntity):
                                 current["function"]["arguments"] += delta.function_call.arguments
                 finally:
                     await stream.close()
+
+                # Rescue tool calls that leaked into content as raw markup
+                # (Qwen-Coder XML dialect / literal <tool_call> JSON) instead
+                # of arriving as structured tool_calls deltas.
+                if (
+                    not tool_calls_buffer
+                    and accumulated_content
+                    and ("<function=" in accumulated_content
+                         or "<tool_call>" in accumulated_content)
+                ):
+                    rescued = _parse_leaked_xml_tool_calls(accumulated_content)
+                    if rescued:
+                        _LOGGER.warning(
+                            "Rescued %d tool call(s) leaked into content as raw markup: %s",
+                            len(rescued),
+                            [tc["function"]["name"] for tc in rescued],
+                        )
+                        tool_calls_buffer = rescued
+                        accumulated_content = ""
 
                 # Debug: log what the LLM produced
                 if not accumulated_content and not tool_calls_buffer:
