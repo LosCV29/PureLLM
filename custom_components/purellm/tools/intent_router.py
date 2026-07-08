@@ -73,6 +73,11 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         " playoff", " series", " seed", "semifinal",
         "conference final", " finals",
     ],
+    "lyrics": [
+        "lyric",  # substring also matches "lyrics"
+        "the words to", "words to this song", "words to that song",
+        "sing along", "singalong", "karaoke",
+    ],
     "timer": [
         "timer", "set a timer", "countdown",
         "minute timer", "second timer", "hour timer",
@@ -158,6 +163,7 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
         "get_sports_info", "get_ufc_info",
         "check_league_games", "list_league_games",
     ],
+    "lyrics": ["display_lyrics", "control_music"],
     "timer": ["control_timer"],
     "list": ["manage_list"],
     "calendar": ["get_calendar_events"],
