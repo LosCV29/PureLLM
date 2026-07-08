@@ -544,11 +544,11 @@ class MusicController:
         actions (pause, resume, volume, etc.) return play_action=None because
         they don't emit audio that should wait for TTS.
         """
-        captured: list[tuple[str, str, str]] = []
+        captured: list[tuple[str, str, str, bool]] = []
         original = self._play_media
 
-        async def _capture(player: str, media_id: str, media_type: str) -> bool:
-            captured.append((player, media_id, media_type))
+        async def _capture(player: str, media_id: str, media_type: str, radio: bool = False) -> bool:
+            captured.append((player, media_id, media_type, radio))
             return True
 
         self._play_media = _capture  # type: ignore[method-assign]
@@ -561,8 +561,8 @@ class MusicController:
             return result, None
 
         async def _do_play() -> None:
-            for player, media_id, media_type in captured:
-                await original(player, media_id, media_type)
+            for player, media_id, media_type, radio in captured:
+                await original(player, media_id, media_type, radio=radio)
 
         return result, _do_play
 
@@ -698,7 +698,9 @@ class MusicController:
                     _LOGGER.info("MUSIC: Direct shuffle of '%s' (uri=%s, type=%s)", label, media_uri, uri_type)
                     return {"status": "shuffling", "playlist_title": label,
                             "response_text": f"Playing {label}{room_suffix}"}
-                await self._play_on_players(target_players, media_uri, uri_type)
+                # Single tracks play in radio mode so similar music follows
+                # instead of stopping after one song.
+                await self._play_on_players(target_players, media_uri, uri_type, radio=(uri_type == "track"))
                 _LOGGER.info("MUSIC: Direct play of '%s' (uri=%s, type=%s)", label, media_uri, uri_type)
                 return {"status": "playing", "response_text": f"Playing {label}{room_suffix}"}
 
@@ -900,7 +902,8 @@ class MusicController:
         self,
         player: str,
         media_id: str,
-        media_type: str
+        media_type: str,
+        radio: bool = False
     ) -> bool:
         """Play media via Music Assistant.
 
@@ -908,23 +911,25 @@ class MusicController:
             player: The media_player entity_id
             media_id: The URI/ID of the media to play
             media_type: The type of media (track, album, artist, playlist)
+            radio: Enable MA radio mode — after the requested media, keep
+                playing dynamically-picked similar tracks
 
         Returns:
             True if command was sent successfully
         """
-        _LOGGER.info("Playing media: uri='%s', type='%s' on %s",
-                    media_id, media_type, player)
+        _LOGGER.info("Playing media: uri='%s', type='%s', radio=%s on %s",
+                    media_id, media_type, radio, player)
 
         await self._hass.services.async_call(
             "music_assistant", "play_media",
-            {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
+            {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": radio},
             target={"entity_id": player},
             blocking=True
         )
 
         return True
 
-    async def _play_on_players(self, target_players: list[str], uri: str, media_type: str) -> None:
+    async def _play_on_players(self, target_players: list[str], uri: str, media_type: str, radio: bool = False) -> None:
         """Play media on target players."""
         await self._ensure_players_available(target_players)
         for player in target_players:
@@ -948,7 +953,7 @@ class MusicController:
                     {"entity_id": player, "shuffle": False},
                     blocking=True
                 )
-            await self._play_media(player, uri, media_type)
+            await self._play_media(player, uri, media_type, radio=radio)
 
     async def _call_media_service(self, entity_id: str, service: str) -> None:
         """Call a media_player service using area targeting when available."""
@@ -1592,7 +1597,9 @@ class MusicController:
             found_artist = match.get("artist")
             found_uri = match["uri"]
             display_name = f"{found_name} by {found_artist}" if found_artist and media_type in ("track", "album") else found_name
-            await self._play_on_players(target_players, found_uri, media_type)
+            # Single tracks play in radio mode so similar music follows
+            # instead of stopping after one song.
+            await self._play_on_players(target_players, found_uri, media_type, radio=(media_type == "track"))
 
             return {"status": "playing", "response_text": f"Playing {display_name} in the {room}"}
 
