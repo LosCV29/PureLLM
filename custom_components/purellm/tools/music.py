@@ -670,6 +670,13 @@ class MusicController:
             # Determine target player(s)
             target_players = self._find_target_players(room)
 
+            # Revive any snapcast player killed by the STOP button before ANY
+            # play-type action. This must happen here (not just in the deeper
+            # helpers) so direct-uri plays, shuffles, curated shortcuts and
+            # themed album plays are all covered.
+            if target_players and action in ("play", "shuffle", "resume"):
+                await self._ensure_players_available(target_players)
+
             # Direct play of a search_music result: the LLM echoes the chosen
             # candidate's media_uri, so we skip all searching and play it as-is.
             media_uri = (arguments.get("media_uri") or "").strip()
