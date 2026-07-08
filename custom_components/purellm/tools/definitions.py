@@ -64,17 +64,6 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         },
     ))
 
-    # ===== LYRICS (living room TV) =====
-    # Only exposed when the backing HA scripts exist (see tools/lyrics.py).
-    if hass and hass.states.get("script.show_living_room_lyrics"):
-        tools.append(_tool(
-            "display_lyrics",
-            "Show or hide scrolling lyrics for the currently playing music "
-            "on the living room TV.",
-            {"action": {"type": "string", "enum": ["show", "hide"]}},
-            ["action"],
-        ))
-
     # ===== WEATHER =====
     if config.enable_weather and config.openweathermap_api_key:
         tools.append(_tool(
