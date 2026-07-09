@@ -16,6 +16,19 @@ _LOGGER = logging.getLogger(__name__)
 
 TAVILY_API_URL = "https://api.tavily.com/search"
 
+# Instruction attached to every failure so the LLM never falls back to
+# stale training data when the search can't answer.
+_FAIL_INSTRUCTION = (
+    "SEARCH FAILED. Tell the user you couldn't look that up right now. "
+    "Do NOT answer from memory or guess. If this was general knowledge "
+    "about a named person/place/thing, try get_wikipedia_summary."
+)
+
+
+def _search_failure(message: str) -> dict[str, str]:
+    """Standard failure response carrying the no-memory instruction."""
+    return {"error": message, "instruction": _FAIL_INSTRUCTION}
+
 # Map common domains to clean source names
 SOURCE_NAME_MAP = {
     "cnn.com": "CNN",
@@ -210,10 +223,10 @@ async def web_search(
     query = arguments.get("query", "").strip()
 
     if not query:
-        return {"error": "No search query provided"}
+        return _search_failure("No search query provided")
 
     if not api_key:
-        return {"error": "Tavily API key not configured. Add it in Settings → PureLLM → API Keys."}
+        return _search_failure("Tavily API key not configured. Add it in Settings → PureLLM → API Keys.")
 
     # Auto-detect topic if not specified
     topic = arguments.get("topic") or _detect_topic(query)
@@ -266,26 +279,46 @@ async def web_search(
         query, topic, search_depth, max_results, days, include_domains
     )
 
-    try:
-        async with asyncio.timeout(API_TIMEOUT + 5):  # Tavily can be slower
-            async with session.post(
-                TAVILY_API_URL,
-                json=payload,
-                headers={"Content-Type": "application/json"}
-            ) as response:
-                if response.status != 200:
+    # Up to 2 attempts: retry once on timeout, connection error, 429, or 5xx.
+    data = None
+    last_error = "Search failed"
+    for attempt in range(2):
+        if attempt:
+            await asyncio.sleep(0.5)
+        try:
+            async with asyncio.timeout(API_TIMEOUT + 5):  # Tavily can be slower
+                async with session.post(
+                    TAVILY_API_URL,
+                    json=payload,
+                    headers={"Content-Type": "application/json"}
+                ) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        break
+
                     error_text = await response.text()
-                    _LOGGER.error("Tavily API error %d: %s", response.status, error_text)
-
+                    _LOGGER.error(
+                        "Tavily API error %d (attempt %d): %s",
+                        response.status, attempt + 1, error_text,
+                    )
                     if response.status == 401:
-                        return {"error": "Invalid Tavily API key"}
-                    elif response.status == 429:
-                        return {"error": "Tavily rate limit exceeded. Try again later."}
-                    else:
-                        return {"error": f"Search failed: HTTP {response.status}"}
+                        return _search_failure("Invalid Tavily API key")
+                    if response.status == 429 or response.status >= 500:
+                        last_error = f"Search failed: HTTP {response.status}"
+                        continue  # retryable
+                    return _search_failure(f"Search failed: HTTP {response.status}")
+        except asyncio.TimeoutError:
+            _LOGGER.warning("Tavily search timed out (attempt %d)", attempt + 1)
+            last_error = "Search timed out"
+        except Exception as err:
+            _LOGGER.warning("Tavily search error (attempt %d): %s", attempt + 1, err)
+            last_error = f"Search failed: {err}"
 
-                data = await response.json()
+    if data is None:
+        _LOGGER.error("Tavily search failed after retries: %s", last_error)
+        return _search_failure(last_error)
 
+    try:
         # Extract and format results with source attribution
         results = []
         sources_used = []  # Track unique sources for attribution
@@ -346,6 +379,12 @@ async def web_search(
         elif data.get("answer"):
             response_data["answer"] = data["answer"]
             response_data["instruction"] = f"CRITICAL: Use ONLY this answer - do not make up information. Say: 'According to web search, {data['answer']}'"
+        elif not results:
+            response_data["instruction"] = (
+                "NO RESULTS FOUND. Tell the user you couldn't find anything on that. "
+                "Do NOT answer from memory or guess. If this was general knowledge "
+                "about a named person/place/thing, try get_wikipedia_summary."
+            )
         else:
             response_data["instruction"] = "CRITICAL: Use ONLY the information in the results below. Do NOT make up or guess any information. If the answer isn't in the results, say you couldn't find it."
             response_data["sources"] = sources_used
@@ -358,7 +397,7 @@ async def web_search(
 
         return response_data
 
-    except asyncio.TimeoutError:
-        return log_and_error("Search timed out", exc_info=False)
     except Exception as err:
-        return log_and_error("Search failed", err)
+        error = log_and_error("Search failed", err)
+        error["instruction"] = _FAIL_INSTRUCTION
+        return error

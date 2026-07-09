@@ -5,10 +5,11 @@ import asyncio
 import logging
 from datetime import datetime
 from typing import Any, TYPE_CHECKING
+from urllib.parse import quote
 
-from ..const import API_TIMEOUT
+from ..const import VERSION
 from ..utils.helpers import get_nested
-from ..utils.http_client import fetch_json, log_and_error
+from ..utils.http_client import CACHE_TTL_LONG, fetch_json, log_and_error
 
 if TYPE_CHECKING:
     import aiohttp
@@ -30,7 +31,7 @@ async def calculate_age(
         # Step 1: Search Wikidata for the person
         search_url = f"https://www.wikidata.org/w/api.php?action=wbsearchentities&search={person_name}&language=en&format=json&limit=1"
 
-        search_data, status = await fetch_json(session, search_url)
+        search_data, status = await fetch_json(session, search_url, headers=_WIKI_HEADERS)
         if search_data is None:
             return {"error": "Failed to search Wikidata"}
 
@@ -45,7 +46,7 @@ async def calculate_age(
         # Step 2: Get entity details including birthdate
         entity_url = f"https://www.wikidata.org/w/api.php?action=wbgetentities&ids={entity_id}&props=claims&format=json"
 
-        entity_data, status = await fetch_json(session, entity_url)
+        entity_data, status = await fetch_json(session, entity_url, headers=_WIKI_HEADERS)
         if entity_data is None:
             return {"error": "Failed to get entity details"}
 
@@ -109,48 +110,90 @@ async def calculate_age(
         return log_and_error("Failed to calculate age", err)
 
 
+# Wikimedia's robot policy returns HTTP 403 for generic client User-Agents;
+# a descriptive UA with a contact URL is required for reliable access.
+_WIKI_HEADERS = {
+    "User-Agent": f"PureLLM/{VERSION} (https://github.com/LosCV29/PureLLM) aiohttp",
+}
+
+# Instruction appended to every failure so the LLM never falls back to
+# stale training data when Wikipedia can't answer.
+_WIKI_FAIL_INSTRUCTION = (
+    "LOOKUP FAILED. Tell the user you couldn't look that up. "
+    "Do NOT answer from memory or guess. You may try web_search instead."
+)
+
+
+async def _fetch_summary(
+    session: "aiohttp.ClientSession", title: str
+) -> dict[str, Any] | None:
+    """Fetch a Wikipedia REST summary for a title, with one retry on
+    transient failures. Returns None on 404 or persistent failure."""
+    url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(title.replace(' ', '_'))}"
+    for attempt in range(2):
+        data, status = await fetch_json(session, url, headers=_WIKI_HEADERS, cache_ttl=CACHE_TTL_LONG)
+        if data is not None:
+            return data
+        if status == 404:
+            return None
+        # Transient (timeout / 5xx / 429): brief backoff then retry once
+        _LOGGER.warning("Wikipedia summary fetch failed (HTTP %s), attempt %d", status, attempt + 1)
+        if attempt == 0:
+            await asyncio.sleep(0.5)
+    return None
+
+
+async def _search_titles(
+    session: "aiohttp.ClientSession", topic: str, limit: int = 3
+) -> list[str]:
+    """Search Wikipedia for candidate page titles."""
+    search_url = (
+        "https://en.wikipedia.org/w/api.php?action=query&list=search"
+        f"&srsearch={quote(topic)}&format=json&srlimit={limit}"
+    )
+    for attempt in range(2):
+        data, status = await fetch_json(session, search_url, headers=_WIKI_HEADERS, cache_ttl=CACHE_TTL_LONG)
+        if data is not None:
+            results = data.get("query", {}).get("search", [])
+            return [r["title"] for r in results if r.get("title")]
+        _LOGGER.warning("Wikipedia search failed (HTTP %s), attempt %d", status, attempt + 1)
+        if attempt == 0:
+            await asyncio.sleep(0.5)
+    return []
+
+
 async def get_wikipedia_summary(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
 ) -> dict[str, Any]:
-    """Get Wikipedia summary for a topic."""
+    """Get Wikipedia summary for a topic.
+
+    Robust flow: direct title lookup first; on miss or a disambiguation
+    page, fall back to full-text search and take the first concrete page.
+    Every failure path carries an instruction telling the LLM not to
+    answer from memory.
+    """
     topic = arguments.get("topic", "").strip()
 
     if not topic:
-        return {"error": "No topic provided"}
+        return {"error": "No topic provided", "instruction": _WIKI_FAIL_INSTRUCTION}
 
     try:
-        # Use Wikipedia REST API for summary
-        url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{topic.replace(' ', '_')}"
+        data = await _fetch_summary(session, topic)
 
-        async with asyncio.timeout(API_TIMEOUT):
-            async with session.get(url) as response:
-                if response.status == 404:
-                    # Try search instead
-                    search_url = f"https://en.wikipedia.org/w/api.php?action=query&list=search&srsearch={topic}&format=json&srlimit=1"
-                    async with session.get(search_url) as search_resp:
-                        if search_resp.status == 200:
-                            search_data = await search_resp.json()
-                            results = search_data.get("query", {}).get("search", [])
-                            if results:
-                                new_topic = results[0].get("title", "")
-                                if new_topic:
-                                    url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{new_topic.replace(' ', '_')}"
-                                    async with session.get(url) as retry_resp:
-                                        if retry_resp.status == 200:
-                                            data = await retry_resp.json()
-                                        else:
-                                            return {"error": f"Could not find information about '{topic}'"}
-                                else:
-                                    return {"error": f"Could not find information about '{topic}'"}
-                            else:
-                                return {"error": f"Could not find information about '{topic}'"}
-                        else:
-                            return {"error": f"Could not find information about '{topic}'"}
-                elif response.status != 200:
-                    return {"error": f"Wikipedia API error: {response.status}"}
-                else:
-                    data = await response.json()
+        # Direct miss or a disambiguation page → search for concrete pages.
+        if data is None or data.get("type") == "disambiguation":
+            for title in await _search_titles(session, topic):
+                candidate = await _fetch_summary(session, title)
+                if candidate and candidate.get("type") != "disambiguation":
+                    data = candidate
+                    break
+            else:
+                if data is None or data.get("type") == "disambiguation":
+                    return {
+                        "error": f"Could not find a Wikipedia article about '{topic}'",
+                        "instruction": _WIKI_FAIL_INSTRUCTION,
+                    }
 
         title = data.get("title", topic)
         extract = data.get("extract", "No summary available")
@@ -161,6 +204,10 @@ async def get_wikipedia_summary(
             "title": title,
             "summary": extract,
             "description": description,
+            "instruction": (
+                "Answer using ONLY this summary. If the answer is not in it, "
+                "use web_search or say you couldn't find it — never answer from memory."
+            ),
         }
 
         if page_url:
@@ -170,4 +217,6 @@ async def get_wikipedia_summary(
         return result
 
     except Exception as err:
-        return log_and_error("Failed to get Wikipedia summary", err)
+        error = log_and_error("Failed to get Wikipedia summary", err)
+        error["instruction"] = _WIKI_FAIL_INSTRUCTION
+        return error

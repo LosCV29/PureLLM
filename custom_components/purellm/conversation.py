@@ -541,6 +541,13 @@ async def _play_after_tts_finishes(
         _LOGGER.error("Play-after-TTS execution failed: %s", err, exc_info=True)
 
 
+async def _empty_stream():
+    """Async generator that yields nothing — used to skip the streaming
+    section when the turn was already handled by a non-streaming call."""
+    return
+    yield  # pragma: no cover — makes this a generator
+
+
 def _parse_leaked_xml_tool_calls(content: str) -> list[dict]:
     """Parse tool calls that leaked into message content as raw markup.
 
@@ -655,6 +662,11 @@ class PureLLMConversationEntity(ConversationEntity):
         # Avoids rebuilding the per-turn prompt when nothing relevant changed.
         self._cached_system_prompt: str | None = None
         self._cached_system_prompt_key: tuple[str, str, str | None] | None = None
+
+        # Whether the local OpenAI-compatible server accepts
+        # tool_choice="required". Set to False on the first 4xx rejection so
+        # we stop retrying it every turn and fall back to "auto".
+        self._required_tool_choice_supported = True
 
         # Music controller (initialized after config)
         self._music_controller: MusicController | None = None
@@ -1000,6 +1012,33 @@ class PureLLMConversationEntity(ConversationEntity):
                 f"\"in the {room}\" at the end of a music command is the target room — "
                 f"never put it in query/artist/album."
             )
+
+        # HARD GROUNDING — injected in code (not part of the user-editable
+        # prompt) so the model can never answer factual questions from stale
+        # training data, regardless of how the configured prompt is customized.
+        grounding = (
+            "\n\nKNOWLEDGE (non-negotiable): Your built-in knowledge is outdated and "
+            "untrusted. NEVER answer a question from memory — every fact you state "
+            "must come from a tool result in THIS conversation."
+        )
+        routes = []
+        if self.enable_wikipedia:
+            routes.append(
+                "general knowledge (who/what is X — people, places, things, history, "
+                "science) → get_wikipedia_summary"
+            )
+        if self.enable_search and self.tavily_api_key:
+            routes.append(
+                "current events, news, prices, reviews, recommendations, and "
+                "how/should/can questions → web_search"
+            )
+        if routes:
+            grounding += " Routing: " + "; ".join(routes) + "."
+        grounding += (
+            " If a tool errors or finds nothing, say you couldn't look it up — "
+            "never guess, never fill gaps from memory."
+        )
+        prompt += grounding
 
         self._cached_system_prompt = prompt
         self._cached_system_prompt_key = cache_key
@@ -1728,22 +1767,70 @@ class PureLLMConversationEntity(ConversationEntity):
             }
             if tools:
                 kwargs["tools"] = tools
-                # Always use "auto" tool choice. OpenAI-compatible servers
+                # Streaming calls use "auto". OpenAI-compatible servers
                 # (notably vLLM) leak tool calls into message content as raw
                 # JSON when tool_choice="required" is combined with streaming,
-                # which PureLLM would then speak verbatim. "auto" returns proper
-                # structured tool_calls. Tool use on the first turn is already
-                # enforced by the system prompt rules.
+                # which PureLLM would then speak verbatim. The first turn is
+                # instead forced via a NON-streaming required call below.
                 kwargs["tool_choice"] = "auto"
 
             accumulated_content = ""
             tool_calls_buffer: list[dict] = []
 
             try:
-                stream = await self.client.chat.completions.create(**kwargs)
+                # HARD GROUNDING: on the first turn of a normal request, force
+                # a tool call with a non-streaming tool_choice="required"
+                # request. Non-streaming sidesteps the required+streaming leak
+                # bug, and costs no perceived latency — a tool-call turn is
+                # never spoken until the final synthesis turn anyway.
+                forced = False
+                if (
+                    iteration == 0
+                    and tools
+                    and not is_dismissal
+                    and self._required_tool_choice_supported
+                ):
+                    try:
+                        resp = await self.client.chat.completions.create(
+                            **{**kwargs, "stream": False, "tool_choice": "required"}
+                        )
+                        msg = resp.choices[0].message if resp.choices else None
+                        if msg is not None:
+                            accumulated_content = msg.content or ""
+                            for tc in (msg.tool_calls or []):
+                                fn = getattr(tc, "function", None)
+                                tool_calls_buffer.append({
+                                    "id": tc.id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": (fn.name or "") if fn else "",
+                                        "arguments": (fn.arguments or "") if fn else "",
+                                    },
+                                })
+                            forced = True
+                    except Exception as err:
+                        status = getattr(err, "status_code", None)
+                        if status is not None and 400 <= status < 500:
+                            # Server rejects tool_choice="required" — stop
+                            # trying it and use streaming auto from now on.
+                            self._required_tool_choice_supported = False
+                            _LOGGER.warning(
+                                "Server rejected tool_choice='required' (HTTP %s); "
+                                "disabling forced tool choice", status
+                            )
+                        else:
+                            _LOGGER.warning(
+                                "Forced tool-choice call failed (%s); falling back "
+                                "to streaming for this turn", err
+                            )
+
+                # When the first turn was handled by the forced non-streaming
+                # call, skip streaming entirely (empty stream) — the result is
+                # already in accumulated_content / tool_calls_buffer.
+                stream = None if forced else await self.client.chat.completions.create(**kwargs)
 
                 try:
-                    async for chunk in stream:
+                    async for chunk in (stream if stream is not None else _empty_stream()):
                         if not chunk.choices:
                             continue
 
@@ -1788,7 +1875,8 @@ class PureLLMConversationEntity(ConversationEntity):
                             if delta.function_call.arguments:
                                 current["function"]["arguments"] += delta.function_call.arguments
                 finally:
-                    await stream.close()
+                    if stream is not None:
+                        await stream.close()
 
                 # Rescue tool calls that leaked into content as raw markup
                 # (Qwen-Coder XML dialect / literal <tool_call> JSON) instead
