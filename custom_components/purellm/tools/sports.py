@@ -1457,6 +1457,13 @@ async def get_ufc_info(
 
 
 # League code mappings for ESPN API
+# Instruction attached to league-lookup failures so the LLM escalates to
+# web_search instead of answering from stale training data.
+_LEAGUE_FAIL_INSTRUCTION = (
+    "LOOKUP FAILED. Use web_search to answer this question instead. "
+    "Do NOT answer from memory or guess."
+)
+
 LEAGUE_CODES = {
     # American sports
     "nfl": ("football", "nfl"),
@@ -1476,6 +1483,20 @@ LEAGUE_CODES = {
     "epl": ("soccer", "eng.1"),
     "champions league": ("soccer", "uefa.champions"),
     "ucl": ("soccer", "uefa.champions"),
+    "europa league": ("soccer", "uefa.europa"),
+    "la liga": ("soccer", "esp.1"),
+    "serie a": ("soccer", "ita.1"),
+    "bundesliga": ("soccer", "ger.1"),
+    "ligue 1": ("soccer", "fra.1"),
+    # International competitions
+    "world cup": ("soccer", "fifa.world"),
+    "women's world cup": ("soccer", "fifa.wwc"),
+    "womens world cup": ("soccer", "fifa.wwc"),
+    "club world cup": ("soccer", "fifa.cwc"),
+    "gold cup": ("soccer", "concacaf.gold"),
+    "copa america": ("soccer", "conmebol.america"),
+    "euros": ("soccer", "uefa.euro"),
+    "euro": ("soccer", "uefa.euro"),
 }
 
 
@@ -1487,12 +1508,21 @@ def _parse_league_and_date(arguments: dict[str, Any], hass_timezone) -> tuple:
     if not league_input:
         return None, None, None, None, None, "No league specified. Try: NFL, NBA, MLB, NHL, Premier League, etc."
 
-    # Map league name to ESPN codes
+    # Map league name to ESPN codes. Keys overlap (e.g. "world cup" /
+    # "club world cup" / "women's world cup"), so precedence matters:
+    # exact match, then the LONGEST key mentioned inside the input
+    # (most specific), then the shortest key the input is a fragment of.
     league_key = None
-    for key in LEAGUE_CODES:
-        if key in league_input or league_input in key:
-            league_key = key
-            break
+    if league_input in LEAGUE_CODES:
+        league_key = league_input
+    else:
+        contained = [k for k in LEAGUE_CODES if k in league_input]
+        if contained:
+            league_key = max(contained, key=len)
+        else:
+            containing = [k for k in LEAGUE_CODES if league_input in k]
+            if containing:
+                league_key = min(containing, key=len)
 
     if not league_key:
         available = ", ".join(sorted(set(k.upper() for k in LEAGUE_CODES.keys())))
@@ -1532,7 +1562,7 @@ async def check_league_games(
     """
     league_display, sport, league_code, date_label, date_str, error = _parse_league_and_date(arguments, hass_timezone)
     if error:
-        return {"error": error}
+        return {"error": error, "instruction": _LEAGUE_FAIL_INSTRUCTION}
 
     try:
         url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league_code}/scoreboard?dates={date_str}"
@@ -1542,7 +1572,7 @@ async def check_league_games(
 
         data, status = await fetch_json(session, url, headers=ESPN_HEADERS)
         if data is None:
-            return {"error": f"ESPN API error: {status}"}
+            return {"error": f"ESPN API error: {status}", "instruction": _LEAGUE_FAIL_INSTRUCTION}
 
         game_count = len(data.get("events", []))
 
@@ -1576,7 +1606,7 @@ async def list_league_games(
     """
     league_display, sport, league_code, date_label, date_str, error = _parse_league_and_date(arguments, hass_timezone)
     if error:
-        return {"error": error}
+        return {"error": error, "instruction": _LEAGUE_FAIL_INSTRUCTION}
 
     try:
         url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league_code}/scoreboard?dates={date_str}"
@@ -1586,7 +1616,7 @@ async def list_league_games(
 
         data, status = await fetch_json(session, url, headers=ESPN_HEADERS)
         if data is None:
-            return {"error": f"ESPN API error: {status}"}
+            return {"error": f"ESPN API error: {status}", "instruction": _LEAGUE_FAIL_INSTRUCTION}
 
         events = data.get("events", [])
         game_count = len(events)

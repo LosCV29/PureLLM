@@ -171,8 +171,13 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
     "plants": ["check_plant_status"],
 }
 
-# Tiny tools that are cheap to always include (~30 tokens each)
-_ALWAYS_INCLUDE = {"get_current_datetime"}
+# Tools that are always included regardless of matched intent.
+# - get_current_datetime: tiny (~30 tokens).
+# - web_search: the universal escape hatch (~100 tokens). Grounding rules
+#   forbid answering from training data, so when a dedicated tool errors or
+#   comes up empty (e.g. an unmapped league), the model MUST be able to
+#   escalate to web_search — even when no "search" keyword matched.
+_ALWAYS_INCLUDE = {"get_current_datetime", "web_search"}
 
 
 def classify_intent(user_text: str) -> set[str]:
