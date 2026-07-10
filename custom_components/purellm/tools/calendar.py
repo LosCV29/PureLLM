@@ -10,6 +10,20 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Holiday integration calendars typically contain country/region names,
+# e.g. calendar.united_states_fl, calendar.united_states, etc.
+_HOLIDAY_KEYWORDS = (
+    "holiday", "united_states", "united_kingdom", "canada", "mexico",
+    "france", "germany", "spain", "italy", "brazil", "australia",
+    "india", "japan", "china", "national", "federal",
+)
+
+
+def _is_holiday_calendar(entity_id: str) -> bool:
+    """Whether a calendar entity looks like a public-holiday calendar."""
+    lowered = entity_id.lower()
+    return any(kw in lowered for kw in _HOLIDAY_KEYWORDS)
+
 
 async def get_calendar_events(
     arguments: dict[str, Any],
@@ -95,14 +109,9 @@ async def get_calendar_events(
                 calendar_list = all_calendar_entities
             _LOGGER.info("Birthday query - using calendars: %s", calendar_list)
         elif query_type == "holiday":
-            # Holiday integration calendars typically contain country/region names
-            # e.g. calendar.united_states_fl, calendar.united_states, etc.
-            holiday_keywords = ["holiday", "united_states", "united_kingdom", "canada", "mexico",
-                                "france", "germany", "spain", "italy", "brazil", "australia",
-                                "india", "japan", "china", "national", "federal"]
             calendar_list = [
                 c for c in all_calendar_entities
-                if any(kw in c.lower() for kw in holiday_keywords)
+                if _is_holiday_calendar(c)
             ]
             if not calendar_list:
                 # Fallback: exclude known non-holiday calendars (birthdays, personal)
@@ -170,13 +179,7 @@ async def get_calendar_events(
                             sort_key = now + timedelta(days=9999)
 
                         is_birthday = "birthday" in cal_entity.lower()
-                        is_holiday = any(
-                            kw in cal_entity.lower()
-                            for kw in ["holiday", "united_states", "united_kingdom", "canada",
-                                        "mexico", "france", "germany", "spain", "italy",
-                                        "brazil", "australia", "india", "japan", "china",
-                                        "national", "federal"]
-                        )
+                        is_holiday = _is_holiday_calendar(cal_entity)
 
                         if is_birthday:
                             cal_type = "birthdays"

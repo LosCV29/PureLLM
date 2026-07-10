@@ -1,8 +1,6 @@
 """Utility modules for PureLLM."""
 from .fuzzy_matching import (
     find_entity_by_name,
-    STOPWORDS,
-    DEVICE_SYNONYMS,
 )
 from .parsing import (
     parse_entity_config,
@@ -18,8 +16,6 @@ from .helpers import (
 __all__ = [
     # Fuzzy matching
     "find_entity_by_name",
-    "STOPWORDS",
-    "DEVICE_SYNONYMS",
     # Parsing
     "parse_entity_config",
     "parse_list_config",

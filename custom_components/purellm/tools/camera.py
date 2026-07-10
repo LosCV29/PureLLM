@@ -376,7 +376,6 @@ async def check_camera(
     llm_api_key: str = "",
     llm_model: str = "",
     config_dir: str = "",
-    camera_rtsp_urls: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Check a camera with image-sequence scene analysis.
 

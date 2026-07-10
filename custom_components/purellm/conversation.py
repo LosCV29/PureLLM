@@ -71,6 +71,7 @@ def _is_followup_dismissal(cleaned_text: str) -> bool:
 # the model to produce the wrong language.
 _LANG_CODE_TO_NAME: dict[str, str] = {
     "en": "English",
+    "es": "Spanish",
     "fr": "French",
     "de": "German",
     "it": "Italian",
@@ -526,8 +527,6 @@ from .const import (
     DEFAULT_VOICE_SCRIPTS,
     CONF_FRIGATE_URL,
     DEFAULT_FRIGATE_URL,
-    CONF_CAMERA_RTSP_URLS,
-    DEFAULT_CAMERA_RTSP_URLS,
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
     DEFAULT_API_KEY,
@@ -891,10 +890,6 @@ class PureLLMConversationEntity(ConversationEntity):
         # Only the Frigate URL and optional friendly-name overrides are stored.
         self.frigate_url = config.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL)
         self.frigate_camera_names: dict[str, str] = {}  # populated from Frigate API
-
-        # Optional manual RTSP URL overrides (camera_name: rtsp://...)
-        rtsp_urls_str = config.get(CONF_CAMERA_RTSP_URLS, DEFAULT_CAMERA_RTSP_URLS)
-        self.camera_rtsp_urls = parse_entity_config(rtsp_urls_str) if rtsp_urls_str else {}
 
         # SofaBaton activities configuration
         self.sofabaton_activities = _parse_json_list(CONF_SOFABATON_ACTIVITIES, DEFAULT_SOFABATON_ACTIVITIES)
@@ -1564,8 +1559,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 continue_conversation=False,
             )
 
-        self._current_user_text = user_text  # For tool handlers that need original utterance
-
         # Resolve which room/area the satellite is in — used for "here"/"this room" context
         self._current_satellite_room = self._resolve_satellite_room(user_input.device_id)
 
@@ -1584,13 +1577,10 @@ class PureLLMConversationEntity(ConversationEntity):
         if extra_system_prompt:
             system_prompt = f"{system_prompt}\n\nAdditional context:\n{extra_system_prompt}"
 
-        is_dismissal = _user_clean in _DISMISSALS
-
         try:
             if self.provider == PROVIDER_LM_STUDIO:
                 stream = self._stream_openai_compatible(
                     user_text, tools, system_prompt, self.max_tokens, history,
-                    is_dismissal=is_dismissal,
                 )
 
                 final_response = ""
@@ -1621,7 +1611,6 @@ class PureLLMConversationEntity(ConversationEntity):
             elif self.provider == PROVIDER_ANTHROPIC:
                 final_response = _sanitize_llm_response(await self._call_anthropic(
                     user_text, tools, system_prompt, self.max_tokens, history,
-                    is_dismissal=is_dismissal,
                 ))
             else:
                 final_response = "Unknown provider."
@@ -1703,7 +1692,6 @@ class PureLLMConversationEntity(ConversationEntity):
         system_prompt: str,
         max_tokens: int,
         history: list[dict] | None = None,
-        is_dismissal: bool = False,
     ) -> str:
         """Non-streaming Anthropic Claude Messages API call with tool use and history."""
         # Convert OpenAI-style tool defs to Anthropic format.
@@ -1741,7 +1729,9 @@ class PureLLMConversationEntity(ConversationEntity):
             if anthropic_tools:
                 payload["tools"] = anthropic_tools
                 # Force tool calling on first iteration to prevent hallucination.
-                if not is_dismissal and iteration == 0:
+                # (Dismissals never reach this path — they return early in
+                # _async_handle_message before any LLM call.)
+                if iteration == 0:
                     payload["tool_choice"] = {"type": "any"}
                 else:
                     payload["tool_choice"] = {"type": "auto"}
@@ -1831,7 +1821,6 @@ class PureLLMConversationEntity(ConversationEntity):
         system_prompt: str,
         max_tokens: int,
         history: list[dict] | None = None,
-        is_dismissal: bool = False,
     ) -> AsyncGenerator[ContentDelta, None]:
         """Stream from OpenAI-compatible API with tool support and conversation history."""
         messages = [
@@ -1872,11 +1861,12 @@ class PureLLMConversationEntity(ConversationEntity):
                 # request. Non-streaming sidesteps the required+streaming leak
                 # bug, and costs no perceived latency — a tool-call turn is
                 # never spoken until the final synthesis turn anyway.
+                # (Dismissals never reach this path — they return early in
+                # _async_handle_message before any LLM call.)
                 forced = False
                 if (
                     iteration == 0
                     and tools
-                    and not is_dismissal
                     and self._required_tool_choice_supported
                 ):
                     try:
@@ -2365,7 +2355,7 @@ class PureLLMConversationEntity(ConversationEntity):
                 )
                 arguments["room"] = self._current_satellite_room
 
-        arguments["_user_text"] = getattr(self, "_current_user_text", "")
+        arguments["_user_text"] = self._current_user_query
 
         # Play-style actions: resolve the track synchronously (so the LLM gets
         # a confirmed response_text to speak) but defer the actual play_media
@@ -2478,7 +2468,6 @@ class PureLLMConversationEntity(ConversationEntity):
                     llm_api_key=self.api_key,
                     llm_model=self.model,
                     config_dir=self.hass.config.config_dir,
-                    camera_rtsp_urls=self.camera_rtsp_urls or None,
                 ),
                 # Web search
                 "web_search": lambda: search_tool.web_search(
@@ -2533,8 +2522,12 @@ class PureLLMConversationEntity(ConversationEntity):
                     return response
                 return {"status": "success", "script": tool_name}
 
+            # An unknown tool means the LLM hallucinated a function name (or the
+            # prompt references a tool that no longer exists). Returning success
+            # here made the model confirm actions that never ran — return an
+            # explicit error so it tells the user it couldn't do it.
             _LOGGER.warning("Unknown tool '%s' called", tool_name)
-            return {"success": True, "message": f"Custom function {tool_name} called"}
+            return {"error": f"Tool '{tool_name}' does not exist. Do not retry it."}
 
         except Exception as err:
             _LOGGER.error("Error executing tool %s: %s", tool_name, err, exc_info=True)

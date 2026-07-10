@@ -1,14 +1,15 @@
-"""Device control, status, and history tool handlers."""
+"""Device control and status tool handlers."""
 from __future__ import annotations
 
 import asyncio
 import logging
 import re
-from datetime import datetime, timedelta
 from typing import Any, TYPE_CHECKING
 
 from ..utils.fuzzy_matching import find_entity_by_name
 from ..utils.helpers import format_human_readable_state, get_friendly_name
+from .fan_speed import LEVEL_MAP as FAN_LEVEL_MAP
+from .thermostat import HVAC_MODE_MAP
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -132,165 +133,6 @@ async def check_device_status(
     }
 
 
-async def get_device_history(
-    arguments: dict[str, Any],
-    hass: "HomeAssistant",
-    hass_timezone,
-    user_query: str = "",
-) -> dict[str, Any]:
-    """Get historical state changes from HA Recorder.
-
-    Args:
-        arguments: Tool arguments (device, days_back, date)
-        hass: Home Assistant instance
-        hass_timezone: Home Assistant timezone
-        user_query: Original user query for better extraction
-
-    Returns:
-        Device history dict
-    """
-    from homeassistant.util import dt as dt_util
-
-    device = arguments.get("device", "").strip()
-    days_back = min(arguments.get("days_back", 1), 10)
-    specific_date = arguments.get("date", "")
-
-    # Extract device name from original query
-    original_query = user_query.lower()
-    patterns = [
-        r"(?:history (?:of |for )?(?:the )?|when (?:was |did )(?:the )?|how many times (?:was |did )(?:the )?)([a-z ]+?)(?:\s+(?:open|closed|locked|unlocked|today|yesterday|last|this)|\?|$)",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, original_query)
-        if match:
-            extracted = match.group(1).strip()
-            if len(extracted) > len(device):
-                _LOGGER.info("History device extraction: LLM said '%s', extracted '%s'", device, extracted)
-                device = extracted
-            break
-
-    if not device:
-        return {"error": "No device specified. Please specify a device name like 'front door', 'garage', etc."}
-
-    entity_id, friendly_name = find_entity_by_name(hass, device)
-
-    if not entity_id:
-        return {"error": f"Could not find a device matching '{device}'. Try using the exact name as shown in Home Assistant."}
-
-    try:
-        current_state = hass.states.get(entity_id)
-        if not current_state:
-            return {"error": f"Entity '{entity_id}' not found"}
-
-        friendly_name = get_friendly_name(entity_id, current_state)
-
-        now = datetime.now(hass_timezone)
-
-        if specific_date:
-            try:
-                target_date = datetime.strptime(specific_date, "%Y-%m-%d")
-                start_time = target_date.replace(hour=0, minute=0, second=0, tzinfo=hass_timezone)
-                end_time = target_date.replace(hour=23, minute=59, second=59, tzinfo=hass_timezone)
-                period_desc = target_date.strftime("%B %d, %Y")
-            except ValueError:
-                return {"error": f"Invalid date format: {specific_date}. Use YYYY-MM-DD"}
-        else:
-            end_time = now
-            start_time = now - timedelta(days=days_back)
-            if days_back == 1:
-                period_desc = "today"
-            else:
-                period_desc = f"last {days_back} days"
-
-        from homeassistant.components.recorder import get_instance
-        from homeassistant.components.recorder.history import get_significant_states
-
-        _LOGGER.info("Fetching history for %s from %s to %s", entity_id, start_time, end_time)
-
-        history_data = await get_instance(hass).async_add_executor_job(
-            get_significant_states,
-            hass,
-            start_time.astimezone(),
-            end_time.astimezone(),
-            [entity_id],
-        )
-
-        state_changes = []
-        last_on = None
-        last_off = None
-        on_count = 0
-        off_count = 0
-
-        domain = entity_id.split(".")[0]
-
-        # Determine "on" and "off" states based on domain
-        if domain == "lock":
-            on_state, off_state = "unlocked", "locked"
-            on_label, off_label = "unlocked", "locked"
-        elif domain == "binary_sensor":
-            on_state, off_state = "on", "off"
-            if "door" in entity_id or "gate" in entity_id or "mailbox" in entity_id:
-                on_label, off_label = "opened", "closed"
-            else:
-                on_label, off_label = "detected", "clear"
-        elif domain in ("light", "switch", "fan"):
-            on_state, off_state = "on", "off"
-            on_label, off_label = "turned on", "turned off"
-        else:
-            on_state, off_state = "on", "off"
-            on_label, off_label = "on", "off"
-
-        if entity_id in history_data:
-            for state in history_data[entity_id]:
-                if state.state in ("unavailable", "unknown"):
-                    continue
-
-                try:
-                    state_time = state.last_changed.astimezone(hass_timezone)
-                    time_str = state_time.strftime("%B %d at %I:%M %p")
-
-                    if state.state == on_state:
-                        on_count += 1
-                        last_on = time_str
-                        state_changes.append({"action": on_label, "time": time_str})
-                    elif state.state == off_state:
-                        off_count += 1
-                        last_off = time_str
-                        state_changes.append({"action": off_label, "time": time_str})
-                except Exception as parse_err:
-                    _LOGGER.warning("Error parsing state time: %s", parse_err)
-
-        result = {
-            "device": friendly_name,
-            "entity_id": entity_id,
-            "period": period_desc,
-            "total_changes": len(state_changes),
-        }
-
-        if last_on:
-            result[f"last_{on_label.replace(' ', '_')}"] = last_on
-        if last_off:
-            result[f"last_{off_label.replace(' ', '_')}"] = last_off
-
-        result[f"{on_label.replace(' ', '_')}_count"] = on_count
-        result[f"{off_label.replace(' ', '_')}_count"] = off_count
-
-        if state_changes:
-            result["recent_activity"] = state_changes[-10:][::-1]
-        else:
-            result["message"] = f"No state changes found for {period_desc}"
-
-        _LOGGER.info("Device history result: %s", result)
-        return result
-
-    except ImportError as ie:
-        _LOGGER.error("Recorder import error: %s", ie)
-        return {"error": "History component not available"}
-    except Exception as err:
-        _LOGGER.error("Error getting device history: %s", err, exc_info=True)
-        return {"error": f"Failed to get device history: {str(err)}"}
-
-
 async def control_device(
     arguments: dict[str, Any],
     hass: "HomeAssistant",
@@ -338,16 +180,8 @@ async def control_device(
     hvac_mode_raw = arguments.get("hvac_mode", "").strip().lower()
     fan_speed = arguments.get("fan_speed", "").strip().lower()
 
-    # Normalize HVAC mode aliases to Home Assistant values
-    hvac_mode_map = {
-        "heating": "heat", "heat": "heat",
-        "cooling": "cool", "cool": "cool",
-        "auto": "heat_cool", "automatic": "heat_cool", "heat_cool": "heat_cool", "both": "heat_cool",
-        "off": "off",
-        "fan": "fan_only", "fan_only": "fan_only",
-        "dry": "dry", "dehumidify": "dry",
-    }
-    hvac_mode = hvac_mode_map.get(hvac_mode_raw, hvac_mode_raw) if hvac_mode_raw else ""
+    # Normalize HVAC mode aliases to Home Assistant values (shared with thermostat tool)
+    hvac_mode = HVAC_MODE_MAP.get(hvac_mode_raw, hvac_mode_raw) if hvac_mode_raw else ""
     _LOGGER.debug("HVAC mode: raw=%s, normalized=%s", hvac_mode_raw, hvac_mode)
 
     direct_entity_id = arguments.get("entity_id", "").strip()
@@ -707,9 +541,8 @@ async def control_device(
 
         # Fan controls
         if domain == "fan" and fan_speed:
-            speed_map = {"low": 33, "medium": 66, "high": 100, "auto": 50}
-            if fan_speed in speed_map:
-                service_data["percentage"] = speed_map[fan_speed]
+            if fan_speed in FAN_LEVEL_MAP:
+                service_data["percentage"] = FAN_LEVEL_MAP[fan_speed]
 
         # Cover position
         if domain == "cover" and action == "set_position" and position is not None:

@@ -21,7 +21,6 @@ _cache_lock = asyncio.Lock()
 
 # Default TTL values in seconds
 CACHE_TTL_SHORT = 300  # 5 minutes - for sports scores, weather
-CACHE_TTL_MEDIUM = 900  # 15 minutes - for places, search
 CACHE_TTL_LONG = 3600  # 1 hour - for Wikipedia, static data
 
 
@@ -157,69 +156,3 @@ async def post_json(
         return None, 500
 
 
-class APIError(Exception):
-    """Exception for API errors with status code."""
-
-    def __init__(self, message: str, status_code: int = 500):
-        super().__init__(message)
-        self.status_code = status_code
-
-
-async def require_json(
-    session: "aiohttp.ClientSession",
-    url: str,
-    *,
-    headers: dict[str, str] | None = None,
-    timeout: float = API_TIMEOUT,
-    error_message: str = "API request failed",
-) -> dict[str, Any]:
-    """Fetch JSON or raise APIError.
-
-    Args:
-        session: aiohttp session
-        url: URL to fetch
-        headers: Optional request headers
-        timeout: Request timeout in seconds
-        error_message: Error message prefix for failures
-
-    Returns:
-        JSON response data
-
-    Raises:
-        APIError: If request fails or returns non-200 status
-    """
-    data, status = await fetch_json(session, url, headers=headers, timeout=timeout)
-    if data is None:
-        raise APIError(f"{error_message}: HTTP {status}", status)
-    return data
-
-
-async def require_post_json(
-    session: "aiohttp.ClientSession",
-    url: str,
-    body: dict[str, Any],
-    *,
-    headers: dict[str, str] | None = None,
-    timeout: float = API_TIMEOUT,
-    error_message: str = "API request failed",
-) -> dict[str, Any]:
-    """POST JSON or raise APIError.
-
-    Args:
-        session: aiohttp session
-        url: URL to post to
-        body: JSON body to send
-        headers: Optional request headers
-        timeout: Request timeout in seconds
-        error_message: Error message prefix for failures
-
-    Returns:
-        JSON response data
-
-    Raises:
-        APIError: If request fails or returns non-200 status
-    """
-    data, status = await post_json(session, url, body, headers=headers, timeout=timeout)
-    if data is None:
-        raise APIError(f"{error_message}: HTTP {status}", status)
-    return data

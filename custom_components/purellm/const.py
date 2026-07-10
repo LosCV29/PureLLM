@@ -109,12 +109,10 @@ DEFAULT_ENABLE_PLANTS: Final = True  # Auto-discovers plant.* entities; no-op if
 CONF_THERMOSTAT_ENTITY: Final = "thermostat_entity"
 CONF_CALENDAR_ENTITIES: Final = "calendar_entities"
 CONF_ROOM_PLAYER_MAPPING: Final = "room_player_mapping"
-CONF_DEVICE_ALIASES: Final = "device_aliases"
 CONF_CAMERA_ENTITIES: Final = "camera_entities"  # Deprecated - kept for config compat
 
 # Frigate settings
 CONF_FRIGATE_URL: Final = "frigate_url"
-CONF_CAMERA_RTSP_URLS: Final = "camera_rtsp_urls"
 
 # Thermostat settings - user-configurable temperature range and step
 CONF_THERMOSTAT_MIN_TEMP: Final = "thermostat_min_temp"
@@ -125,10 +123,8 @@ CONF_THERMOSTAT_USE_CELSIUS: Final = "thermostat_use_celsius"
 DEFAULT_THERMOSTAT_ENTITY: Final = ""
 DEFAULT_CALENDAR_ENTITIES: Final = ""
 DEFAULT_ROOM_PLAYER_MAPPING: Final = ""  # room:entity_id, one per line
-DEFAULT_DEVICE_ALIASES: Final = ""
 DEFAULT_CAMERA_ENTITIES: Final = ""
 DEFAULT_FRIGATE_URL: Final = ""
-DEFAULT_CAMERA_RTSP_URLS: Final = ""  # frigate_camera_name: rtsp://url, one per line
 
 # Thermostat defaults (Fahrenheit by default)
 DEFAULT_THERMOSTAT_MIN_TEMP: Final = 60
@@ -161,7 +157,7 @@ MUSIC: Always call control_music. Use response_text verbatim. Volume: "raise/low
 
 PLANTS: Plant questions go to check_plant_status (NOT check_device_status). Strip "the plant"/"my" from the name. water/dry/thirsty/wet → metric="moisture". "any plants need water/in trouble" → problems_only=true. Repeat response_text verbatim.
 
-[CURRENT_DATE_WILL_BE_INJECTED_HERE]
+Today's date: {current_date}
 """
 
 # =============================================================================
