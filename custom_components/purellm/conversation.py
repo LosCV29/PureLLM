@@ -258,7 +258,10 @@ _RE_SIGNED_NUMBER = re.compile(r"(?<![\w.])([-–—−+])(\d+(?:\.\d+)?)\b")
 _RE_DECIMAL = re.compile(r"(?<![\w])(\d*)\.(\d+)(?!\d*\s*(?:GB|MB|KB|TB|MHz|GHz|kHz|km|mph|kmh|°))")
 _RE_BIG_INT = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+|\d{4,})(?!\w)")
 _RE_SMALL_INT = re.compile(r"(?<![\w.])(\d{1,3})(?!\w)")
-_RE_DEGREES = re.compile(r"(\d+)\s*°\s*([FCK]?)")
+# Scale letter is optional but its preceding whitespace must only be consumed
+# WITH the letter — a trailing \s* here glued the next word on ("85° and" ->
+# "eighty five degreesand").
+_RE_DEGREES = re.compile(r"(\d+)\s*°(?:\s*([FCK]))?")
 _RE_AMPERSAND = re.compile(r"\s&\s")
 _RE_AT_SIGN = re.compile(r"\s*@\s*")
 _RE_DEGREES_FAHRENHEIT = re.compile(r"\bdegrees Fahrenheit\b", re.IGNORECASE)
