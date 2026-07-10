@@ -260,6 +260,9 @@ _RE_BIG_INT = re.compile(r"(?<![\w.])(\d{1,3}(?:,\d{3})+|\d{4,})(?!\w)")
 _RE_SMALL_INT = re.compile(r"(?<![\w.])(\d{1,3})(?!\w)")
 _RE_DEGREES = re.compile(r"(\d+)\s*°\s*([FCK]?)")
 _RE_AMPERSAND = re.compile(r"\s&\s")
+_RE_AT_SIGN = re.compile(r"\s*@\s*")
+_RE_DEGREES_FAHRENHEIT = re.compile(r"\bdegrees Fahrenheit\b", re.IGNORECASE)
+_RE_FAHRENHEIT = re.compile(r"\bFahrenheit\b", re.IGNORECASE)
 _RE_HASH_NUMBER = re.compile(r"#(\d+)")
 _RE_MARKDOWN_BOLD = re.compile(r"\*\*([^*]+)\*\*")
 _RE_MARKDOWN_ITALIC = re.compile(r"(?<!\*)\*([^*\n]+)\*(?!\*)")
@@ -333,18 +336,27 @@ def _normalize_for_tts(text: str) -> str:
 
     text = _RE_PERCENT.sub(_percent_repl, text)
 
-    # 6. Degrees.
+    # 6. Degrees. Fahrenheit is the house default and is deliberately NOT
+    # spoken ("72°F" -> "seventy two degrees"); Celsius/Kelvin are non-default
+    # and therefore meaningful, so they stay.
     def _deg_repl(m: re.Match) -> str:
-        scale = {"F": "Fahrenheit", "C": "Celsius", "K": "Kelvin"}.get(m.group(2), "")
+        scale = {"C": "Celsius", "K": "Kelvin"}.get(m.group(2), "")
         return _int_to_words(int(m.group(1))) + " degrees" + (" " + scale if scale else "")
 
     text = _RE_DEGREES.sub(_deg_repl, text)
+
+    # 6b. Strip "Fahrenheit" the LLM writes out itself, same rationale.
+    text = _RE_DEGREES_FAHRENHEIT.sub("degrees", text)
+    text = _RE_FAHRENHEIT.sub("degrees", text)
 
     # 7. Hash-number ("issue #123" -> "issue number one twenty three").
     text = _RE_HASH_NUMBER.sub(lambda m: "number " + _int_to_words(int(m.group(1))), text)
 
     # 8. Standalone ampersand (between spaces) — common in "AT&T", "R&D".
     text = _RE_AMPERSAND.sub(" and ", text)
+
+    # 8b. At-sign — sports matchups ("Morocco @ France") and emails.
+    text = _RE_AT_SIGN.sub(" at ", text)
 
     # 9. Years (4 digits in plausible range, before generic int handling).
     text = _RE_YEAR.sub(lambda m: _year_to_words(int(m.group(1))), text)
