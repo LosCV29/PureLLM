@@ -273,6 +273,74 @@ _RE_MARKDOWN_LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
 _RE_MARKDOWN_HEADER = re.compile(r"^#{1,6}\s+", re.MULTILINE)
 _RE_MULTI_SPACE = re.compile(r"\s{2,}")
 
+# Emoji and pictographs — TTS engines either skip them (dead air) or try to
+# pronounce them; a degenerate LLM can emit hundreds in a row. Covers the
+# emoji/pictograph planes, misc symbols + dingbats, and the joiners/modifiers
+# (VS16, ZWJ, keycap) that would otherwise survive as orphans. Deliberately
+# excludes ° (U+00B0) and other Latin-1 signs the normalizer handles.
+_RE_EMOJI = re.compile(
+    "["
+    "\U0001F000-\U0001FAFF"  # emoji, pictographs, symbols-extended
+    "☀-➿"          # misc symbols + dingbats
+    "⬀-⯿"          # misc symbols and arrows (⭐ etc.)
+    "️‍⃣"     # variation selector, ZWJ, keycap combiner
+    "]+"
+)
+
+# One sentence (or line) plus its trailing whitespace, for degeneration
+# collapse. Newlines terminate a chunk so line-repeated loops split cleanly.
+_RE_SENTENCE_CHUNK = re.compile(r"[^.!?\n]+(?:[.!?…]+|\n+|$)\s*")
+
+# Hard ceiling on spoken response length (~70s of TTS). Legit voice answers
+# top out around 700 chars (web-search summaries); anything past this is a
+# runaway generation.
+_RESPONSE_MAX_CHARS = 1200
+
+
+def _sanitize_llm_response(text: str) -> str:
+    """Collapse degenerate LLM output before it reaches TTS or history.
+
+    2026-07-10 incident: on garbage STT input the brain looped one sentence
+    33 times, cycled a 4-sentence monologue to 2,269 chars, and emitted ~300
+    emoji — all spoken verbatim by the satellites. Three defenses, in order:
+    strip emoji, drop any sentence already said verbatim in this response
+    (catches both A-A-A and A-B-C-A-B-C loops; legit answers never repeat a
+    sentence verbatim), then hard-cap total length at a sentence boundary.
+    """
+    if not text:
+        return text
+
+    original_len = len(text)
+    text = _RE_EMOJI.sub("", text)
+
+    seen: set[str] = set()
+    kept: list[str] = []
+    dropped = 0
+    for match in _RE_SENTENCE_CHUNK.finditer(text):
+        chunk = match.group(0)
+        key = _RE_MULTI_SPACE.sub(" ", chunk).strip().casefold()
+        if not key:
+            kept.append(chunk)
+            continue
+        if key in seen:
+            dropped += 1
+            continue
+        seen.add(key)
+        kept.append(chunk)
+    text = "".join(kept).strip()
+
+    if len(text) > _RESPONSE_MAX_CHARS:
+        cut = text[:_RESPONSE_MAX_CHARS]
+        boundary = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
+        text = cut[: boundary + 1] if boundary > 0 else cut
+
+    if dropped or len(text) < original_len - 20:
+        _LOGGER.info(
+            "Sanitized LLM response: %d -> %d chars (%d repeated sentence(s) dropped)",
+            original_len, len(text), dropped,
+        )
+    return text
+
 
 def _normalize_for_tts(text: str) -> str:
     """Convert text to a form spoken correctly by general-purpose TTS engines.
@@ -288,6 +356,9 @@ def _normalize_for_tts(text: str) -> str:
     """
     if not text:
         return text
+
+    # 0. Emoji are unreadable to every TTS engine — strip before anything else.
+    text = _RE_EMOJI.sub("", text)
 
     # 1. Strip markdown that the LLM emits — TTS reads asterisks aloud otherwise.
     text = _RE_MARKDOWN_LINK.sub(r"\1", text)
@@ -726,7 +797,10 @@ class PureLLMConversationEntity(ConversationEntity):
         self.api_key = config.get(CONF_API_KEY, DEFAULT_API_KEY)
         self.model = config.get(CONF_MODEL, "")
         self.temperature = config.get(CONF_TEMPERATURE, 0.7)
-        self.max_tokens = config.get(CONF_MAX_TOKENS, 2000)
+        # Clamped: a degenerate local model can loop for the full budget, and
+        # everything it emits is spoken. 600 tokens (~2400 chars) is far above
+        # any legitimate voice answer; _sanitize_llm_response trims the rest.
+        self.max_tokens = min(config.get(CONF_MAX_TOKENS, 2000), 600)
         self.top_p = config.get(CONF_TOP_P, 0.95)
 
         # Base URL
@@ -1545,10 +1619,10 @@ class PureLLMConversationEntity(ConversationEntity):
                             final_response += delta["content"]
 
             elif self.provider == PROVIDER_ANTHROPIC:
-                final_response = await self._call_anthropic(
+                final_response = _sanitize_llm_response(await self._call_anthropic(
                     user_text, tools, system_prompt, self.max_tokens, history,
                     is_dismissal=is_dismissal,
-                )
+                ))
             else:
                 final_response = "Unknown provider."
 
@@ -2005,7 +2079,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
                 # No tool calls - yield content and we're done
                 if accumulated_content:
-                    yield {"content": accumulated_content}
+                    yield {"content": _sanitize_llm_response(accumulated_content)}
                     return
 
                 _LOGGER.debug("LLM iteration %d: no content and no tool calls, breaking", iteration)
