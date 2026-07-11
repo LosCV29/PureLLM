@@ -751,7 +751,13 @@ class PureLLMConversationEntity(ConversationEntity):
         # Whether the local OpenAI-compatible server accepts
         # tool_choice="required". Set to False on the first 4xx rejection so
         # we stop retrying it every turn and fall back to "auto".
-        self._required_tool_choice_supported = True
+        # 2026-07-10 v7.50.0: forced first-turn tool calls DISABLED. On
+        # garbled/fragment speech the prompt says "call no tool" while the
+        # API forces one — the model calls a junk tool (get_current_datetime)
+        # or acts on fragments (closed a real shade), and the post-tool
+        # synthesis turn rambles into the spoken reply. Re-enable only after
+        # adding a legitimate no-op tool for garbled speech to target.
+        self._required_tool_choice_supported = False
 
         # Music controller (initialized after config)
         self._music_controller: MusicController | None = None
