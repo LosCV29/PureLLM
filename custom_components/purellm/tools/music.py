@@ -1761,16 +1761,18 @@ class MusicController:
         ESPHome speaker driven via MA's Home Assistant provider) advance the
         queue index on a manual next/previous but do NOT restart the flow
         stream, so the player drops to 'idle' and goes silent. The transition
-        can lag a second or two behind the skip, so poll briefly and nudge
-        playback back on if it goes idle. On players that keep playing through a
-        skip this never fires media_play and just exits."""
-        for _ in range(10):
+        can lag well behind the skip (observed ~5s when the flow stream aborts
+        while the TTS reply plays on the same device), so poll long enough to
+        outlast it and nudge playback back on if it goes idle. On players that
+        keep playing through a skip this never fires media_play and just exits."""
+        for _ in range(30):
             await asyncio.sleep(0.5)
             state = self._hass.states.get(entity_id)
             if state and state.state == "idle":
                 _LOGGER.info("Player %s idle after skip; resuming playback", entity_id)
                 await self._hass.services.async_call("media_player", "media_play", {"entity_id": entity_id}, blocking=True)
                 return
+        _LOGGER.debug("Player %s never went idle within resume window", entity_id)
 
     async def _restart_track(self, all_players: list[str]) -> dict:
         """Restart current track from beginning."""
