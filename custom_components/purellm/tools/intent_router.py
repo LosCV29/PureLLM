@@ -32,6 +32,10 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "music volume", "the music volume",
         "raise the music", "lower the music",
         "turn up the music", "turn down the music",
+        # Spanish
+        "pon ", "reproduce", "pausa", "reanuda",
+        "música", "musica", "canción", "cancion",
+        "siguiente", "anterior",
     ],
     "weather": [
         "weather", " rain", "raining", "forecast",
@@ -39,6 +43,9 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "outside temp", "temperature outside",
         "hot outside", "cold outside",
         "sunny", "cloudy", "snow", "storm", "humid",
+        # Spanish
+        "clima", "lluvia", "llover", "lloviendo",
+        "pronóstico", "pronostico",
     ],
     "thermostat": [
         "thermostat", " ac", "a.c.", "a/c",
@@ -47,6 +54,10 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "turn up the", "turn down the",
         "set it to", "degrees",
         "heat mode", "cool mode",
+        # Spanish
+        "termostato", "aire acondicionado",
+        "grados", "temperatura",
+        "sube la temperatura", "baja la temperatura",
     ],
     "camera": [
         "camera",
@@ -99,6 +110,9 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "what time", "what day", "what date",
         "today's date", "todays date",
         "what's today", "whats today",
+        # Spanish
+        "qué hora", "que hora", "qué día", "que dia",
+        "qué fecha", "que fecha",
     ],
     "device": [
         "turn on", "turn off", "toggle",
@@ -119,6 +133,16 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "set volume", "set the volume", "speaker volume", "voice volume",
         "your volume", "raise your", "lower your",
         "louder", "quieter", "speak up",
+        # Spanish (household speaks Spanish to HA; STT emits accented text)
+        "enciende", "prende ", "apaga", "apagas",
+        " luz", "luces",
+        "ventilador", "aspiradora",
+        "persiana", "cortina",
+        "abre la", "abre el", "cierra la", "cierra el",
+        "cierra con llave", "pon el seguro",
+        "sube el volumen", "baja el volumen", "silencia",
+        "más fuerte", "mas fuerte", "más alto", "mas alto",
+        "televisión",
     ],
     "device_status": [
         "is the ", "is my ", "status of",
