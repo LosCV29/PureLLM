@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+from datetime import datetime
 from urllib.parse import urlparse
 from typing import Any, TYPE_CHECKING
 
@@ -142,6 +144,25 @@ FRESHNESS_KEYWORDS = {
     "current", "right now", "just", "breaking",
 }
 
+# Finance queries rank better with Tavily's dedicated finance topic
+FINANCE_KEYWORDS = {
+    "stock", "stocks", "share price", "ticker", "earnings", "dividend",
+    "crypto", "bitcoin", "ethereum", "nasdaq", "dow jones", "s&p",
+    "market cap", "ipo", "etf",
+}
+
+# Phrases mapped to Tavily time_range buckets. Checked longest-first so
+# "this week" isn't shadowed by "this".
+TIME_RANGE_KEYWORDS = {
+    "right now": "day", "happening now": "day", "this morning": "day",
+    "this afternoon": "day", "this evening": "day", "tonight": "day",
+    "today": "day", "breaking": "day",
+    "yesterday": "week", "this week": "week", "past week": "week",
+    "latest": "week", "recently": "week", "recent": "week",
+    "this month": "month", "past month": "month",
+    "this year": "year", "past year": "year",
+}
+
 # Smart domain patterns - maps keywords to target domains for better results.
 # Tavily snippets + AI answer are sent to the LLM; raw_content is omitted to
 # keep payloads small.
@@ -164,6 +185,12 @@ DOMAIN_PATTERNS = [
      ["cnet.com", "theverge.com", "techradar.com", "tomsguide.com", "wirecutter.com"]),
     (("symptoms of", "treatment for", "side effects", "medication"),
      ["mayoclinic.org", "webmd.com", "healthline.com", "nih.gov"]),
+    (("weather", "hurricane", "tropical storm", "forecast", "rain today"),
+     ["weather.gov", "nhc.noaa.gov", "weather.com", "accuweather.com", "wunderground.com"]),
+    (("stock price", "share price", "stock quote", "earnings report", "market today"),
+     ["finance.yahoo.com", "marketwatch.com", "cnbc.com", "bloomberg.com", "investopedia.com"]),
+    (("pembroke pines", "broward", "miami news", "south florida", "fort lauderdale"),
+     ["miamiherald.com", "sun-sentinel.com", "local10.com", "nbcmiami.com", "cbsmiami.com"]),
 ]
 
 
@@ -188,10 +215,22 @@ def _detect_topic(query: str) -> str:
         "news" or "general"
     """
     query_lower = query.lower()
+    for keyword in FINANCE_KEYWORDS:
+        if keyword in query_lower:
+            return "finance"
     for keyword in NEWS_KEYWORDS:
         if keyword in query_lower:
             return "news"
     return "general"
+
+
+def _detect_time_range(query: str) -> str | None:
+    """Map query phrasing to a Tavily time_range bucket (longest phrase wins)."""
+    query_lower = query.lower()
+    for phrase in sorted(TIME_RANGE_KEYWORDS, key=len, reverse=True):
+        if phrase in query_lower:
+            return TIME_RANGE_KEYWORDS[phrase]
+    return None
 
 
 def _needs_fresh_results(query: str) -> bool:
@@ -235,24 +274,30 @@ async def web_search(
     search_depth = arguments.get("search_depth", "advanced")
 
     # Number of results
-    max_results = min(arguments.get("max_results", 5), 10)
+    max_results = min(arguments.get("max_results", 8), 10)
 
-    # Include AI-generated answer (highly recommended)
-    include_answer = arguments.get("include_answer", True)
+    # Include AI-generated answer — "advanced" returns a longer, LLM-friendly
+    # synthesis instead of the basic one-liner
+    include_answer = arguments.get("include_answer", "advanced")
 
     # Smart domain detection - auto-target specific sites based on query
     include_domains = arguments.get("include_domains") or _detect_target_domains(query)
     exclude_domains = arguments.get("exclude_domains")
 
-    # Days filter for freshness (None = no filter)
+    # Days filter for freshness (None = no filter); when the caller doesn't
+    # pass one, map query phrasing to Tavily's time_range buckets instead.
     days = arguments.get("days")
+    time_range = None if days else _detect_time_range(query)
 
-    # Auto-detect if we need fresh results
-    if days is None and _needs_fresh_results(query):
-        days = 7  # Default to last week for "fresh" queries
+    # Year-anchor time-sensitive queries: local brains build queries from their
+    # training-cutoff year, poisoning results with stale pages. Deterministic
+    # server-side fix — append the real current year when none is present.
+    if (days or time_range or _needs_fresh_results(query)) and not re.search(r"\b20\d{2}\b", query):
+        query = f"{query} {datetime.now().year}"
 
     # Build request payload — snippets + AI answer are sufficient; raw_content is
     # omitted to avoid sending thousands of tokens of page text to the LLM.
+    # chunks_per_source=3 (Tavily max) returns more content per source without it.
     payload = {
         "api_key": api_key,
         "query": query,
@@ -262,11 +307,18 @@ async def web_search(
         "include_answer": include_answer,
         "include_raw_content": False,
         "include_images": False,
+        "chunks_per_source": 3,
     }
 
-    # Add days filter if specified
+    # Country bias only applies to general searches (boosts US sources)
+    if topic == "general":
+        payload["country"] = "united states"
+
+    # Add freshness filter: explicit days beats detected time_range
     if days:
         payload["days"] = days
+    elif time_range:
+        payload["time_range"] = time_range
 
     # Add domain filters if specified
     if include_domains:
@@ -275,8 +327,8 @@ async def web_search(
         payload["exclude_domains"] = exclude_domains
 
     _LOGGER.info(
-        "Tavily search: query='%s', topic=%s, depth=%s, max=%d, days=%s, domains=%s",
-        query, topic, search_depth, max_results, days, include_domains
+        "Tavily search: query='%s', topic=%s, depth=%s, max=%d, days=%s, time_range=%s, domains=%s",
+        query, topic, search_depth, max_results, days, time_range, include_domains
     )
 
     # Up to 2 attempts: retry once on timeout, connection error, 429, or 5xx.
@@ -373,12 +425,22 @@ async def web_search(
             best_url = best_result.get("url", "")
 
             response_data["answer"] = answer
-            response_data["instruction"] = f"CRITICAL: Use ONLY this answer - do not make up information. Say: 'According to {best_source}, {answer}'"
+            response_data["instruction"] = (
+                f"CRITICAL GROUNDING: Compose a concise spoken answer to the user's question "
+                f"using ONLY the 'answer' text and the result snippets above — never add facts "
+                f"from your own knowledge. Start with 'According to {best_source},'. Lead with "
+                f"the specific fact the user asked for; keep it short enough to speak aloud."
+            )
             response_data["source"] = best_source
             response_data["source_url"] = best_url  # For notification
         elif data.get("answer"):
             response_data["answer"] = data["answer"]
-            response_data["instruction"] = f"CRITICAL: Use ONLY this answer - do not make up information. Say: 'According to web search, {data['answer']}'"
+            response_data["instruction"] = (
+                "CRITICAL GROUNDING: Compose a concise spoken answer using ONLY the 'answer' "
+                "text and the result snippets above — never add facts from your own knowledge. "
+                "Attribute it to the most relevant source by name (or 'web search'). Lead with "
+                "the specific fact the user asked for; keep it short enough to speak aloud."
+            )
         elif not results:
             response_data["instruction"] = (
                 "NO RESULTS FOUND. Tell the user you couldn't find anything on that. "
