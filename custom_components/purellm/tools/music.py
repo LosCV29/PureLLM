@@ -1770,6 +1770,17 @@ class MusicController:
             state = self._hass.states.get(entity_id)
             if state and state.state == "idle":
                 _LOGGER.info("Player %s idle after skip; resuming playback", entity_id)
+                # MA keeps advancing the queue item's position clock while the
+                # flow stream is down, so a plain resume starts seconds into
+                # the track. Seeking to 0 WHILE IDLE resets that clock and is
+                # accepted by MA (verified 2026-07-16); never seek after the
+                # resume - that kills the stream on some protocol paths.
+                try:
+                    await self._hass.services.async_call(
+                        "media_player", "media_seek", {"entity_id": entity_id, "seek_position": 0}, blocking=True
+                    )
+                except Exception as err:  # noqa: BLE001 - best effort
+                    _LOGGER.debug("Pre-resume seek-to-start failed on %s: %s", entity_id, err)
                 await self._hass.services.async_call("media_player", "media_play", {"entity_id": entity_id}, blocking=True)
                 return
         _LOGGER.debug("Player %s never went idle within resume window", entity_id)
