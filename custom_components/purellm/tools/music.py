@@ -1750,6 +1750,14 @@ class MusicController:
 
     def _schedule_resume_if_idle(self, entity_id: str) -> None:
         """Fire-and-forget the post-skip resume so the spoken reply isn't delayed."""
+        # The resume dance is a workaround for Music Assistant flow-mode queues
+        # only. On other players (e.g. the Shield's androidtv entity fronting a
+        # snapcast client) the nudge itself breaks the skip: play makes the
+        # client re-join the live snapcast stream seconds in (2026-07-16).
+        entry = er.async_get(self._hass).async_get(entity_id)
+        if not entry or entry.platform != "music_assistant":
+            _LOGGER.debug("Skipping post-skip resume for %s (not a Music Assistant player)", entity_id)
+            return
         self._hass.async_create_background_task(
             self._resume_if_idle(entity_id), name=f"purellm_resume_{entity_id}"
         )
