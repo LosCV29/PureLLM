@@ -1773,11 +1773,20 @@ class MusicController:
         while the TTS reply plays on the same device), so poll long enough to
         outlast it and nudge playback back on if it goes idle. On players that
         keep playing through a skip this never fires media_play and just exits."""
-        for _ in range(30):
+        consecutive_idle = 0
+        for _ in range(40):
             await asyncio.sleep(0.5)
             state = self._hass.states.get(entity_id)
-            if state and state.state == "idle":
-                _LOGGER.info("Player %s idle after skip; resuming playback", entity_id)
+            if not (state and state.state == "idle"):
+                consecutive_idle = 0
+                continue
+            # Some players blip to idle for a second or two while MA restarts
+            # its flow stream and recover on their own; nudging during the blip
+            # makes snapcast clients re-join the live stream mid-song
+            # (2026-07-16). Only treat SUSTAINED idle as a genuine stall.
+            consecutive_idle += 1
+            if consecutive_idle >= 10:
+                _LOGGER.info("Player %s idle 5s after skip; resuming playback", entity_id)
                 # MA keeps advancing the queue item's position clock while the
                 # flow stream is down, so a plain resume starts seconds into
                 # the track. Seeking to 0 WHILE IDLE resets that clock and is
