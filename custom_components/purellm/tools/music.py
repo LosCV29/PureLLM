@@ -1292,6 +1292,7 @@ class MusicController:
                     name_score = 20 * matches
 
         # Artist scoring — use centralized fuzzy match
+        collab_penalty = 0
         if artist_lower:
             if artist_lower == item_artist:
                 artist_score = 100
@@ -1299,6 +1300,35 @@ class MusicController:
                 artist_score = 50
             elif item_artist:
                 artist_score = -200
+
+            # Collaborator / remix-credit penalty: the user asked for a single
+            # artist but this credit ADDS extra collaborators (e.g. request
+            # "Connie Francis" matching "Connie Francis & LIZOT" or
+            # "Connie Francis feat. X"). Those are near-always remixes/covers of
+            # the requested song, not the canonical recording — and because
+            # _extract_artist keeps the whole "A & B" string, they sneak in via
+            # the fuzzy substring match above. Only penalize when the requested
+            # artist is genuinely PART of the credit (token subset) AND the
+            # credit carries an explicit collaboration separator plus at least
+            # one extra name token, so an exact match and an unrelated-artist
+            # mismatch are both left untouched, and a user who DID name the
+            # collaborators is spared (their tokens are already in artist_lower).
+            if artist_lower != item_artist and item_artist:
+                _connectors = {"feat", "featuring", "ft", "with", "vs", "x", "and", "the"}
+                req_tokens = set(re.sub(r"[^a-z0-9\s]", " ", artist_lower).split())
+                item_tokens_list = re.sub(r"[^a-z0-9\s]", " ", item_artist).split()
+                item_tokens = set(item_tokens_list)
+                if req_tokens and req_tokens <= item_tokens:
+                    extra = [t for t in item_tokens_list
+                             if t not in req_tokens and t not in _connectors]
+                    has_separator = bool(re.search(
+                        r"[&,/]|\bfeat\b|\bfeaturing\b|\bft\b|\bwith\b|\bvs\b|\bx\b",
+                        item_artist))
+                    if extra and has_separator:
+                        collab_penalty = -300
+                        _LOGGER.debug(
+                            "MUSIC: Collaborator penalty applied to artist '%s' (requested '%s')",
+                            item_artist, artist_lower)
 
         # Penalize instrumental/karaoke/etc. variants when user didn't ask for one.
         # Check both track name and the version tag (MA often stores "Instrumental" there).
@@ -1353,7 +1383,7 @@ class MusicController:
         elif item.get("explicit") is False or re.search(r'\bclean\b', item_name):
             explicit_bonus = -15
 
-        return name_score + artist_score + variant_penalty + explicit_bonus, name_score
+        return name_score + artist_score + collab_penalty + variant_penalty + explicit_bonus, name_score
 
     def _pick_best_match(
         self, results: list[dict], query_lower: str, artist_lower: str,
@@ -1361,12 +1391,24 @@ class MusicController:
         """Score MA results and return best match with uri, name, artist. Returns None if no good match."""
         best_score = 0
         best = None
+        best_uri = None
         for item in results:
             score, name_score = self._score_item(item, query_lower, artist_lower)
             # Require name to actually match — artist-only matches play wrong songs
-            if score > best_score and name_score > 0:
+            if name_score <= 0:
+                continue
+            item_uri = str(item.get("uri") or item.get("media_id") or "")
+            # Deterministic tie-break: when two candidates score equally (e.g.
+            # two near-identical masters both credited to the exact artist), the
+            # raw MA result order varies call-to-call, so pick the lexically
+            # smallest uri. This makes multi-room playback resolve the SAME
+            # recording in every room instead of diverging per call.
+            if score > best_score or (
+                score == best_score and best_uri is not None and item_uri < best_uri
+            ):
                 best_score = score
                 best = item
+                best_uri = item_uri
 
         if best and best_score > 0:
             found_name = _normalize_unicode(best.get("name") or best.get("title"))
@@ -1405,7 +1447,9 @@ class MusicController:
             if name_score <= 0 or score <= 0:
                 continue
             scored.append((score, item))
-        scored.sort(key=lambda x: x[0], reverse=True)
+        # Sort by score desc, then by uri asc as a deterministic tie-break so the
+        # candidate order the LLM sees is stable across identical searches.
+        scored.sort(key=lambda x: (-x[0], str(x[1].get("uri") or x[1].get("media_id") or "")))
 
         out: list[dict] = []
         seen_uris: set[str] = set()
