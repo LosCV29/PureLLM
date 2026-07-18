@@ -468,6 +468,21 @@ CURATED_MEDIA: list[dict] = [
             ["baby", "babies", "kid", "kids", "child", "children", "childrens", "children's"],
         ],
     },
+    {
+        "id": "pretty_little_baby",
+        "name": "Pretty Little Baby",
+        # Connie Francis — the original 1962 recording. Pinned because the title
+        # has ~10 near-identical Apple Music releases (remixes/covers credited
+        # "Connie Francis & X", phonk/slowed edits, etc.); fuzzy search and MA's
+        # per-room radio "similar tracks" would otherwise let different rooms
+        # land on different versions of the same song. Pinning the exact track
+        # URI guarantees every room plays this recording. radio stays ON so the
+        # play-a-song-then-keep-going behavior is preserved.
+        "uri": "apple_music://track/1645556889",
+        "media_type": "track",
+        "radio": True,
+        "match_any": ["pretty little baby"],
+    },
 ]
 
 
@@ -711,8 +726,11 @@ class MusicController:
                 if curated:
                     if not target_players:
                         return {"error": f"Which room? Available: {', '.join(self._players.keys())}"}
-                    await self._play_on_players(target_players, curated["uri"], curated["media_type"])
-                    _LOGGER.info("MUSIC: Curated shortcut '%s' → %s", curated["id"], curated["uri"])
+                    await self._play_on_players(
+                        target_players, curated["uri"], curated["media_type"],
+                        radio=curated.get("radio", False))
+                    _LOGGER.info("MUSIC: Curated shortcut '%s' → %s (radio=%s)",
+                                 curated["id"], curated["uri"], curated.get("radio", False))
                     return {"status": "playing", "response_text": f"Playing {curated['name']} in the {room}"}
 
                 # Try themed/ordinal album search if detected
