@@ -1946,6 +1946,11 @@ class MusicController:
 
         target = target_players[0]
 
+        # Revive the target if its snapcast client was stopped (STOP button) —
+        # play actions do this, but transfer previously skipped it, so
+        # transferring into a stopped room failed while playing there worked.
+        await self._ensure_players_available(target_players)
+
         # For transfer, try the active_queue if available, otherwise use the MA wrapper
         source = self._get_transfer_source(playing)
         _LOGGER.info("Transferring from %s (source: %s) to %s", playing, source, target)
