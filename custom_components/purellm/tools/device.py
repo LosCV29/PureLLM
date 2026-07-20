@@ -245,7 +245,10 @@ async def control_device(
 
     # Service map
     service_map = {
-        "light": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle", "dim": "turn_on"},
+        "light": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle", "dim": "turn_on",
+                  # Models (even large ones) reach for these when asked "set X to N%" —
+                  # accept them for lights instead of failing with "unsupported action".
+                  "set_position": "turn_on", "set_brightness": "turn_on", "set": "turn_on", "set_level": "turn_on"},
         "switch": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle"},
         "fan": {"turn_on": "turn_on", "turn_off": "turn_off", "toggle": "toggle", "set_speed": "set_percentage", "stop": "turn_off", "pause": "turn_off", "start": "turn_on", "resume": "turn_on"},
         "lock": {"lock": "lock", "unlock": "unlock", "turn_on": "lock", "turn_off": "unlock"},
@@ -480,8 +483,15 @@ async def control_device(
         service_data = {"entity_id": entity_id}
 
         # Light controls
-        if domain == "light" and action in ("turn_on", "dim"):
+        if domain == "light" and action in ("turn_on", "dim", "set_position", "set_brightness", "set", "set_level"):
+            if brightness is None and position is not None:
+                # Model used the cover-style position param for a light percentage.
+                brightness = position
             if brightness is not None:
+                if brightness > 100:
+                    # Model sent 0-255 scale (e.g. 128 for "50%") — convert, don't clamp
+                    # (clamping turned "50%" into 100%).
+                    brightness = round(brightness / 255 * 100)
                 service_data["brightness_pct"] = max(0, min(100, brightness))
             if color and color in color_map and color_map[color]:
                 service_data["rgb_color"] = color_map[color]
@@ -593,10 +603,10 @@ async def control_device(
         if len(controlled) == 1:
             if action == "preset":
                 response = f"I've set the {controlled[0]} to its favorite position."
+            elif brightness is not None and action in ("turn_on", "dim", "set_position", "set_brightness", "set", "set_level"):
+                response = f"I've set the {controlled[0]} to {brightness}% brightness."
             elif action == "set_position" and position is not None:
                 response = f"I've set the {controlled[0]} to {position}% position."
-            elif brightness is not None and action in ("turn_on", "dim"):
-                response = f"I've set the {controlled[0]} to {brightness}% brightness."
             elif action == "mute":
                 response = f"I've muted the {controlled[0]}."
             elif action == "unmute":
