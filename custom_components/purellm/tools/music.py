@@ -1951,25 +1951,34 @@ class MusicController:
         _LOGGER.info("Transferring from %s (source: %s) to %s", playing, source, target)
 
         try:
+            # MA wrapper entity first — transfer_queue wants an MA player as
+            # source; the raw speaker entity's queue id is often unknown to MA.
             await self._hass.services.async_call(
                 "music_assistant", "transfer_queue",
-                {"source_player": source, "auto_play": True},
+                {"source_player": playing, "auto_play": True},
                 target={"entity_id": target},
                 blocking=True
             )
             _LOGGER.info("Transfer complete")
         except Exception as e:
-            _LOGGER.error("Transfer failed with source_player: %s", e)
-            # Fallback: try with the MA wrapper entity
+            _LOGGER.error("Transfer failed with MA wrapper source: %s", e)
+            # Fallback: try the active_queue-derived source entity
             try:
                 await self._hass.services.async_call(
                     "music_assistant", "transfer_queue",
-                    {"source_player": playing, "auto_play": True},
+                    {"source_player": source, "auto_play": True},
                     target={"entity_id": target},
                     blocking=True
                 )
             except Exception as e2:
                 _LOGGER.error("Transfer fallback also failed: %s", e2)
+                # Both attempts failed — tell the truth instead of claiming success
+                # (previously fell through to the success response, so the user
+                # heard "transferred" while the music just stopped).
+                return {
+                    "error": f"Transfer to {self._get_room_name(target)} failed: {e2}",
+                    "response_text": f"I couldn't transfer the music to the {self._get_room_name(target)} — the speaker there isn't accepting playback right now.",
+                }
 
         return {"status": "transferred", "response_text": f"Music transferred to {self._get_room_name(target)}"}
 
