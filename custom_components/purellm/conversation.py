@@ -6,6 +6,7 @@ through the LLM pipeline with tool calling and STREAMING TTS support.
 from __future__ import annotations
 
 import asyncio
+import difflib
 import json
 import logging
 import re
@@ -119,6 +120,47 @@ def _apply_stt_corrections(text: str) -> str:
             k for k in _STT_WORD_CORRECTIONS if k.lower() == m.group(0).lower()
         )]
     return _STT_CORRECTIONS_RE.sub(_replace, text)
+
+
+# Voice commands overwhelmingly begin with one of these action words, and
+# STT near-homophone slips on the FIRST word ("clothes the garage") produce
+# commands the LLM can't ground. Bias ONLY the leading token toward this
+# vocabulary; the rest of the utterance is never touched, so mid-sentence
+# words ("add clothes to the list") are safe.
+_LEADING_COMMAND_VOCAB: list[str] = [
+    "close", "open", "lower", "raise", "set", "start", "stop", "play",
+    "turn", "next", "previous", "shuffle",
+]
+# Known first-word mishears that score below the fuzzy cutoff.
+_LEADING_STT_OVERRIDES: dict[str, str] = {
+    "clothes": "close",
+}
+# 0.75 measured against real vocab: catches "opens"/"flower"/"starts",
+# rejects "please"(0.60)/"place"(0.67)/"clouds"(0.73). Don't lower it.
+_LEADING_FUZZY_CUTOFF = 0.75
+
+
+def _apply_leading_command_bias(text: str) -> str:
+    """Correct a misheard FIRST word toward the command-starter vocabulary."""
+    words = text.split()
+    if not words:
+        return text
+    first_raw = words[0]
+    first = _PUNCT_RE.sub("", first_raw).lower()
+    if not first or first in _LEADING_COMMAND_VOCAB:
+        return text
+    replacement = _LEADING_STT_OVERRIDES.get(first)
+    if replacement is None:
+        matches = difflib.get_close_matches(
+            first, _LEADING_COMMAND_VOCAB, n=1, cutoff=_LEADING_FUZZY_CUTOFF
+        )
+        replacement = matches[0] if matches else None
+    if replacement is None:
+        return text
+    _LOGGER.debug(
+        "Leading command bias: %r -> %r in %r", first_raw, replacement, text
+    )
+    return " ".join([replacement, *words[1:]])
 
 
 def _clean_for_match(text: str) -> str:
@@ -1472,7 +1514,9 @@ class PureLLMConversationEntity(ConversationEntity):
         Uses simple non-streaming calls for cloud providers (more reliable).
         Supports continuing conversations with conversation_id tracking.
         """
-        user_text = _apply_stt_corrections(user_input.text.strip())
+        user_text = _apply_leading_command_bias(
+            _apply_stt_corrections(user_input.text.strip())
+        )
         self._current_user_query = user_text
         self._current_user_input = user_input
 
