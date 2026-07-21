@@ -1401,7 +1401,22 @@ class MusicController:
         elif item.get("explicit") is False or re.search(r'\bclean\b', item_name):
             explicit_bonus = -15
 
-        return name_score + artist_score + collab_penalty + variant_penalty + explicit_bonus, name_score
+        total = name_score + artist_score + collab_penalty + variant_penalty + explicit_bonus
+
+        # Collab-credit rescue: some canonical recordings ARE multi-artist
+        # credits (e.g. "LADY GAGA" by "Peso Pluma, Gabito Ballesteros &
+        # Junior H") — there is no solo original to prefer. The collaborator
+        # penalty must demote such credits below a solo original when one
+        # exists, not disqualify them outright. If the item matched on both
+        # name and artist and ONLY the collab penalty drags it negative
+        # (variant penalties still disqualify), keep a small positive score,
+        # scaled down so any solo-credit match still outranks it.
+        if collab_penalty and total <= 0 and name_score > 0 and artist_score > 0:
+            without_collab = total - collab_penalty
+            if without_collab > 0:
+                total = max(1, without_collab // 10)
+
+        return total, name_score
 
     def _pick_best_match(
         self, results: list[dict], query_lower: str, artist_lower: str,
