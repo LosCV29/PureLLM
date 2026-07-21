@@ -103,6 +103,9 @@ _PUNCT_RE = re.compile(r"[^\w\s']")
 # Add entries here whenever Whisper consistently mishears an artist/word.
 _STT_WORD_CORRECTIONS: dict[str, str] = {
     "PZ": "Peezy",
+    # "Sala" is the only Spanish room name in the house; Voxtral hears it as
+    # "cellar" (observed 2026-07-21: "Open the cellar."). There is no cellar.
+    "cellar": "sala",
 }
 _STT_CORRECTIONS_RE = re.compile(
     r"\b(" + "|".join(re.escape(k) for k in _STT_WORD_CORRECTIONS) + r")\b",
