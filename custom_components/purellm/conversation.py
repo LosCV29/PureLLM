@@ -360,6 +360,13 @@ def _sanitize_llm_response(text: str) -> str:
     if not text:
         return text
 
+    # The canned garble reply is FINAL — no conditionals, no follow-up
+    # (v7.49.0 rule). When the model writes it into content itself (instead
+    # of calling report_garbled_speech) it tends to ramble menus/apologies
+    # after it; collapse the whole response to exactly the canned reply.
+    if "sorry, i didn't catch that" in text.lower().replace("’", "'"):
+        return _GARBLED_SPEECH_REPLY
+
     original_len = len(text)
     text = _RE_EMOJI.sub("", text)
 
