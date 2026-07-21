@@ -201,7 +201,7 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
 #   forbid answering from training data, so when a dedicated tool errors or
 #   comes up empty (e.g. an unmapped league), the model MUST be able to
 #   escalate to web_search — even when no "search" keyword matched.
-_ALWAYS_INCLUDE = {"get_current_datetime", "web_search"}
+_ALWAYS_INCLUDE = {"get_current_datetime", "web_search", "report_garbled_speech"}
 
 
 def classify_intent(user_text: str) -> set[str]:

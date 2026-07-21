@@ -18,6 +18,10 @@ from typing import Any, TYPE_CHECKING
 
 # Conversation history settings
 CONVERSATION_TIMEOUT_SECONDS = 300  # 5 minutes - conversations expire after this
+
+# Spoken verbatim when the LLM calls report_garbled_speech. Must match the
+# canned reply the configured prompt promises for unintelligible input.
+_GARBLED_SPEECH_REPLY = "Sorry, I didn't catch that — can you repeat it?"
 FOLLOWUP_TIMEOUT_SECONDS = 30  # 30 seconds - pending follow-ups expire quickly (voice pipeline keeps mic open only a few seconds)
 MAX_CONVERSATION_HISTORY = 2  # Max message pairs to keep per conversation (reduced for token budget)
 
@@ -796,13 +800,16 @@ class PureLLMConversationEntity(ConversationEntity):
         # Whether the local OpenAI-compatible server accepts
         # tool_choice="required". Set to False on the first 4xx rejection so
         # we stop retrying it every turn and fall back to "auto".
-        # 2026-07-10 v7.50.0: forced first-turn tool calls DISABLED. On
-        # garbled/fragment speech the prompt says "call no tool" while the
-        # API forces one — the model calls a junk tool (get_current_datetime)
-        # or acts on fragments (closed a real shade), and the post-tool
-        # synthesis turn rambles into the spoken reply. Re-enable only after
-        # adding a legitimate no-op tool for garbled speech to target.
-        self._required_tool_choice_supported = False
+        # 2026-07-10 v7.50.0: forced first-turn tool calls were disabled
+        # because on garbled/fragment speech the prompt said "call no tool"
+        # while the API forced one — the model called a junk tool or acted on
+        # fragments, and the post-tool synthesis turn rambled into the spoken
+        # reply. 2026-07-21 v7.60.0: RE-ENABLED — garbled speech now has a
+        # legitimate target (report_garbled_speech, a no-op whose canned reply
+        # is spoken directly with no synthesis turn), and without forcing the
+        # brain hallucinated first-turn success ("lights are now at 50%",
+        # no tool call).
+        self._required_tool_choice_supported = True
 
         # Music controller (initialized after config)
         self._music_controller: MusicController | None = None
@@ -1172,6 +1179,15 @@ class PureLLMConversationEntity(ConversationEntity):
         grounding += (
             " If a tool errors or finds nothing, say you couldn't look it up — "
             "never guess, never fill gaps from memory."
+        )
+        grounding += (
+            "\n\nACTIONS (non-negotiable): NEVER claim a device/music action "
+            "succeeded without calling its tool in THIS conversation — a reply "
+            "like 'the lights are now at 50%' without a tool call is a lie. "
+            "GARBLED SPEECH UPDATE (supersedes 'call no tool' above): when the "
+            "utterance is truncated or unintelligible, call "
+            "report_garbled_speech — do not reply directly and do not call any "
+            "other tool."
         )
         prompt += grounding
 
@@ -2065,6 +2081,18 @@ class PureLLMConversationEntity(ConversationEntity):
                     else:
                         _LOGGER.debug("LLM repeated tool call (deduped): %s", tc['function']['name'])
 
+                # Garbled-speech short-circuit: the no-op tool's canned reply
+                # is FINAL — speak it directly with no synthesis turn (a
+                # synthesis turn after this tool is where v7.50.0's spoken
+                # junk came from). Nothing to execute; the tool has no effect.
+                if any(
+                    tc["function"]["name"] == "report_garbled_speech"
+                    for tc in unique_tool_calls
+                ):
+                    _LOGGER.info("Garbled speech reported by LLM; speaking canned reply")
+                    yield {"content": _GARBLED_SPEECH_REPLY}
+                    return
+
                 if unique_tool_calls:
                     _LOGGER.info("Executing %d tool call(s)", len(unique_tool_calls))
 
@@ -2435,6 +2463,12 @@ class PureLLMConversationEntity(ConversationEntity):
             latitude = self.custom_latitude or self.hass.config.latitude
             longitude = self.custom_longitude or self.hass.config.longitude
             hass_tz = dt_util.get_time_zone(self.hass.config.time_zone)
+
+            # No-op garble tool — normally short-circuited before execution;
+            # this handler is a safety net if it ever reaches here (e.g.
+            # called alongside another tool on a later iteration).
+            if tool_name == "report_garbled_speech":
+                return {"response_text": _GARBLED_SPEECH_REPLY}
 
             # Built-in datetime tool
             if tool_name == "get_current_datetime":

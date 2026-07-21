@@ -64,6 +64,16 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         },
     ))
 
+    tools.append(_tool(
+        "report_garbled_speech",
+        "Call this INSTEAD of any other tool or answer when the user's "
+        "utterance is truncated or unintelligible — starts mid-word, has no "
+        "action verb, or is a bare sentence fragment (e.g. '...itchen lights', "
+        "'the master bedroom shade', 'play the'). Do NOT guess missing words "
+        "or infer an action. A canned 'please repeat' reply is spoken "
+        "automatically; you will not get a result back.",
+    ))
+
     # ===== WEATHER =====
     if config.enable_weather and config.openweathermap_api_key:
         tools.append(_tool(
