@@ -1810,6 +1810,9 @@ class MusicController:
         _LOGGER.info("Looking for player in 'playing' state...")
         playing = self._find_player_by_state("playing", all_players)
         if playing:
+            if not await self._queue_has_next(playing):
+                _LOGGER.info("Queue on %s has no next item; reporting end of queue", playing)
+                return {"status": "end_of_queue", "response_text": "That was the last track in the queue"}
             await self._hass.services.async_call("media_player", "media_next_track", {"entity_id": playing}, blocking=True)
             self._schedule_resume_if_idle(playing)
             return {"status": "skipped", "response_text": "Skipped to next track"}
@@ -1824,6 +1827,28 @@ class MusicController:
             self._schedule_resume_if_idle(playing)
             return {"status": "skipped", "response_text": "Previous track"}
         return {"error": "No music is playing"}
+
+    async def _queue_has_next(self, entity_id: str) -> bool:
+        """True if the MA queue behind entity_id has a track after the current one.
+
+        Skipping past the last item advances MA's queue index with nothing to
+        play: no new flow stream starts, the current song plays out, then the
+        queue clears (observed 2026-07-22) — while we'd have claimed success.
+        Fail open: any error (non-MA player, service missing) allows the skip."""
+        try:
+            resp = await self._hass.services.async_call(
+                "music_assistant", "get_queue", {"entity_id": entity_id},
+                blocking=True, return_response=True,
+            )
+            queue = (resp or {}).get(entity_id) or {}
+            if not queue:
+                return True
+            if queue.get("repeat_mode") and queue["repeat_mode"] != "off":
+                return True
+            return queue.get("next_item") is not None
+        except Exception as err:  # noqa: BLE001 - best effort
+            _LOGGER.debug("get_queue check failed for %s: %s", entity_id, err)
+            return True
 
     def _schedule_resume_if_idle(self, entity_id: str) -> None:
         """Fire-and-forget the post-skip resume so the spoken reply isn't delayed."""
