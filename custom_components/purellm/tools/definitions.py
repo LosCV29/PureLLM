@@ -219,7 +219,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
                 "skip_previous ← 'previous track', 'previous song', 'go back', 'go back a song', 'skip back', 'bring it back', 'bring the track back', 'bring the song back', 'last song', 'back one'. "
                 "skip_next ← 'next', 'next track', 'next song', 'skip', 'skip ahead', 'skip this', 'forward'. "
                 "restart_track ← 'restart', 'restart the song', 'play it again', 'play that again', 'replay', 'replay this', 'from the top', 'start over', 'rewind'. "
-                "pause ← 'pause', 'pause the music', 'hold on', 'hold the music'. "
+                "pause ← 'pause', 'pause the music', 'hold on', 'hold the music' — but 'pause/resume/stop the <device name>' (Shield, TV, Apple TV, etc.) is a DEVICE command → control_device, not control_music. "
                 "resume ← 'resume', 'unpause', 'keep playing', 'continue the music', 'play it' (when something is paused). "
                 "stop ← 'stop', 'stop the music', 'kill it', 'turn it off', 'shut the music off'. "
                 "what_playing ← 'what's playing', 'what song is this', 'who is this', 'name this song'. "
