@@ -1851,7 +1851,11 @@ class MusicController:
         outlast it and nudge playback back on if it goes idle. On players that
         keep playing through a skip this never fires media_play and just exits."""
         consecutive_idle = 0
-        for _ in range(40):
+        # 90s window: on the Shield's flow-stream path a stalled skip can keep
+        # the OLD stream audibly playing long after the queue advanced — the
+        # player only dropped to idle 46s after the skip (observed 2026-07-22),
+        # well past the original 20s window, so the stall went un-nudged.
+        for _ in range(180):
             await asyncio.sleep(0.5)
             state = self._hass.states.get(entity_id)
             if not (state and state.state == "idle"):
