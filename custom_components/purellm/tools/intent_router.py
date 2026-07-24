@@ -231,7 +231,7 @@ def filter_tools_by_intent(
     Returns all_tools unchanged if intents is empty (no match = fallback).
     """
     if not intents:
-        _LOGGER.debug("No intent matched — sending all %d tools", len(all_tools))
+        _LOGGER.info("No intent matched — sending all %d tools (conversational cap will apply if none get called)", len(all_tools))
         return all_tools
 
     # Collect tool names for matched intents

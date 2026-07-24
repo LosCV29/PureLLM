@@ -346,8 +346,18 @@ _RE_SENTENCE_CHUNK = re.compile(r"[^.!?\n]+(?:[.!?…]+|\n+|$)\s*")
 # runaway generation.
 _RESPONSE_MAX_CHARS = 1200
 
+# Ceiling for turns that called NO tools (chitchat, mishears, compliments).
+# 2026-07-24 incident: "You're beautiful." → no intent match → all 24 tools
+# offered → every brain tested (qwen and gemma alike) answered with a
+# multi-hundred-char capabilities monologue of NON-repeating sentences, which
+# the dedupe pass can't touch — 1147 chars reached TTS (~90s of speech).
+# A tool-less turn has nothing to report; anything past two sentences is
+# prompt-induced rambling.
+_CONVERSATIONAL_MAX_SENTENCES = 2
+_CONVERSATIONAL_MAX_CHARS = 300
 
-def _sanitize_llm_response(text: str) -> str:
+
+def _sanitize_llm_response(text: str, *, conversational: bool = False) -> str:
     """Collapse degenerate LLM output before it reaches TTS or history.
 
     2026-07-10 incident: on garbage STT input the brain looped one sentence
@@ -385,6 +395,15 @@ def _sanitize_llm_response(text: str) -> str:
         seen.add(key)
         kept.append(chunk)
     text = "".join(kept).strip()
+
+    if conversational:
+        sentences = _RE_SENTENCE_CHUNK.findall(text)
+        if len(sentences) > _CONVERSATIONAL_MAX_SENTENCES:
+            text = "".join(sentences[:_CONVERSATIONAL_MAX_SENTENCES]).strip()
+        if len(text) > _CONVERSATIONAL_MAX_CHARS:
+            cut = text[:_CONVERSATIONAL_MAX_CHARS]
+            boundary = max(cut.rfind("."), cut.rfind("!"), cut.rfind("?"))
+            text = cut[: boundary + 1] if boundary > 0 else cut
 
     if len(text) > _RESPONSE_MAX_CHARS:
         cut = text[:_RESPONSE_MAX_CHARS]
@@ -2157,7 +2176,11 @@ class PureLLMConversationEntity(ConversationEntity):
 
                 # No tool calls - yield content and we're done
                 if accumulated_content:
-                    yield {"content": _sanitize_llm_response(accumulated_content)}
+                    # A turn where NO tool ran has nothing factual to report —
+                    # clamp to the conversational cap (see _CONVERSATIONAL_MAX_*).
+                    yield {"content": _sanitize_llm_response(
+                        accumulated_content, conversational=not called_tools,
+                    )}
                     return
 
                 _LOGGER.debug("LLM iteration %d: no content and no tool calls, breaking", iteration)
