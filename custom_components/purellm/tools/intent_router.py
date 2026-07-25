@@ -203,6 +203,35 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
 #   escalate to web_search — even when no "search" keyword matched.
 _ALWAYS_INCLUDE = {"get_current_datetime", "web_search", "report_garbled_speech"}
 
+# Fallback bundle used when NO intent matches.
+#
+# Previously a no-match sent the ENTIRE catalog (~3500 tokens, 24 tools). That
+# is the exact condition that produced the v7.61.0 "brain loops": with every
+# tool in front of it and no clear intent, the model would either monologue or
+# pick a wrong tool and burn a full extra round-trip.
+#
+# Instead send a small core: the two things an unclassified utterance is most
+# likely to actually want (device control / device state), plus the always-on
+# escape hatches. ~1400 tokens instead of ~3500.
+#
+# Losing niche tools on a no-match is acceptable because web_search is always
+# present — the model can still ground an off-topic question rather than
+# hallucinate. If this proves too tight, widen this set, do NOT go back to
+# sending everything.
+_CORE_FALLBACK_TOOLS = {
+    "control_device",
+    "check_device_status",
+} | _ALWAYS_INCLUDE
+
+# If the full catalog is already at or under this size, filtering buys nothing
+# and only costs KV prefix-cache reuse — send everything instead.
+_MIN_CATALOG_FOR_FALLBACK_FILTER = 8
+
+# Running match-rate counters. Purely observational: they tell us how often the
+# fallback path actually fires in real use, which is the input to deciding
+# whether the keyword patterns need widening. Reset on HA restart.
+_STATS = {"matched": 0, "unmatched": 0}
+
 
 def classify_intent(user_text: str) -> set[str]:
     """Classify user text into intent categories using keyword matching.
@@ -222,17 +251,64 @@ def classify_intent(user_text: str) -> set[str]:
     return matched
 
 
+def _match_rate() -> str:
+    """Format the running intent match rate for log output."""
+    total = _STATS["matched"] + _STATS["unmatched"]
+    if not total:
+        return "n/a"
+    return f"{_STATS['matched']}/{total} ({100 * _STATS['matched'] // total}%)"
+
+
 def filter_tools_by_intent(
     all_tools: list[dict[str, Any]],
     intents: set[str],
+    user_text: str | None = None,
 ) -> list[dict[str, Any]]:
     """Filter tool definitions to only those matching classified intents.
 
-    Returns all_tools unchanged if intents is empty (no match = fallback).
+    On no-match, falls back to a small core bundle rather than the full
+    catalog. Pass user_text to have unmatched utterances logged so the
+    keyword patterns can be grown from real usage.
     """
     if not intents:
-        _LOGGER.info("No intent matched — sending all %d tools (conversational cap will apply if none get called)", len(all_tools))
-        return all_tools
+        _STATS["unmatched"] += 1
+
+        # Catalog already small — filtering costs prefix-cache reuse for no gain.
+        if len(all_tools) <= _MIN_CATALOG_FOR_FALLBACK_FILTER:
+            _LOGGER.info(
+                "PureLLM intent-router: NO-MATCH utterance=%r → sending all %d "
+                "tools (catalog at/below %d, not worth filtering) [match rate %s]",
+                user_text, len(all_tools), _MIN_CATALOG_FOR_FALLBACK_FILTER,
+                _match_rate(),
+            )
+            return all_tools
+
+        filtered = [
+            tool for tool in all_tools
+            if tool.get("function", {}).get("name") in _CORE_FALLBACK_TOOLS
+        ]
+
+        # Defensive: if feature gating stripped the core bundle down to nothing,
+        # a toolless request would make the model answer ungrounded. Send the
+        # full catalog rather than no tools at all.
+        if not filtered:
+            _LOGGER.warning(
+                "PureLLM intent-router: NO-MATCH utterance=%r → core bundle "
+                "resolved to 0 tools, falling back to all %d",
+                user_text, len(all_tools),
+            )
+            return all_tools
+
+        _LOGGER.info(
+            "PureLLM intent-router: NO-MATCH utterance=%r → core bundle "
+            "%d/%d tools (%s) [match rate %s]",
+            user_text, len(filtered), len(all_tools),
+            ", ".join(sorted(t["function"]["name"] for t in filtered)),
+            _match_rate(),
+        )
+        return filtered
+
+    _STATS["matched"] += 1
 
     # Collect tool names for matched intents
     needed: set[str] = set(_ALWAYS_INCLUDE)
@@ -245,8 +321,9 @@ def filter_tools_by_intent(
     ]
 
     _LOGGER.info(
-        "Intent routing: %s → %d/%d tools (%s)",
-        intents, len(filtered), len(all_tools),
+        "PureLLM intent-router: MATCH %s → %d/%d tools (%s) [match rate %s]",
+        sorted(intents), len(filtered), len(all_tools),
         ", ".join(sorted(needed)),
+        _match_rate(),
     )
     return filtered

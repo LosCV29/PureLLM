@@ -1659,7 +1659,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
         all_tools = self._build_tools()
         intents = classify_intent(user_text)
-        tools = filter_tools_by_intent(all_tools, intents)
+        tools = filter_tools_by_intent(all_tools, intents, user_text)
 
         lang_code = (user_input.language or "en").split("-")[0].lower()
         system_prompt = self._get_effective_system_prompt(
