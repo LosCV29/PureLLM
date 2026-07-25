@@ -6,6 +6,7 @@ import logging
 import re
 import unicodedata
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
 from urllib.parse import quote
@@ -343,6 +344,41 @@ def _artist_norm_variants(text: str) -> tuple[str, str]:
     return deleted, spaced
 
 
+def _titles_resemble(query: str, title: str) -> bool:
+    """Does a MusicBrainz result title plausibly answer the requested title?
+
+    MusicBrainz's general fuzzy fallback ("<title> <artist>") returns ANY recording
+    by a matching artist, so a title check is the only thing stopping an unrelated
+    song from being treated as the canonical form of the request. Must stay loose
+    enough for the misheard-title cases MB exists to fix (Rollin'↔Rolling) and tight
+    enough to reject a different song ("Passive Aggressive"↛"Her").
+    """
+    if not query or not title:
+        return False
+    norm_q = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", _strip_accents(query.lower()))).strip()
+    norm_t = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", _strip_accents(title.lower()))).strip()
+    if not norm_q or not norm_t:
+        return False
+    # Containment covers "Her" ⊂ "Her Fault" and "<title> (Live)" style suffixes
+    if norm_q in norm_t or norm_t in norm_q:
+        return True
+    q_words = norm_q.split()
+    t_words = set(norm_t.split())
+    # Token coverage: half the requested words must match a title word, allowing
+    # a 4+ char shared prefix for spelling variants (rollin↔rolling).
+    matched = 0
+    for qw in q_words:
+        if qw in t_words or any(
+            min(len(qw), len(tw)) >= 4 and (qw.startswith(tw[:4]) or tw.startswith(qw[:4]))
+            for tw in t_words
+        ):
+            matched += 1
+    if matched * 2 >= len(q_words):
+        return True
+    # Whole-string similarity as a last resort for heavy STT garble on short titles
+    return SequenceMatcher(None, norm_q, norm_t).ratio() >= 0.7
+
+
 def _artist_contains(a: str, b: str) -> bool:
     """Containment check tolerant of punctuation differences (K-Camp ↔ K CAMP).
 
@@ -453,6 +489,15 @@ async def _musicbrainz_resolve(
                 break
             # Use fuzzy artist matching — "OT Genesis" must match "O.T. Genasis"
             if artist and not _artist_names_match(artist, item_artist):
+                continue
+            # The general fuzzy query returns ANY recording by the artist, so the
+            # title must still resemble what was asked for. Without this,
+            # "Passive Aggressive" by Wale "canonicalized" to the unrelated "Her".
+            if not _titles_resemble(query, title):
+                _LOGGER.debug(
+                    "MUSICBRAINZ: Rejected '%s' for query '%s' (title mismatch)",
+                    title, query,
+                )
                 continue
             _LOGGER.info("MUSICBRAINZ: Resolved %s '%s' → '%s' (artist: '%s')",
                          media_type, query, title, item_artist)
