@@ -99,16 +99,33 @@ def _normalize_unicode(text: str | None) -> str:
     return text
 
 
+# Typographic punctuation → ASCII. Apple Music titles use curly quotes and
+# en/em dashes ("I’m Up", "Ain’t It Funny"); voice/text queries arrive with the
+# plain ASCII forms. Without this fold the two never compare equal and the
+# correct item scores 0 on name and is rejected outright.
+_PUNCT_FOLD = str.maketrans({
+    "‘": "'", "’": "'", "‚": "'", "‛": "'", "′": "'",
+    "ʼ": "'", "´": "'", "`": "'",
+    "“": '"', "”": '"', "„": '"', "‟": '"', "″": '"',
+    "‐": "-", "‑": "-", "‒": "-", "–": "-", "—": "-",
+    "―": "-", "−": "-",
+    "…": "...", " ": " ",
+})
+
+
 def _strip_accents(text: str) -> str:
-    """Strip accents/diacritics from text for fuzzy matching.
+    """Strip accents/diacritics and fold typographic punctuation for fuzzy matching.
 
     Converts characters like á→a, é→e, í→i, ó→o, ú→u, ñ→n so that
     accent-free queries (e.g. 'debi tirar mas fotos') match accented
     titles (e.g. 'DeBÍ TiRAR MáS fOtOs').
+
+    Also folds smart quotes/dashes to ASCII (’→', –→-) so a spoken/typed
+    "I'm Up" matches Apple Music's "I’m Up".
     """
     if not text:
         return ""
-    nfkd = unicodedata.normalize("NFKD", text)
+    nfkd = unicodedata.normalize("NFKD", text.translate(_PUNCT_FOLD))
     return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
@@ -1467,16 +1484,25 @@ class MusicController:
 
     def _rank_matches(
         self, results: list[dict], query_lower: str, artist_lower: str,
-        media_type: str, limit: int = 5,
+        media_type: str, limit: int = 5, alt_query_lower: str = "",
     ) -> list[dict]:
         """Score and rank MA results, returning the top `limit` as candidate dicts.
 
         Each candidate carries the fields the LLM needs to pick and play:
         name, artist, album, media_type, media_uri, explicit.
+
+        `alt_query_lower` is an optional second title to score against (the
+        MusicBrainz-canonical form of a misheard query). Each item keeps its
+        better score, so a candidate found only via the canonical title is not
+        rejected for failing to match the raw spoken one.
         """
         scored: list[tuple[int, dict]] = []
         for item in results:
             score, name_score = self._score_item(item, query_lower, artist_lower)
+            if alt_query_lower and alt_query_lower != query_lower:
+                alt_score, alt_name = self._score_item(item, alt_query_lower, artist_lower)
+                if alt_name > 0 and alt_score > 0 and (name_score <= 0 or alt_score > score):
+                    score, name_score = alt_score, alt_name
             if name_score <= 0 or score <= 0:
                 continue
             scored.append((score, item))
@@ -1558,6 +1584,7 @@ class MusicController:
         _add(await self._ma_search_raw(ma_config_entry_id, query, media_type))
 
         # MusicBrainz canonicalization for vague/misheard track & album names.
+        mb_canonical = ""
         if media_type in ("track", "album"):
             try:
                 session = async_get_clientsession(self._hass)
@@ -1567,6 +1594,7 @@ class MusicController:
                 if mb_title and mb_title.lower() != query.lower():
                     _LOGGER.info("SEARCH: MusicBrainz resolved '%s' → '%s' (artist: '%s')",
                                  query, mb_title, mb_artist or resolved_artist)
+                    mb_canonical = mb_title
                     _add(await self._ma_search_raw(
                         ma_config_entry_id, f"{mb_title} {mb_artist or resolved_artist}".strip(), media_type,
                     ))
@@ -1576,7 +1604,13 @@ class MusicController:
 
         query_lower = _normalize_numerals(_strip_accents(query.lower()))
         artist_lower = _strip_accents(resolved_artist.lower()) if resolved_artist else ""
-        ranked = self._rank_matches(candidates, query_lower, artist_lower, media_type, limit=5)
+        alt_query_lower = (
+            _normalize_numerals(_strip_accents(mb_canonical.lower())) if mb_canonical else ""
+        )
+        ranked = self._rank_matches(
+            candidates, query_lower, artist_lower, media_type, limit=5,
+            alt_query_lower=alt_query_lower,
+        )
 
         if not ranked:
             return {"results": [], "message": f"No {media_type} found for '{query}'"
