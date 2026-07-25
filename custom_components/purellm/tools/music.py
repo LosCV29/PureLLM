@@ -286,7 +286,7 @@ async def _musicbrainz_themed_albums(
         if not rg_artist_name:
             continue
         rg_artist_lower = _strip_accents(rg_artist_name.lower())
-        if not (artist_lower in rg_artist_lower or rg_artist_lower in artist_lower):
+        if not _artist_contains(artist_lower, rg_artist_lower):
             continue
 
         title = rg.get("title", "").strip()
@@ -330,27 +330,64 @@ async def _musicbrainz_themed_albums(
     return results
 
 
+def _artist_norm_variants(text: str) -> tuple[str, str]:
+    """Two normalizations of an artist name: punctuation-deleted and punctuation-as-space.
+
+    "K-Camp" → ("kcamp", "k camp"); "O.T. Genasis" → ("ot genasis", "o t genasis").
+    Both are needed: deleting punctuation makes O.T.↔OT match, while turning it into
+    a space makes K-Camp↔K CAMP match. Callers try every combination.
+    """
+    base = _strip_accents(text.lower())
+    deleted = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", "", base)).strip()
+    spaced = re.sub(r"\s+", " ", re.sub(r"[^a-z0-9\s]", " ", base)).strip()
+    return deleted, spaced
+
+
+def _artist_contains(a: str, b: str) -> bool:
+    """Containment check tolerant of punctuation differences (K-Camp ↔ K CAMP).
+
+    Stricter than _artist_names_match (no word-overlap/prefix fuzz) — used where
+    the caller only ever wanted "one name contains the other".
+    """
+    if not a or not b:
+        return False
+    for na in _artist_norm_variants(a):
+        for nb in _artist_norm_variants(b):
+            if len(na) >= 2 and len(nb) >= 2 and (na in nb or nb in na):
+                return True
+    return False
+
+
 def _artist_names_match(a: str, b: str) -> bool:
     """Fuzzy artist name comparison for voice/STT variations.
 
-    Handles: OT Genesis↔O.T. Genasis, Jay Z↔JAY-Z, Tupac↔2Pac Shakur.
+    Handles: OT Genesis↔O.T. Genasis, Jay Z↔JAY-Z, K-Camp↔K CAMP, Tupac↔2Pac Shakur.
     Strips punctuation/dots, then checks word overlap (>50% of words match).
     """
     if not a or not b:
         return False
-    # Normalize: strip accents, punctuation, dots → just letters/numbers/spaces
-    norm_a = re.sub(r"[^a-z0-9\s]", "", _strip_accents(a.lower()))
-    norm_b = re.sub(r"[^a-z0-9\s]", "", _strip_accents(b.lower()))
-    # Direct containment after normalization
-    if norm_a in norm_b or norm_b in norm_a:
+    # Normalize: strip accents, punctuation, dots → just letters/numbers/spaces.
+    # Punctuation is both deleted and spaced-out; a match on any pairing counts.
+    for norm_a in _artist_norm_variants(a):
+        for norm_b in _artist_norm_variants(b):
+            if _artist_norm_match(norm_a, norm_b):
+                return True
+    return False
+
+
+def _artist_norm_match(norm_a: str, norm_b: str) -> bool:
+    """Match two already-normalized artist names."""
+    # Direct containment after normalization (min 2 chars — a bare "k" matches everything)
+    if len(norm_a) >= 2 and len(norm_b) >= 2 and (norm_a in norm_b or norm_b in norm_a):
         return True
     # Word overlap: "ot genesis" vs "ot genasis" → {"ot","genesis"} vs {"ot","genasis"}
     words_a = set(norm_a.split())
     words_b = set(norm_b.split())
     if not words_a or not words_b:
         return False
-    overlap = words_a & words_b
-    if overlap:
+    # Ignore 1-char tokens: spacing out "O.T. Genasis" → "o t genasis" must not
+    # collide with "T-Pain" → "t pain" on the shared "t".
+    if {w for w in words_a & words_b if len(w) >= 2}:
         return True
     # Prefix matching on individual words: "genesis" ↔ "genasis" (5-char prefix "genes"/"genas" — no)
     # Better: check if any word pair shares a 4+ char prefix
@@ -1084,7 +1121,7 @@ class MusicController:
             )
             for r in _parse_ma_results(search_result, "album"):
                 item_artist = _strip_accents(_extract_artist(r, lowercase=True))
-                if not (artist_lower in item_artist or item_artist in artist_lower):
+                if not _artist_contains(artist_lower, item_artist):
                     continue
                 item_name = _strip_accents((r.get("name") or r.get("title") or "").lower())
                 target_name = _strip_accents(album_name.lower())
@@ -1130,7 +1167,7 @@ class MusicController:
         artist_albums = []
         for r in results:
             item_artist = _strip_accents(_extract_artist(r, lowercase=True))
-            if not (artist_lower in item_artist or item_artist in artist_lower):
+            if not _artist_contains(artist_lower, item_artist):
                 continue
             album_name = (r.get("name") or r.get("title") or "").strip()
             album_type_val = (r.get("album_type") or "").lower()
