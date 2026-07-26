@@ -195,6 +195,20 @@ async def control_device(
     known_domains = {"light", "switch", "cover", "fan", "lock", "climate", "media_player",
                      "vacuum", "scene", "script", "input_boolean", "automation", "button",
                      "siren", "humidifier", "sensor", "binary_sensor"}
+    # A bare domain word ("media_player", "light") is not a device name. The
+    # model emits it when it has no better tool for the job; fuzzy matching
+    # then substring-matches an arbitrary entity whose entity_id contains the
+    # domain and we act on a random device in a random room (2026-07-26:
+    # control_device({'device':'media_player','action':'next'}) skipped a
+    # track on the master bathroom Voice satellite). Refuse it outright.
+    if device_name and "." not in device_name and device_name.lower() in known_domains:
+        _LOGGER.warning(
+            "control_device called with bare domain '%s' as device name — refusing "
+            "(no specific device was named)", device_name,
+        )
+        return {"error": f"No specific device was named. '{device_name}' is a device "
+                         f"category, not a device. Ask which device or room to use."}
+
     if device_name and "." in device_name:
         potential_domain = device_name.split(".")[0]
         if potential_domain in known_domains:

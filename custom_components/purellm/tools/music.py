@@ -856,11 +856,11 @@ class MusicController:
             elif action == "stop":
                 return await self._stop(all_players, target_players if target_players else None)
             elif action == "skip_next":
-                return await self._skip_next(all_players)
+                return await self._skip_next(self._transport_players(all_players, target_players))
             elif action == "skip_previous":
-                return await self._skip_previous(all_players)
+                return await self._skip_previous(self._transport_players(all_players, target_players))
             elif action == "restart_track":
-                return await self._restart_track(all_players)
+                return await self._restart_track(self._transport_players(all_players, target_players))
             elif action == "what_playing":
                 return await self._what_playing(all_players)
             elif action == "transfer":
@@ -926,6 +926,22 @@ class MusicController:
                     break
                 await asyncio.sleep(0.5)
                 elapsed += 0.5
+
+    def _transport_players(
+        self, all_players: list[str], target_players: list[str] | None,
+    ) -> list[str]:
+        """Search order for transport commands (skip / previous / restart).
+
+        When the user named a room ("skip on the kitchen speaker"), that room
+        is searched FIRST — previously skip/previous/restart ignored the room
+        entirely and just took the first player in 'playing' state from the
+        whole house, so a skip aimed at one room could land in another.
+        Falls back to every player when the named room isn't playing, so a
+        bare "next track" still works from any satellite.
+        """
+        if not target_players:
+            return all_players
+        return target_players + [p for p in all_players if p not in target_players]
 
     def _find_player_by_state(self, target_state: str, all_players: list[str]) -> str | None:
         """Find a player in a specific state from configured players only."""

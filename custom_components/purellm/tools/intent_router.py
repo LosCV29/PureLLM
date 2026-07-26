@@ -26,8 +26,20 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
     "music": [
         "play ", "shuffle", "pause", "resume", "skip",
         "next song", "previous song", "restart track",
+        # Bare transport commands. These were falling through to NO-MATCH →
+        # core bundle (which has no control_music) → the model improvised with
+        # control_device({'device':'media_player'}) and skipped on a random
+        # media_player entity in another room (2026-07-26). Note the old
+        # " track " / " song " patterns require a TRAILING space, so the very
+        # common "next track." / "skip this song." never matched.
+        "next track", "next tracks", "previous track", "prev track",
+        "last song", "last track", "go back a song", "go back a track",
+        "skip back", "skip ahead", "skip this", "skip it", "next one",
+        "restart the song", "restart the track", "play it again",
+        "play that again", "replay", "start over", "from the top",
+        "what song", "what's this song", "whats this song", "who is this",
         "what's playing", "whats playing", "now playing",
-        " album", " artist", " song ", " track ",
+        " album", " artist", " song", " track",
         "music", "transfer to the", "transfer to my",
         "music volume", "the music volume",
         "raise the music", "lower the music",
@@ -221,6 +233,15 @@ _ALWAYS_INCLUDE = {"get_current_datetime", "web_search", "report_garbled_speech"
 _CORE_FALLBACK_TOOLS = {
     "control_device",
     "check_device_status",
+    # control_music MUST be here. Without it, any music utterance the keyword
+    # patterns miss ("next track.") reaches the model with control_device as
+    # the only plausible tool — and the model dutifully calls
+    # control_device({'device': 'media_player', 'action': 'next'}), which
+    # fuzzy-matches some unrelated media_player entity and skips a track in
+    # the wrong room (2026-07-26: kitchen "next track" skipped on the master
+    # bathroom Voice satellite). The router must never make a wrong tool the
+    # only option for a whole intent class.
+    "control_music",
 } | _ALWAYS_INCLUDE
 
 # If the full catalog is already at or under this size, filtering buys nothing
