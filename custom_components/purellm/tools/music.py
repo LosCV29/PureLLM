@@ -344,6 +344,28 @@ def _artist_norm_variants(text: str) -> tuple[str, str]:
     return deleted, spaced
 
 
+def _search_miss(media_type: str, query: str, artist: str = "") -> dict:
+    """Terminal 'not in the catalog' result for a music search.
+
+    A bare "no results" message reads to the model as "try another spelling",
+    so it re-searches with variations until the tool-iteration cap and the turn
+    dies with "Sorry, the LLM failed to respond" (2026-07-26, "Passive Aggres-Her"
+    by Wale — a real song, just not on Apple Music). The instruction field makes
+    giving up the explicit next step. Same pattern as tools/search.py.
+    """
+    label = f"'{query}'" + (f" by {artist}" if artist else "")
+    return {
+        "results": [],
+        "message": f"No {media_type} found for {label}.",
+        "instruction": (
+            f"This {media_type} is NOT in the music catalog. Do NOT search again "
+            f"with a different spelling, a shorter query, or a different media_type "
+            f"— the catalog has already been checked. Tell the user you couldn't "
+            f"find {label} and stop. Do not play something else instead."
+        ),
+    }
+
+
 def _titles_resemble(query: str, title: str) -> bool:
     """Does a MusicBrainz result title plausibly answer the requested title?
 
@@ -1711,8 +1733,7 @@ class MusicController:
         )
 
         if not ranked:
-            return {"results": [], "message": f"No {media_type} found for '{query}'"
-                    + (f" by {artist}" if artist else "")}
+            return _search_miss(media_type, query, artist)
         _LOGGER.info("SEARCH: %d candidates for %s '%s': %s", len(ranked), media_type, query,
                      [c["name"] for c in ranked])
         return {"results": ranked}
@@ -1743,7 +1764,7 @@ class MusicController:
         # Official curated playlists first, then the rest.
         out.sort(key=lambda x: 0 if x["official"] else 1)
         if not out:
-            return {"results": [], "message": f"No playlist found for '{query}'"}
+            return _search_miss("playlist", query)
         return {"results": out[:5]}
 
     async def _play(self, query: str, media_type: str, room: str, target_players: list[str], artist: str = "", album: str = "") -> dict:
@@ -1799,7 +1820,8 @@ class MusicController:
                     _LOGGER.debug("MUSIC: MusicBrainz fallback failed: %s", err)
 
             if not match:
-                return {"error": f"Could not find {media_type} matching '{query}'" + (f" by {artist}" if artist else "")}
+                miss = _search_miss(media_type, query, artist)
+                return {"error": miss["message"], "instruction": miss["instruction"]}
 
             # Play the found media
             found_name = match["name"]

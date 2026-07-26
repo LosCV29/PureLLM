@@ -50,6 +50,31 @@ _ACTION_WORDS = frozenset({
 })
 
 
+async def _already_resolved(value: dict) -> dict:
+    """Awaitable wrapper so a precomputed tool result can join asyncio.gather."""
+    return value
+
+
+def _describe_search(tool_call: dict, previous: str | None) -> str:
+    """Human phrase for a music search that found nothing ("X by Y").
+
+    Keeps the FIRST description of the turn: the model narrows its query on each
+    retry ("Passive Aggressive Her" → "Wale"), so the last attempt is the least
+    like what the user actually asked for.
+    """
+    if previous:
+        return previous
+    try:
+        args = json.loads(tool_call["function"]["arguments"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return "that"
+    query = (args.get("query") or args.get("album") or "").strip()
+    artist = (args.get("artist") or "").strip()
+    if not query:
+        return f"anything by {artist}" if artist else "that"
+    return f"\"{query}\"" + (f" by {artist}" if artist else "")
+
+
 def _is_followup_dismissal(cleaned_text: str) -> bool:
     """Check if text is likely a dismissal in follow-up context.
 
@@ -1928,6 +1953,11 @@ class PureLLMConversationEntity(ConversationEntity):
 
         called_tools: set[str] = set()
         last_tool_speech: str | None = None
+        # Music-search give-up tracking. A miss used to send the model hunting
+        # through spelling variants until the iteration cap, ending the turn on
+        # "Sorry, the LLM failed to respond" instead of "I couldn't find it".
+        failed_searches = 0
+        last_failed_search: str | None = None
 
         for iteration in range(5):  # Max 5 tool iterations
             kwargs = {
@@ -2139,6 +2169,29 @@ class PureLLMConversationEntity(ConversationEntity):
                             arguments = {}
 
                         _LOGGER.info("Tool call: %s(%s)", tool_name, arguments)
+
+                        # Deterministic loop stop: after two searches came back
+                        # empty, further catalog searches this turn cannot
+                        # succeed — the model is just permuting the query. Skip
+                        # the MA/MusicBrainz round-trip and hand back the
+                        # terminal instruction instead of burning an iteration.
+                        if tool_name == "search_music" and failed_searches >= 2:
+                            _LOGGER.info(
+                                "Search budget exhausted (%d empty searches); "
+                                "short-circuiting %s", failed_searches, tool_name,
+                            )
+                            tool_tasks.append(_already_resolved({
+                                "results": [],
+                                "message": f"Already searched — {last_failed_search} "
+                                           f"is not in the catalog.",
+                                "instruction": (
+                                    "STOP SEARCHING. The catalog has been checked "
+                                    "and this is not available. Tell the user you "
+                                    "couldn't find it. Do not call any more tools."
+                                ),
+                            }))
+                            continue
+
                         tool_tasks.append(self._execute_tool(tool_name, arguments))
 
                     tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
@@ -2159,6 +2212,20 @@ class PureLLMConversationEntity(ConversationEntity):
                             # (some local model templates do this after tool calls).
                             if result.get("response_text"):
                                 last_tool_speech = result["response_text"]
+                            # Track empty catalog searches so the turn can end
+                            # honestly ("I couldn't find X") instead of with the
+                            # generic LLM-failure message.
+                            if tool_call["function"]["name"] in ("search_music", "control_music"):
+                                if "results" in result and not result["results"]:
+                                    failed_searches += 1
+                                    last_failed_search = _describe_search(
+                                        tool_call, last_failed_search,
+                                    )
+                                elif result.get("instruction") and result.get("error"):
+                                    failed_searches += 1
+                                    last_failed_search = _describe_search(
+                                        tool_call, last_failed_search,
+                                    )
                         else:
                             content = str(result)
 
@@ -2198,6 +2265,17 @@ class PureLLMConversationEntity(ConversationEntity):
         if last_tool_speech:
             _LOGGER.info("LLM gave no final text; speaking tool response_text fallback")
             yield {"content": last_tool_speech}
+            return
+        # Every search this turn came back empty: we KNOW the outcome, so say it
+        # plainly rather than blaming the model. "Sorry, the LLM failed to
+        # respond" for a song that simply isn't in the catalog reads as a broken
+        # assistant (2026-07-26).
+        if last_failed_search:
+            _LOGGER.info(
+                "LLM hit the iteration cap after %d empty searches; speaking an "
+                "honest not-found reply for %s", failed_searches, last_failed_search,
+            )
+            yield {"content": f"I couldn't find {last_failed_search} in the music catalog."}
             return
         _LOGGER.error("LLM produced no response after %d iterations", iteration + 1)
         yield {"content": "Sorry, the LLM failed to respond. Please try again."}
