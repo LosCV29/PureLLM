@@ -344,6 +344,36 @@ def _artist_norm_variants(text: str) -> tuple[str, str]:
     return deleted, spaced
 
 
+# Music provider preference. Apple Music is the primary subscription; Spotify was
+# added 2026-07-26 purely as a BACKUP for things Apple's catalog doesn't carry
+# (mixtapes and indie releases — e.g. Wale's "Passive-Aggress Her", which exists
+# on Spotify and not on Apple). Lower number = preferred.
+#
+# This is deliberately a TIE-BREAK, not a score penalty: the provider must never
+# override a genuinely better title/artist match, it only decides which copy of
+# an equally-good match to play. So Apple wins whenever it has the song, and
+# Spotify is reached only when Apple's candidates score lower or don't exist.
+_PROVIDER_PRIORITY = {"apple_music": 0, "spotify": 1}
+_PROVIDER_FALLBACK_RANK = 5
+
+
+def _provider_of(uri: str) -> str:
+    """Provider domain from a Music Assistant URI.
+
+    MA appends an instance id to the scheme when a provider is configured as an
+    instance ("spotify--zjw5KojN://track/123", "apple_music--yQhFUrao://playlist/pl.x"),
+    so the scheme cannot be compared directly.
+    """
+    if not uri or "://" not in uri:
+        return ""
+    return uri.split("://", 1)[0].split("--", 1)[0]
+
+
+def _provider_rank(uri: str) -> int:
+    """Sort rank for a URI's provider (lower = preferred)."""
+    return _PROVIDER_PRIORITY.get(_provider_of(uri), _PROVIDER_FALLBACK_RANK)
+
+
 def _search_miss(media_type: str, query: str, artist: str = "") -> dict:
     """Terminal 'not in the catalog' result for a music search.
 
@@ -1570,11 +1600,13 @@ class MusicController:
             item_uri = str(item.get("uri") or item.get("media_id") or "")
             # Deterministic tie-break: when two candidates score equally (e.g.
             # two near-identical masters both credited to the exact artist), the
-            # raw MA result order varies call-to-call, so pick the lexically
-            # smallest uri. This makes multi-room playback resolve the SAME
-            # recording in every room instead of diverging per call.
+            # raw MA result order varies call-to-call, so prefer the primary
+            # provider (Apple over Spotify) and then the lexically smallest uri.
+            # This makes multi-room playback resolve the SAME recording in every
+            # room instead of diverging per call.
             if score > best_score or (
-                score == best_score and best_uri is not None and item_uri < best_uri
+                score == best_score and best_uri is not None
+                and (_provider_rank(item_uri), item_uri) < (_provider_rank(best_uri), best_uri)
             ):
                 best_score = score
                 best = item
@@ -1626,16 +1658,35 @@ class MusicController:
             if name_score <= 0 or score <= 0:
                 continue
             scored.append((score, item))
-        # Sort by score desc, then by uri asc as a deterministic tie-break so the
-        # candidate order the LLM sees is stable across identical searches.
-        scored.sort(key=lambda x: (-x[0], str(x[1].get("uri") or x[1].get("media_id") or "")))
+        # Sort by score desc, then preferred provider, then uri asc — a
+        # deterministic order so the candidate list the LLM sees is stable
+        # across identical searches and Apple wins an otherwise-equal Spotify.
+        scored.sort(key=lambda x: (
+            -x[0],
+            _provider_rank(str(x[1].get("uri") or x[1].get("media_id") or "")),
+            str(x[1].get("uri") or x[1].get("media_id") or ""),
+        ))
 
         out: list[dict] = []
         seen_uris: set[str] = set()
+        seen_items: set[tuple[str, str]] = set()
         for score, item in scored:
             uri = item.get("uri") or item.get("media_id")
             if not uri or uri in seen_uris:
                 continue
+            # Cross-provider dedupe: with Apple + Spotify both configured the
+            # same song comes back twice, and two copies of one recording would
+            # eat two of the five candidate slots the LLM gets to choose from.
+            # Sorted preferred-provider-first, so the copy kept is the Apple one.
+            ident = (
+                _strip_accents((item.get("name") or item.get("title") or "").lower()).strip(),
+                _strip_accents(_extract_artist(item, lowercase=True)).strip(),
+            )
+            if ident in seen_items:
+                _LOGGER.debug("MUSIC: Dropping duplicate %s from %s (already have it)",
+                              ident, _provider_of(uri))
+                continue
+            seen_items.add(ident)
             seen_uris.add(uri)
             album_info = item.get("album") or {}
             if isinstance(album_info, dict):
