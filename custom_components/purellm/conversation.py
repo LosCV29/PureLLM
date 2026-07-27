@@ -925,6 +925,11 @@ class PureLLMConversationEntity(ConversationEntity):
         self._attr_supported_features = conversation.ConversationEntityFeature.CONTROL
         self.system_prompt = config.get(CONF_SYSTEM_PROMPT, DEFAULT_SYSTEM_PROMPT)
 
+        # True when the intent router classified the current utterance. Defaults
+        # to True so any path that never calls classify_intent (service calls,
+        # ask_and_act) keeps pre-v7.65.0 behaviour and stays fail-open.
+        self._intent_matched = True
+
         # Custom location
         def _parse_coord(key):
             try:
@@ -1685,6 +1690,9 @@ class PureLLMConversationEntity(ConversationEntity):
         all_tools = self._build_tools()
         intents = classify_intent(user_text)
         tools = filter_tools_by_intent(all_tools, intents, user_text)
+        # Gates the routine-domain guard in _execute_control_device: on a
+        # no-match turn, automations/scripts/scenes/buttons are off-limits.
+        self._intent_matched = bool(intents)
 
         lang_code = (user_input.language or "en").split("-")[0].lower()
         system_prompt = self._get_effective_system_prompt(
@@ -2534,6 +2542,7 @@ class PureLLMConversationEntity(ConversationEntity):
             arguments, self.hass, self.voice_scripts,
             device_id=self._current_user_input.device_id if self._current_user_input else None,
             room_player_mapping=self.room_player_mapping,
+            allow_routine_domains=self._intent_matched,
         )
 
     async def _execute_control_music(self, arguments: dict[str, Any]) -> dict[str, Any]:

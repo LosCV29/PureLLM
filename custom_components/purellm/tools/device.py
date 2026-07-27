@@ -139,6 +139,7 @@ async def control_device(
     voice_scripts: list[dict[str, str]] | None = None,
     device_id: str | None = None,
     room_player_mapping: dict[str, str] | None = None,
+    allow_routine_domains: bool = True,
 ) -> dict[str, Any]:
     """Control smart home devices.
 
@@ -472,6 +473,37 @@ async def control_device(
                     elif entity_id == close_script and not is_open:
                         return {"response_text": f"The {trigger_name} is already closed."}
                 break
+
+    # 2026-07-27 v7.65.0: routine-domain guard for unclassified utterances.
+    # When the intent router matched nothing, the caller passes
+    # allow_routine_domains=False and automations/scripts/scenes/buttons become
+    # untouchable. Rationale: an unclassified utterance is conversation, and a
+    # model that picks a tool anyway tends to reach for a "run this" entity —
+    # 2026-07-27 an abliterated brain answered 'Say the word "fuck."' by firing
+    # control_device({'device': 'automation.goodnight_voice', 'action':
+    # 'trigger'}) on the live house. Lights/fans/covers/media stay reachable so
+    # the v7.61/7.62 no-match coverage (e.g. a missed "next track.") is intact;
+    # only whole-house routines are gated. User-configured voice scripts are
+    # exempt — they matched an explicit trigger phrase, not a guess.
+    _ROUTINE_DOMAINS = {"automation", "script", "scene", "button"}
+    if not allow_routine_domains and not matched_voice_script and entities_to_control:
+        _blocked = [
+            (eid, name) for eid, name in entities_to_control
+            if eid.split(".")[0] in _ROUTINE_DOMAINS
+        ]
+        if _blocked:
+            entities_to_control = [
+                (eid, name) for eid, name in entities_to_control
+                if eid.split(".")[0] not in _ROUTINE_DOMAINS
+            ]
+            _LOGGER.warning(
+                "Routine-domain guard: refused %s on an utterance the intent "
+                "router did not classify", [eid for eid, _ in _blocked],
+            )
+            if not entities_to_control:
+                return {"error": "That is not a device action. No device was "
+                                 "controlled. Answer the user conversationally "
+                                 "instead and do not call another tool."}
 
     # Build service calls first, then execute in parallel
     service_calls: list[tuple[str, str, dict, str]] = []  # (domain, service, data, friendly_name)
