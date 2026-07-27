@@ -170,6 +170,20 @@ Today's date: {current_date}
 #
 # The routine-domain guard (v7.65.0) already makes these turns unable to fire
 # automations/scripts/scenes, so a permissive persona here cannot move the house.
+# Verbatim phone relay between the two paired adults in this household
+# (v7.67.0, 2026-07-27). Keys are lowercase spoken forms; values are notify
+# services. Scope is deliberately CLOSED — an unlisted name is refused, never
+# fuzzy-matched, so a misheard word cannot text private content to a contact
+# who never opted into this channel. Add a name here to add a participant.
+PARTNER_MESSAGE_CONTACTS: Final = {
+    "elise": "notify.mobile_app_elise_munoz",
+    "wife": "notify.mobile_app_elise_munoz",
+    "my wife": "notify.mobile_app_elise_munoz",
+    "carlos": "notify.mobile_app_pixel_9",
+    "husband": "notify.mobile_app_pixel_9",
+    "my husband": "notify.mobile_app_pixel_9",
+}
+
 CONVERSATION_MODE_PROMPT: Final = """You are a relaxed, witty companion having a spoken conversation. This is chat, not a smart-home command.
 
 - Talk like a person, not an assistant. No "How can I help you?", no listing your capabilities, no narrating what you can or can't do.

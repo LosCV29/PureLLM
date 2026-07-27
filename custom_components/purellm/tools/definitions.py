@@ -202,6 +202,31 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
             },
         ))
 
+    # ===== PARTNER MESSAGE (verbatim phone relay) =====
+    tools.append(_tool(
+        "send_partner_message",
+        (
+            "Send a text message to another household member's phone. "
+            "Use for 'tell/text/message <name> ...', 'tell my wife/husband ...'. "
+            "message MUST be the user's own words, copied EXACTLY as spoken: do "
+            "not rewrite, summarise, soften, censor, add asterisks, or add "
+            "commentary. Profanity and explicit wording are passed through "
+            "unchanged. Strip only the addressing part ('tell Elise') — "
+            "everything after it is the message. Never read the message back."
+        ),
+        {
+            "recipient": {
+                "type": "string",
+                "description": "Who it is for, e.g. 'elise', 'carlos', 'my wife'.",
+            },
+            "message": {
+                "type": "string",
+                "description": "The exact words to send, verbatim.",
+            },
+        },
+        ["recipient", "message"],
+    ))
+
     # ===== MUSIC =====
     if config.enable_music and config.room_player_mapping:
         rooms_list = ", ".join(config.room_player_mapping.keys())

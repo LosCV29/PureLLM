@@ -656,6 +656,7 @@ from .const import (
     DEFAULT_ROOM_PLAYER_MAPPING,
     DEFAULT_SYSTEM_PROMPT,
     CONVERSATION_MODE_PROMPT,
+    PARTNER_MESSAGE_CONTACTS,
     DEFAULT_THERMOSTAT_MAX_TEMP,
     DEFAULT_THERMOSTAT_MAX_TEMP_CELSIUS,
     DEFAULT_THERMOSTAT_MIN_TEMP,
@@ -678,6 +679,7 @@ from .tools.intent_router import classify_intent, filter_tools_by_intent
 
 # Tool handlers
 from .tools import weather as weather_tool
+from .tools import partner_message as partner_message_tool
 from .tools import sports as sports_tool
 from .tools import places as places_tool
 from .tools import wikipedia as wikipedia_tool
@@ -2687,6 +2689,9 @@ class PureLLMConversationEntity(ConversationEntity):
                     room_player_mapping=self.room_player_mapping
                 ),
                 "manage_list": lambda: lists_tool.manage_list(arguments, self.hass),
+                "send_partner_message": lambda: partner_message_tool.send_partner_message(
+                    arguments, self.hass, partner_map=PARTNER_MESSAGE_CONTACTS,
+                ),
                 # Places (with notification post-processing)
                 "find_nearby_places": lambda: places_tool.find_nearby_places(
                     arguments, self._session, self.google_places_api_key,

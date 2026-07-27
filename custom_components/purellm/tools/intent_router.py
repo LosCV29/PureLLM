@@ -23,6 +23,21 @@ _LOGGER = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _INTENT_PATTERNS: dict[str, list[str]] = {
+    # Verbatim phone relay between household members (v7.67.0). Patterns are
+    # addressing forms, NOT content words, because the message body is
+    # arbitrary: "tell Elise I want to play later" also matches the music
+    # intent on "play ", and that is fine — classify_intent returns a SET, so
+    # both tool groups are offered and the model picks. What matters is that
+    # send_partner_message is never the missing option.
+    "partner_message": [
+        "tell elise", "tell carlos", "tell my wife", "tell my husband",
+        "text elise", "text carlos", "text my wife", "text my husband",
+        "message elise", "message carlos", "message my wife",
+        "message my husband", "send elise", "send carlos",
+        "send a message to elise", "send a message to carlos",
+        "let elise know", "let carlos know",
+        "ask elise", "ask carlos",
+    ],
     "music": [
         "play ", "shuffle", "pause", "resume", "skip",
         "next song", "previous song", "restart track",
@@ -205,6 +220,7 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
     "search": ["web_search"],
     "sofabaton": ["control_sofabaton", "control_device"],
     "plants": ["check_plant_status"],
+    "partner_message": ["send_partner_message"],
 }
 
 # Tools that are always included regardless of matched intent.
