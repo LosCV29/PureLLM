@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any, TYPE_CHECKING
 
-from ..utils.fuzzy_matching import find_entity_by_name
+from ..utils.fuzzy_matching import find_entity_by_name, infer_domains_from_name
 from ..utils.helpers import format_human_readable_state, get_friendly_name
 from .fan_speed import LEVEL_MAP as FAN_LEVEL_MAP
 from .thermostat import HVAC_MODE_MAP
@@ -316,6 +316,29 @@ async def control_device(
     entities_to_control = []
     matched_voice_script = None
 
+    # Domain preference for fuzzy matching: an explicit `domain` argument wins;
+    # otherwise find_entity_by_name infers it from the device noun itself.
+    _domain_pref = {domain_filter} if domain_filter and domain_filter != "all" else None
+
+    def _resolve_device(name: str) -> tuple[str | None, str | None]:
+        """Resolve a device name, scoping by area when the model gave one.
+
+        Tries "<area> <device>" first so a room-qualified alias wins, then the
+        bare device name. Both attempts carry the domain preference so a cover
+        can never outrank a light when the user said "light".
+        """
+        if area_name:
+            scoped_id, scoped_name = find_entity_by_name(
+                hass, f"{area_name} {name}", preferred_domains=_domain_pref,
+            )
+            if scoped_id:
+                _LOGGER.info(
+                    "Area-scoped device match: area='%s' device='%s' -> %s",
+                    area_name, name, scoped_id,
+                )
+                return scoped_id, scoped_name
+        return find_entity_by_name(hass, name, preferred_domains=_domain_pref)
+
     # Method 1: Direct entity_id
     if direct_entity_id:
         state = hass.states.get(direct_entity_id)
@@ -337,10 +360,21 @@ async def control_device(
                 _LOGGER.warning("Entity %s not found, skipping", eid)
 
     # Method 3: Area-based control
-    elif area_name:
+    #
+    # Only when NO device was named. When the model sends both — e.g.
+    # control_device({'area': 'Master Bedroom', 'device': 'dimmer light'}) —
+    # the area is a scope for the device, not the target itself. This branch
+    # used to win the elif chain and silently discard the device word
+    # (2026-07-27: "turn off the master dimmer light" closed the master
+    # bedroom shades, because the alias shortcut below matched 'Master
+    # Bedroom Blinds' first and 'dimmer light' was never looked at).
+    elif area_name and not device_name:
         # First, check if area_name matches an entity alias (e.g., "downstairs" -> light.downstairs_group)
         # This allows users to create aliases for light groups that the LLM might call as "areas"
-        area_alias_entity_id, area_alias_friendly = find_entity_by_name(hass, area_name)
+        _area_pref = {domain_filter} if domain_filter and domain_filter != "all" else None
+        area_alias_entity_id, area_alias_friendly = find_entity_by_name(
+            hass, area_name, preferred_domains=_area_pref,
+        )
 
         if area_alias_entity_id:
             state = hass.states.get(area_alias_entity_id)
@@ -431,7 +465,7 @@ async def control_device(
                 entities_to_control.append((close_script, trigger_name))
             else:
                 # Fall back to normal entity lookup if no script configured for this action
-                found_entity_id, friendly_name = find_entity_by_name(hass, device_name)
+                found_entity_id, friendly_name = _resolve_device(device_name)
                 if found_entity_id:
                     entities_to_control.append((found_entity_id, friendly_name))
                 else:
@@ -444,10 +478,14 @@ async def control_device(
             if action == "trigger":
                 return {"error": f"No launch script found matching '{device_name}'."}
             else:
-                found_entity_id, friendly_name = find_entity_by_name(hass, device_name)
+                found_entity_id, friendly_name = _resolve_device(device_name)
 
                 if found_entity_id:
                     entities_to_control.append((found_entity_id, friendly_name))
+                elif area_name:
+                    return {"error": f"Could not find '{device_name}' in the "
+                                     f"{area_name}. Do not guess another device — "
+                                     f"tell the user it wasn't found."}
                 else:
                     return {"error": f"Could not find a device matching '{device_name}'."}
 
@@ -473,6 +511,27 @@ async def control_device(
                     elif entity_id == close_script and not is_open:
                         return {"response_text": f"The {trigger_name} is already closed."}
                 break
+
+    # Cover-mismatch guard. `turn_off` on a cover maps to close_cover, so a
+    # bad match here doesn't fail loudly — it silently shuts the blinds. If the
+    # user named a light/fan/switch/etc. and fuzzy matching handed back only
+    # covers, refuse instead of acting (2026-07-27: "turn off the master dimmer
+    # light" -> cover.all_master_bedroom_shades -> close_cover). Deliberately
+    # narrow: light/switch/fan legitimately cross domains (switch.mini_fan for
+    # "mini fan"), and covers are the one mismatch that moves something the
+    # user can see and didn't ask for.
+    _intended_domains = _domain_pref or infer_domains_from_name(device_name)
+    if (device_name and not matched_voice_script and entities_to_control
+            and _intended_domains and "cover" not in _intended_domains
+            and all(eid.split(".")[0] == "cover" for eid, _ in entities_to_control)):
+        _LOGGER.warning(
+            "Cover-mismatch guard: '%s' (expected %s) resolved to %s — refusing",
+            device_name, sorted(_intended_domains),
+            [eid for eid, _ in entities_to_control],
+        )
+        return {"error": f"Could not find '{device_name}'. The closest match was a "
+                         f"window covering, which is not what the user asked for. "
+                         f"Tell the user it wasn't found; do not control anything else."}
 
     # 2026-07-27 v7.65.0: routine-domain guard for unclassified utterances.
     # When the intent router matched nothing, the caller passes

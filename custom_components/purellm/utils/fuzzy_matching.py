@@ -10,6 +10,7 @@ This module handles device name matching with:
 from __future__ import annotations
 
 import logging
+import re
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -45,6 +46,40 @@ DOMAIN_PRIORITY = {
     "sensor": 20,
     "binary_sensor": 20,
 }
+
+# Device nouns that imply a domain. Used to break ties between same-priority
+# candidates when the caller didn't pass an explicit domain (2026-07-27: "turn
+# off the master dimmer light" tied light.all_master_bedroom_lights against
+# cover.all_master_bedroom_shades at priority 1 and the cover won on registry
+# iteration order — the shades closed). The noun the user actually said is the
+# strongest signal available; honor it.
+DOMAIN_NOUNS = {
+    "light": "light", "lights": "light", "lamp": "light", "lamps": "light",
+    "bulb": "light", "bulbs": "light", "dimmer": "light", "fixture": "light",
+    "sconce": "light", "chandelier": "light",
+    "shade": "cover", "shades": "cover", "blind": "cover", "blinds": "cover",
+    "curtain": "cover", "curtains": "cover", "drape": "cover", "drapes": "cover",
+    "cover": "cover", "covers": "cover", "roller": "cover", "shutter": "cover",
+    "fan": "fan", "fans": "fan",
+    "lock": "lock", "locks": "lock", "deadbolt": "lock",
+    "outlet": "switch", "plug": "switch", "switch": "switch",
+    "thermostat": "climate", "ac": "climate", "heater": "climate",
+    "tv": "media_player", "television": "media_player", "speaker": "media_player",
+    "vacuum": "vacuum",
+}
+
+
+def infer_domains_from_name(name: str) -> set[str]:
+    """Return the domain(s) implied by the nouns in a device name.
+
+    Returns an empty set when the name carries no domain noun, in which case
+    callers must NOT filter — an empty hint means "no opinion", not "match
+    nothing".
+    """
+    if not name:
+        return set()
+    words = re.split(r"[^a-z0-9]+", name.lower())
+    return {DOMAIN_NOUNS[w] for w in words if w in DOMAIN_NOUNS}
 
 # Stopwords to remove from queries (articles, possessives, prepositions)
 STOPWORDS = frozenset([
@@ -219,6 +254,7 @@ def _is_exposed(hass: "HomeAssistant", entity_id: str) -> bool:
 def find_entity_by_name(
     hass: "HomeAssistant",
     query: str,
+    preferred_domains: set[str] | None = None,
 ) -> tuple[str | None, str | None]:
     """Search for entity by name.
 
@@ -228,8 +264,15 @@ def find_entity_by_name(
     5-6: All entities (fallback) - exact/partial match on aliases
     7-8: All entities (fallback) - exact/partial match on friendly name
 
+    preferred_domains, when given, demotes (never excludes) candidates outside
+    those domains, so an explicit domain or an implied one from the device noun
+    breaks ties without making an otherwise-good match unreachable. Pass None
+    or an empty set for no preference.
+
     Returns (entity_id, friendly_name) or (None, None) if not found.
     """
+    if not preferred_domains:
+        preferred_domains = infer_domains_from_name(query) or None
     # Build list of query variations to try
     queries_to_try = [query]
 
@@ -246,7 +289,7 @@ def find_entity_by_name(
     # Try each query variation
     for q in queries_to_try:
         # Try direct query first
-        result = _find_entity_by_query(hass, q)
+        result = _find_entity_by_query(hass, q, preferred_domains)
         if result[0] is not None:
             return result
 
@@ -254,7 +297,7 @@ def find_entity_by_name(
         for query_var in normalize_cover_query(q):
             if query_var.lower() == q.lower():
                 continue
-            result = _find_entity_by_query(hass, query_var)
+            result = _find_entity_by_query(hass, query_var, preferred_domains)
             if result[0] is not None:
                 return result
 
@@ -264,6 +307,7 @@ def find_entity_by_name(
 def _find_entity_by_query(
     hass: "HomeAssistant",
     query: str,
+    preferred_domains: set[str] | None = None,
 ) -> tuple[str | None, str | None]:
     """Internal entity search - prioritizes exposed entities, falls back to all."""
     query_lower = query.lower().strip()
@@ -278,7 +322,12 @@ def _find_entity_by_query(
     def get_domain_priority(entity_id: str) -> int:
         """Get priority for an entity's domain (lower = better for device control)."""
         domain = entity_id.split(".")[0] if "." in entity_id else ""
-        return DOMAIN_PRIORITY.get(domain, 8)  # Default priority 8 for unknown domains
+        pri = DOMAIN_PRIORITY.get(domain, 8)  # Default priority 8 for unknown domains
+        # Demote, don't exclude: a wrong-domain candidate is still better than
+        # no match at all, but must never outrank a right-domain one.
+        if preferred_domains and domain not in preferred_domains:
+            pri += 100
+        return pri
 
     for entity_entry in ent_reg.entities.values():
         state = all_states.get(entity_entry.entity_id)
