@@ -1701,6 +1701,7 @@ class PureLLMConversationEntity(ConversationEntity):
             if self.provider == PROVIDER_LM_STUDIO:
                 stream = self._stream_openai_compatible(
                     user_text, tools, system_prompt, self.max_tokens, history,
+                    force_tool_call=bool(intents),
                 )
 
                 final_response = ""
@@ -1941,8 +1942,13 @@ class PureLLMConversationEntity(ConversationEntity):
         system_prompt: str,
         max_tokens: int,
         history: list[dict] | None = None,
+        force_tool_call: bool = True,
     ) -> AsyncGenerator[ContentDelta, None]:
-        """Stream from OpenAI-compatible API with tool support and conversation history."""
+        """Stream from OpenAI-compatible API with tool support and conversation history.
+
+        force_tool_call=False skips the hard-grounding forced first-turn call
+        for utterances the intent router could not classify (see below).
+        """
         messages = [
             {"role": "system", "content": system_prompt},
         ]
@@ -1988,10 +1994,18 @@ class PureLLMConversationEntity(ConversationEntity):
                 # never spoken until the final synthesis turn anyway.
                 # (Dismissals never reach this path — they return early in
                 # _async_handle_message before any LLM call.)
+                # 2026-07-27 v7.64.0: only force when the intent router matched
+                # something. On NO-MATCH the caller passes force_tool_call=False:
+                # a conversational utterance ("say X", "what can I ask you?") has
+                # no tool to ground against, so tool_choice="required" made the
+                # model pick the most harmless-looking tool in the core bundle —
+                # usually get_current_datetime — and the user got the time instead
+                # of an answer. Matched intents keep hard grounding unchanged.
                 forced = False
                 if (
                     iteration == 0
                     and tools
+                    and force_tool_call
                     and self._required_tool_choice_supported
                 ):
                     try:
