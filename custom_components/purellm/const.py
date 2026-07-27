@@ -160,6 +160,27 @@ PLANTS: Plant questions go to check_plant_status (NOT check_device_status). Stri
 Today's date: {current_date}
 """
 
+# Used INSTEAD of the smart-home prompt when the intent router classifies
+# nothing — i.e. the user is talking, not commanding (v7.66.0, 2026-07-27).
+#
+# Why this exists: the smart-home prompt bled into chitchat. "Talk dirty to me."
+# came back as "Since there's no action to take, I'll leave the dirty talk to
+# your imagination!" — the model narrating its own tool-lessness, because the
+# prompt told it that it was a device controller and to answer in 1-2 sentences.
+#
+# The routine-domain guard (v7.65.0) already makes these turns unable to fire
+# automations/scripts/scenes, so a permissive persona here cannot move the house.
+CONVERSATION_MODE_PROMPT: Final = """You are a relaxed, witty companion having a spoken conversation. This is chat, not a smart-home command.
+
+- Talk like a person, not an assistant. No "How can I help you?", no listing your capabilities, no narrating what you can or can't do.
+- Never mention tools, actions, devices, or that you are an assistant, unless asked.
+- Answer what was actually asked. Be direct, warm, and blunt when bluntness fits.
+- Swearing, dark humour, and adult topics are fine. Do not lecture, moralise, or add disclaimers.
+- Keep it to a few sentences — this is spoken aloud, so it must stay listenable.
+
+Today's date: {current_date}
+"""
+
 # =============================================================================
 # LOCATION
 # =============================================================================

@@ -378,8 +378,14 @@ _RESPONSE_MAX_CHARS = 1200
 # the dedupe pass can't touch — 1147 chars reached TTS (~90s of speech).
 # A tool-less turn has nothing to report; anything past two sentences is
 # prompt-induced rambling.
-_CONVERSATIONAL_MAX_SENTENCES = 2
-_CONVERSATIONAL_MAX_CHARS = 300
+# 2026-07-27 v7.66.0: raised 2/300 -> 5/700. The 07-24 incident was caused by
+# the SMART-HOME prompt being used for chitchat, which made every brain recite
+# its capabilities; conversational turns now get CONVERSATION_MODE_PROMPT, which
+# forbids exactly that, so the cap no longer has to do the prompt's job. It stays
+# as a runaway backstop — this text is spoken aloud, and ~700 chars is already
+# ~50s of TTS. Lower these two numbers first if replies feel long-winded.
+_CONVERSATIONAL_MAX_SENTENCES = 5
+_CONVERSATIONAL_MAX_CHARS = 700
 
 
 def _sanitize_llm_response(text: str, *, conversational: bool = False) -> str:
@@ -649,6 +655,7 @@ from .const import (
     DEFAULT_PROVIDER,
     DEFAULT_ROOM_PLAYER_MAPPING,
     DEFAULT_SYSTEM_PROMPT,
+    CONVERSATION_MODE_PROMPT,
     DEFAULT_THERMOSTAT_MAX_TEMP,
     DEFAULT_THERMOSTAT_MAX_TEMP_CELSIUS,
     DEFAULT_THERMOSTAT_MIN_TEMP,
@@ -1188,19 +1195,24 @@ class PureLLMConversationEntity(ConversationEntity):
         self,
         language_code: str = "en",
         room: str | None = None,
+        conversational: bool = False,
     ) -> str:
         """Get system prompt with date, language, and room context applied.
 
-        Result is cached on (date, language, room) so identical follow-up
-        turns reuse the same string.
+        Result is cached on (date, language, room, conversational) so identical
+        follow-up turns reuse the same string.
+
+        conversational=True (intent router matched nothing) swaps the smart-home
+        prompt for a plain conversational persona — see CONVERSATION_MODE_PROMPT.
         """
         today = datetime.now().strftime("%Y-%m-%d")
-        cache_key = (today, language_code, room)
+        cache_key = (today, language_code, room, conversational)
         if self._cached_system_prompt and self._cached_system_prompt_key == cache_key:
             return self._cached_system_prompt
 
         lang_name = _LANG_CODE_TO_NAME.get(language_code, "English")
-        prompt = self.system_prompt.replace("{current_date}", today)
+        base = CONVERSATION_MODE_PROMPT if conversational else self.system_prompt
+        prompt = base.replace("{current_date}", today)
         prompt = f"Respond in {lang_name} only.\n\n{prompt}"
         if room:
             prompt += (
@@ -1698,6 +1710,7 @@ class PureLLMConversationEntity(ConversationEntity):
         system_prompt = self._get_effective_system_prompt(
             language_code=lang_code,
             room=self._current_satellite_room,
+            conversational=not intents,
         )
 
         # Append extra_system_prompt if provided (from start_conversation).
