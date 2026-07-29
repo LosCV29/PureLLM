@@ -243,6 +243,36 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
 #   escalate to web_search — even when no "search" keyword matched.
 _ALWAYS_INCLUDE = {"get_current_datetime", "web_search", "report_garbled_speech"}
 
+# Imperative openers that mark an utterance as a complete command. When one of
+# these is the FIRST word, report_garbled_speech is withheld from the toolset:
+# a sentence that opens with a clear action verb is by definition not a
+# truncated fragment, so the escape hatch has no legitimate use — yet the
+# model would still sometimes take it when a proper noun later in the sentence
+# looked misheard ("Play is it my love by oh he did", band "Oh He Dead",
+# 2026-07-29). Withholding the tool here keeps the decision entirely with the
+# model among its REAL tools — the same exposure-shaping this router already
+# does for every intent — rather than second-guessing its output after the
+# fact. Fragments keep the tool: "the master bedroom shade", "itchen lights"
+# and bare "play the"-style stubs (fewer than 3 words) open with none of these
+# or are too short.
+_COMMAND_OPENERS = frozenset({
+    "play", "put", "turn", "set", "open", "close", "stop", "pause", "resume",
+    "skip", "shuffle", "dim", "brighten", "lock", "unlock", "start", "cancel",
+    "add", "remove", "delete", "lower", "raise", "mute", "unmute",
+    "tell", "show", "check", "search", "find", "remind", "wake", "arm",
+    "disarm", "enable", "disable", "restart", "switch",
+})
+
+
+def _garble_tool_offered(user_text: str | None) -> bool:
+    """Should report_garbled_speech be in the toolset for this utterance?"""
+    if not user_text:
+        return True
+    words = user_text.strip().lower().split()
+    if len(words) < 3:
+        return True  # short stubs ("play the") are exactly what the tool is for
+    return words[0].strip(".,!?'\"") not in _COMMAND_OPENERS
+
 # Fallback bundle used when NO intent matches.
 #
 # Previously a no-match sent the ENTIRE catalog (~3500 tokens, 24 tools). That
@@ -319,6 +349,18 @@ def filter_tools_by_intent(
     catalog. Pass user_text to have unmatched utterances logged so the
     keyword patterns can be grown from real usage.
     """
+    # Complete commands never see the garble escape hatch (see _COMMAND_OPENERS).
+    # Filtering the source list here covers every return path below.
+    if not _garble_tool_offered(user_text):
+        _LOGGER.info(
+            "PureLLM intent-router: command opener %r → report_garbled_speech withheld",
+            (user_text or "").strip().split()[0].lower(),
+        )
+        all_tools = [
+            tool for tool in all_tools
+            if tool.get("function", {}).get("name") != "report_garbled_speech"
+        ]
+
     if not intents:
         _STATS["unmatched"] += 1
 
