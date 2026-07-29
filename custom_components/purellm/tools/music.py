@@ -446,6 +446,29 @@ def _artist_contains(a: str, b: str) -> bool:
     return False
 
 
+def _artist_resolution_plausible(requested: str, canonical: str) -> bool:
+    """Could `canonical` be what the user meant by `requested`?
+
+    Gate for MA's artist-name canonicalization, which always returns a best
+    guess and so hands back an arbitrary artist for any name it doesn't know.
+    Looser than _artist_names_match because real canonicalizations can share no
+    whole word at all — "Tupac" → "2Pac" is the canonical example (ratio 0.667).
+
+    The 0.6 cutoff was measured against both sets: the loosest true pair that
+    _artist_names_match misses is Tupac/2Pac at 0.667, while the tightest wrong
+    pair sits at 0.476 ("oh he did"/"The Weeknd") — comfortably separated.
+    """
+    if not requested or not canonical:
+        return False
+    if _artist_names_match(requested, canonical):
+        return True
+    a = _artist_norm_variants(requested)[1]
+    b = _artist_norm_variants(canonical)[1]
+    if not a or not b:
+        return False
+    return SequenceMatcher(None, a, b).ratio() >= 0.6
+
+
 def _artist_names_match(a: str, b: str) -> bool:
     """Fuzzy artist name comparison for voice/STT variations.
 
@@ -1335,7 +1358,20 @@ class MusicController:
         return artist_albums[0]
 
     async def _resolve_artist_name(self, ma_config_entry_id: str, artist: str) -> str:
-        """Resolve voice artist name to MA canonical name (e.g. Tupac → 2Pac)."""
+        """Resolve voice artist name to MA canonical name (e.g. Tupac → 2Pac).
+
+        MA's artist search is a loose full-text match and ALWAYS returns its best
+        guess, so an unrecognized name comes back as something arbitrary — a
+        misheard "oh he did" (the band is "Oh He Dead") resolved to "Arctic
+        Monkeys", and every downstream search then ran against that wrong artist
+        and found nothing. Gate each candidate through _artist_names_match and
+        keep the user's original wording when none of them resemble it: the raw
+        name still has a chance via the query-only MA search and the MusicBrainz
+        fallback, whereas a confidently wrong canonical name has none.
+
+        Same class of bug as the _titles_resemble guard added for MusicBrainz
+        title canonicalization in v7.62.3.
+        """
         if not artist:
             return artist
         try:
@@ -1344,11 +1380,21 @@ class MusicController:
                 {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["artist"], "limit": 5},
                 blocking=True, return_response=True
             )
+            rejected: list[str] = []
             for r in _parse_ma_results(result, "artist"):
                 canonical = (r.get("name") or "").strip()
-                if canonical:
-                    _LOGGER.info("MUSIC: Resolved artist '%s' → '%s'", artist, canonical)
-                    return canonical
+                if not canonical:
+                    continue
+                if not _artist_resolution_plausible(artist, canonical):
+                    rejected.append(canonical)
+                    continue
+                _LOGGER.info("MUSIC: Resolved artist '%s' → '%s'", artist, canonical)
+                return canonical
+            if rejected:
+                _LOGGER.info(
+                    "MUSIC: No artist resembling '%s' (ignored %s); keeping original",
+                    artist, ", ".join(repr(n) for n in rejected[:5]),
+                )
         except Exception as err:
             _LOGGER.debug("MUSIC: Artist resolution failed for '%s': %s", artist, err)
         return artist
