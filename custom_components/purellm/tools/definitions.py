@@ -71,7 +71,16 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         "action verb, or is a bare sentence fragment (e.g. '...itchen lights', "
         "'the master bedroom shade', 'play the'). Do NOT guess missing words "
         "or infer an action. A canned 'please repeat' reply is spoken "
-        "automatically; you will not get a result back.",
+        "automatically; you will not get a result back. "
+        "Judge ONLY the SHAPE of the sentence, NEVER whether you recognize the "
+        "names in it. Do NOT call this when the utterance is a complete command "
+        "or question, even if a song, artist, album, person or place in it looks "
+        "misspelled, foreign, or like nonsense — misheard proper nouns are "
+        "EXPECTED from speech recognition, and the other tools do their own fuzzy "
+        "matching and will resolve them. 'Play is it my love by oh he did' is a "
+        "COMPLETE request: call the music tool, not this one. When a real tool "
+        "could plausibly handle the utterance, always prefer that tool; let it "
+        "report that it found nothing.",
     ))
 
     # ===== WEATHER =====

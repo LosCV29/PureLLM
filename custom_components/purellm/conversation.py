@@ -1257,7 +1257,10 @@ class PureLLMConversationEntity(ConversationEntity):
             "GARBLED SPEECH UPDATE (supersedes 'call no tool' above): when the "
             "utterance is truncated or unintelligible, call "
             "report_garbled_speech — do not reply directly and do not call any "
-            "other tool."
+            "other tool. But a COMPLETE command is never garbled just because a "
+            "name in it sounds wrong: misheard song/artist/place names are "
+            "normal from speech recognition and the real tools fuzzy-match them. "
+            "Judge the sentence's shape, not whether you recognize the names."
         )
         prompt += grounding
 
@@ -1628,7 +1631,14 @@ class PureLLMConversationEntity(ConversationEntity):
         # so the LLM knows what it asked without reusing stale status data.
         is_followup_response = False
         if self._pending_followup and time.time() - self._pending_followup["timestamp"] < FOLLOWUP_TIMEOUT_SECONDS:
-            if not history:
+            # A garbled retry must start CLEAN. Injecting the unintelligible
+            # utterance plus our own "Sorry, I didn't catch that" primes the
+            # model to report garbled again, so the user gets stuck repeating
+            # themselves even once STT returns a perfectly good transcript
+            # (observed 2026-07-29: three consecutive garble reports on
+            # "Play is it my love by oh he did"). Keep is_followup_response
+            # True so dismissal detection still ends the loop on "no thanks".
+            if not history and not self._pending_followup.get("garbled"):
                 history = [
                     {"role": "user", "content": self._pending_followup["user_query"]},
                     {"role": "assistant", "content": self._pending_followup["assistant_question"]},
@@ -1799,6 +1809,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 "user_query": user_text,
                 "assistant_question": final_response or "",
                 "timestamp": time.time(),
+                # A "say that again" turn carries no reusable context — see the
+                # skip in the followup-injection block below.
+                "garbled": final_response == _GARBLED_SPEECH_REPLY,
             }
             _LOGGER.debug(
                 "Cached followup context: user='%s' question='%s'",
