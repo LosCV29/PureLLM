@@ -78,10 +78,15 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     if config.enable_weather and config.openweathermap_api_key:
         tools.append(_tool(
             "get_weather_forecast",
-            "Get weather. Omit location for local.",
+            "Weather, rain chance, sunrise/sunset, alerts. Omit location for local.",
             {
                 "location": {"type": "string", "description": "City, State/Country"},
-                "forecast_type": {"type": "string", "enum": ["current", "tomorrow", "weekly", "sun_times"]}
+                "forecast_type": {
+                    "type": "string",
+                    "enum": ["current", "today", "hourly", "tomorrow", "weekly", "sun_times", "alerts"],
+                    "description": "today=rain/highs today, hourly=next 12h by hour",
+                },
+                "day": {"type": "string", "description": "Weekday name, e.g. 'saturday'"},
             }
         ))
 

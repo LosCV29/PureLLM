@@ -64,15 +64,27 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "música", "musica", "canción", "cancion",
         "siguiente", "anterior",
     ],
+    # Be generous here: a weather miss falls through to the core bundle, which
+    # has NO weather tool, so the brain answers from training data — the exact
+    # ungrounded failure the grounding rules exist to prevent. Patterns that
+    # could collide with a device are anchored with spaces (" wind " must not
+    # match "window"; "showers" must not match the bathroom shower).
     "weather": [
-        "weather", " rain", "raining", "forecast",
-        "sunrise", "sunset", "sun time",
-        "outside temp", "temperature outside",
-        "hot outside", "cold outside",
-        "sunny", "cloudy", "snow", "storm", "humid",
-        # Spanish
-        "clima", "lluvia", "llover", "lloviendo",
-        "pronóstico", "pronostico",
+        "weather", " rain", "raining", "rainy", "forecast",
+        "drizzl", "showers", "downpour", "pouring",
+        "sunrise", "sunset", "sun time", "sun set", "sun rise",
+        "outside temp", "temperature outside", "degrees outside",
+        "hot outside", "cold outside", "hot out", "cold out",
+        "warm out", "nice out", "chilly", "muggy",
+        "how cold", "how hot", "how warm", "how humid",
+        "sunny", "cloudy", "overcast", "snow", "sleet", "hail",
+        "storm", "thunder", "lightning", "hurricane", "tropical",
+        "humid", "dew point", "feels like out",
+        "windy", " wind ", " winds", "wind speed", "gust",
+        "uv index", "sunscreen", "sunburn",
+        "umbrella", "need a jacket", "need a coat", "wear a jacket",
+        "weather alert", "weather warning", "storm warning",
+        "freeze", "freezing", "frost",
     ],
     "thermostat": [
         "thermostat", " ac", "a.c.", "a/c",

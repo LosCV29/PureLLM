@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
@@ -34,6 +34,45 @@ US_STATES = {
 
 # Set of valid state abbreviations for detection
 US_STATE_ABBREVS = set(US_STATES.values())
+
+# forecast_type synonyms → canonical value. A weak local brain will not
+# reliably emit one of the enum values; it emits whatever word the user said
+# ("rain", "week", "sunset", "warning"). Normalizing here is far cheaper than
+# widening the enum, which would grow the tool definition for every request.
+_FORECAST_TYPE_ALIASES = {
+    "current": "current", "now": "current", "today": "today", "day": "today",
+    "daily": "today", "rain": "today", "precipitation": "today",
+    "hourly": "hourly", "hour": "hourly", "next_hour": "hourly",
+    "hours": "hourly", "timeline": "hourly", "afternoon": "hourly",
+    "morning": "hourly", "evening": "hourly", "tonight": "hourly",
+    "tomorrow": "tomorrow",
+    "weekly": "weekly", "week": "weekly", "forecast": "weekly",
+    "weekend": "weekly", "5day": "weekly", "7day": "weekly", "both": "weekly",
+    "sun_times": "sun_times", "sun": "sun_times", "sunrise": "sun_times",
+    "sunset": "sun_times", "daylight": "sun_times",
+    "alerts": "alerts", "alert": "alerts", "warning": "alerts",
+    "warnings": "alerts", "advisory": "alerts", "severe": "alerts",
+}
+
+_WEEKDAYS = [
+    "monday", "tuesday", "wednesday", "thursday",
+    "friday", "saturday", "sunday",
+]
+
+# An HOUR at or above this pop is a wet hour for window-scanning purposes.
+_RAIN_LIKELY_POP = 0.30
+
+# A DAY's `pop` at or above this is called out as "expect rain" even when no
+# single hour crosses the bar. Deliberately higher than the hourly threshold:
+# OWM's daily pop is the max over 24h, so a 36% day in South Florida routinely
+# means "one hour somewhere might see a shower", not "it will rain today".
+# 2026-07-29 live check: pop=0.36 with every hourly pop at 0-2% and OWM's own
+# summary reading "There will be partly cloudy today" — answering "yes" there
+# is simply wrong.
+_RAIN_LIKELY_DAILY_POP = 0.55
+
+# Hours ahead scanned when building the rain window / hourly timeline.
+_HOURLY_WINDOW = 12
 
 
 def _normalize_location(query: str) -> str:
@@ -66,6 +105,268 @@ def _normalize_location(query: str) -> str:
     return ",".join(parts)
 
 
+def _normalize_forecast_type(raw: Any) -> str:
+    """Map whatever the model emitted onto a canonical forecast_type."""
+    if not isinstance(raw, str) or not raw.strip():
+        return "current"
+    key = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    if key in _FORECAST_TYPE_ALIASES:
+        return _FORECAST_TYPE_ALIASES[key]
+    # Substring fallback: "rain_today", "7_day_forecast", "sunset_time".
+    # Longest alias first, otherwise "7_day_forecast" matches "day" (→ today)
+    # before it reaches "forecast" (→ weekly).
+    for alias in sorted(_FORECAST_TYPE_ALIASES, key=len, reverse=True):
+        if alias in key:
+            return _FORECAST_TYPE_ALIASES[alias]
+    _LOGGER.debug("Unrecognized forecast_type %r → 'current'", raw)
+    return "current"
+
+
+def _local_dt(timestamp: int, tz_offset: int) -> datetime:
+    """Convert a UNIX timestamp to the *forecast location's* local time.
+
+    The One Call API returns UTC epochs plus a `timezone_offset`. The previous
+    implementation used bare datetime.fromtimestamp(), which renders every
+    timestamp in the Home Assistant host's timezone — correct for local
+    weather, silently wrong for "what time is sunset in Tokyo".
+    """
+    return datetime.fromtimestamp(timestamp, tz=timezone(timedelta(seconds=tz_offset)))
+
+
+def _fmt_time(dt: datetime) -> str:
+    """Format as '7:04 AM' without a leading zero (platform-independent)."""
+    return dt.strftime("%I:%M %p").lstrip("0")
+
+
+def _fmt_hour(dt: datetime) -> str:
+    """Format as '4 PM' without a leading zero."""
+    return dt.strftime("%I %p").lstrip("0")
+
+
+def _day_block(day_data: dict[str, Any], tz_offset: int) -> dict[str, Any]:
+    """Build a compact per-day forecast block."""
+    dt = _local_dt(day_data.get("dt", 0), tz_offset)
+    block = {
+        "day": dt.strftime("%A"),
+        "date": dt.strftime("%B %d"),
+        "high": round(day_data.get("temp", {}).get("max", 0)),
+        "low": round(day_data.get("temp", {}).get("min", 0)),
+        "conditions": day_data.get("weather", [{}])[0].get("description", "Unknown").title(),
+        "rain_chance": round(day_data.get("pop", 0) * 100),
+    }
+    # NOT "wind_speed": a daily figure sitting next to current.wind_speed under
+    # the same key reads as a contradiction (live: current 7, daily 16).
+    if day_data.get("wind_speed"):
+        block["max_wind_speed"] = round(day_data["wind_speed"])
+    if day_data.get("summary"):
+        block["summary"] = day_data["summary"]
+    return block
+
+
+def _minutely_nowcast(minutely: list[dict[str, Any]], tz_offset: int) -> str | None:
+    """Turn the 60-minute precipitation nowcast into one plain sentence.
+
+    This is what actually answers "is it about to rain" / "do I have time to
+    walk the dog" — a daily probability cannot.
+    """
+    if not minutely:
+        return None
+
+    raining_now = minutely[0].get("precipitation", 0) > 0
+
+    if raining_now:
+        for idx, minute in enumerate(minutely):
+            if minute.get("precipitation", 0) <= 0:
+                if idx == 0:
+                    break
+                return f"Raining now, stopping in about {idx} minutes"
+        return "Raining now, continuing for at least the next hour"
+
+    for idx, minute in enumerate(minutely):
+        if minute.get("precipitation", 0) > 0:
+            if idx <= 2:
+                return "Rain starting within a few minutes"
+            return f"Rain starting in about {idx} minutes"
+
+    return "No rain in the next hour"
+
+
+def _is_wet_hour(hour: dict[str, Any]) -> bool:
+    """True if this hourly entry is likely to see precipitation."""
+    return hour.get("pop", 0) >= _RAIN_LIKELY_POP or "rain" in hour or "snow" in hour
+
+
+def _hours_left_today(
+    hourly: list[dict[str, Any]],
+    tz_offset: int,
+) -> list[dict[str, Any]]:
+    """Hourly entries that still fall on the location's current calendar day.
+
+    "Will it rain today" asked at 8 PM must not be answered from tomorrow
+    morning's hours, which a fixed 12-entry slice would happily include.
+    """
+    if not hourly:
+        return []
+    today = _local_dt(hourly[0].get("dt", 0), tz_offset).date()
+    return [h for h in hourly if _local_dt(h.get("dt", 0), tz_offset).date() == today]
+
+
+def _rain_window(
+    hourly: list[dict[str, Any]],
+    tz_offset: int,
+    hours: int = _HOURLY_WINDOW,
+) -> str | None:
+    """Describe the next stretch of likely rain, e.g. '2 PM to 5 PM (70%)'.
+
+    Answers the timing half of "will it rain today" — a bare daily percentage
+    leaves the model to guess *when*, and it guesses badly.
+    """
+    if not hourly:
+        return None
+
+    window = hourly[:hours]
+    start_idx = None
+
+    for idx, hour in enumerate(window):
+        if _is_wet_hour(hour):
+            start_idx = idx
+            break
+
+    if start_idx is None:
+        return None
+
+    end_idx = start_idx
+    for idx in range(start_idx, len(window)):
+        if _is_wet_hour(window[idx]):
+            end_idx = idx
+        else:
+            break
+
+    peak = round(max(h.get("pop", 0) for h in window[start_idx:end_idx + 1]) * 100)
+    start_dt = _local_dt(window[start_idx].get("dt", 0), tz_offset)
+
+    if start_idx == 0:
+        end_dt = _local_dt(window[end_idx].get("dt", 0), tz_offset) + timedelta(hours=1)
+        return f"now through about {_fmt_hour(end_dt)} ({peak}% chance)"
+
+    end_dt = _local_dt(window[end_idx].get("dt", 0), tz_offset) + timedelta(hours=1)
+    if end_idx == start_idx:
+        return f"around {_fmt_hour(start_dt)} ({peak}% chance)"
+    return f"{_fmt_hour(start_dt)} to {_fmt_hour(end_dt)} ({peak}% chance)"
+
+
+def _rain_today_answer(
+    today: dict[str, Any],
+    hourly: list[dict[str, Any]],
+    current: dict[str, Any],
+    tz_offset: int,
+) -> str:
+    """One authoritative sentence answering "will it rain today".
+
+    Deliberately a single string rather than a percentage plus a boolean plus a
+    window: when those are emitted as three independent fields they can
+    disagree, and a small brain will happily read out the contradiction. Fusing
+    the daily probability with the hour-by-hour scan here means there is
+    exactly one answer to repeat.
+    """
+    pop = round(today.get("pop", 0) * 100)
+    remaining = _hours_left_today(hourly, tz_offset)
+
+    if "rain" in current or "snow" in current:
+        return f"Yes — it is raining right now ({pop}% chance today)"
+
+    window = _rain_window(remaining, tz_offset, len(remaining) or 1) if remaining else None
+
+    if window:
+        return f"Yes — rain likely {window}"
+
+    if not remaining:
+        return f"The day is essentially over; today's chance was {pop}%"
+
+    if pop >= _RAIN_LIKELY_DAILY_POP * 100:
+        return (
+            f"Possibly — {pop}% chance today, though no single hour in the "
+            "remaining forecast shows likely rain"
+        )
+
+    return (
+        f"No — only a {pop}% chance today, and no rain in the hour-by-hour "
+        "forecast for the rest of the day"
+    )
+
+
+def _hourly_timeline(
+    hourly: list[dict[str, Any]],
+    tz_offset: int,
+    hours: int = _HOURLY_WINDOW,
+) -> list[dict[str, Any]]:
+    """Compact hour-by-hour list for 'this afternoon' / 'tonight' questions."""
+    timeline = []
+    for hour in hourly[:hours]:
+        dt = _local_dt(hour.get("dt", 0), tz_offset)
+        timeline.append({
+            "time": _fmt_hour(dt),
+            "temp": round(hour.get("temp", 0)),
+            "conditions": hour.get("weather", [{}])[0].get("description", "Unknown").title(),
+            "rain_chance": round(hour.get("pop", 0) * 100),
+        })
+    return timeline
+
+
+# Alert events worth interrupting an unrelated weather answer for. NWS uses a
+# strict Warning > Watch > Advisory severity ladder, so matching on "warning"
+# plus the few life-threatening event names covers it.
+_URGENT_ALERT_TERMS = (
+    "warning", "tornado", "hurricane", "evacuation", "emergency",
+)
+
+
+def _is_urgent_alert(event: str) -> bool:
+    """True if this alert should surface even when alerts weren't asked about."""
+    return any(term in event.lower() for term in _URGENT_ALERT_TERMS)
+
+
+def _format_alerts(alerts: list[dict[str, Any]], tz_offset: int) -> list[dict[str, Any]]:
+    """Compact active government weather alerts."""
+    formatted = []
+    for alert in alerts[:3]:
+        entry = {
+            "event": alert.get("event", "Weather Alert"),
+            "source": alert.get("sender_name", ""),
+        }
+        if alert.get("end"):
+            entry["until"] = _fmt_time(_local_dt(alert["end"], tz_offset))
+        description = (alert.get("description") or "").strip().replace("\n", " ")
+        if description:
+            entry["details"] = description[:300]
+        formatted.append(entry)
+    return formatted
+
+
+def _resolve_requested_day(
+    day: str,
+    daily: list[dict[str, Any]],
+    tz_offset: int,
+) -> dict[str, Any] | None:
+    """Find the daily entry matching a spoken day name ('saturday')."""
+    target = day.strip().lower()
+    if not target:
+        return None
+
+    if target in ("today", "tonight"):
+        return daily[0] if daily else None
+    if target == "tomorrow":
+        return daily[1] if len(daily) > 1 else None
+
+    for name in _WEEKDAYS:
+        if name in target:
+            for day_data in daily:
+                if _local_dt(day_data.get("dt", 0), tz_offset).strftime("%A").lower() == name:
+                    return day_data
+            return None
+    return None
+
+
 async def get_weather_forecast(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
@@ -75,7 +376,8 @@ async def get_weather_forecast(
     user_query: str = "",
 ) -> dict[str, Any]:
     """Get weather forecast from OpenWeatherMap."""
-    forecast_type = arguments.get("forecast_type", "current")
+    forecast_type = _normalize_forecast_type(arguments.get("forecast_type"))
+    requested_day = (arguments.get("day") or "").strip()
     location_query = arguments.get("location", "").strip()
 
     if not api_key:
@@ -128,11 +430,17 @@ async def get_weather_forecast(
             _LOGGER.info("Reverse geocoded to: %s", location_name)
 
     try:
-        result = {}
+        result: dict[str, Any] = {}
 
         async with asyncio.timeout(API_TIMEOUT):
-            # Use One Call API 3.0 for accurate daily min/max temps
-            onecall_url = f"https://api.openweathermap.org/data/3.0/onecall?lat={latitude}&lon={longitude}&appid={api_key}&units=imperial&exclude=minutely,alerts"
+            # One Call API 3.0. `minutely` and `alerts` are NO LONGER excluded:
+            # minutely is the only source that can answer "is it about to
+            # rain", and an active severe-weather alert must never be silently
+            # dropped from a weather answer.
+            onecall_url = (
+                f"https://api.openweathermap.org/data/3.0/onecall?"
+                f"lat={latitude}&lon={longitude}&appid={api_key}&units=imperial"
+            )
 
             async with session.get(onecall_url) as response:
                 if response.status != 200:
@@ -140,109 +448,153 @@ async def get_weather_forecast(
                     return {"error": f"Weather API error: {response.status}"}
 
                 data = await response.json()
-                now = datetime.now()
 
-                # Process current weather from One Call API
-                current = data.get("current", {})
-                result["current"] = {
-                    "temperature": round(current.get("temp", 0)),
-                    "feels_like": round(current.get("feels_like", 0)),
-                    "humidity": current.get("humidity", 0),
-                    "conditions": current.get("weather", [{}])[0].get("description", "Unknown").title(),
-                    "wind_speed": round(current.get("wind_speed", 0)),
-                    "location": location_name or "Current Location"
-                }
+            tz_offset = data.get("timezone_offset", 0)
+            now = datetime.now(timezone.utc)
 
-                # Add rain if present
-                if "rain" in current:
-                    result["current"]["rain_1h"] = current["rain"].get("1h", 0)
+            hourly = data.get("hourly", [])
+            daily = data.get("daily", [])
+            minutely = data.get("minutely", [])
+            alerts = data.get("alerts", [])
 
-                # Add sunrise/sunset times only when explicitly requested
-                if forecast_type == "sun_times":
-                    if "sunrise" in current:
-                        sunrise_dt = datetime.fromtimestamp(current["sunrise"])
-                        result["current"]["sunrise"] = sunrise_dt.strftime("%-I:%M %p")
+            # ---------- current conditions ----------
+            current = data.get("current", {})
+            result["current"] = {
+                "temperature": round(current.get("temp", 0)),
+                "feels_like": round(current.get("feels_like", 0)),
+                "humidity": current.get("humidity", 0),
+                "conditions": current.get("weather", [{}])[0].get("description", "Unknown").title(),
+                "wind_speed": round(current.get("wind_speed", 0)),
+                "location": location_name or "Current Location",
+                "local_time": _fmt_time(_local_dt(int(now.timestamp()), tz_offset)),
+            }
 
-                        if sunrise_dt > now:
-                            result["current"]["time_until_sunrise"] = format_time_remaining(
-                                (sunrise_dt - now).total_seconds()
-                            )
-                        else:
-                            result["current"]["sunrise_passed"] = True
+            if current.get("wind_gust"):
+                result["current"]["wind_gust"] = round(current["wind_gust"])
+            if current.get("uvi") is not None:
+                result["current"]["uv_index"] = round(current["uvi"], 1)
 
-                    if "sunset" in current:
-                        sunset_dt = datetime.fromtimestamp(current["sunset"])
-                        result["current"]["sunset"] = sunset_dt.strftime("%-I:%M %p")
+            # Explicit boolean beats making the model parse "light rain" out of
+            # a description string.
+            result["current"]["raining_now"] = "rain" in current or "snow" in current
+            if "rain" in current:
+                result["current"]["rain_1h"] = current["rain"].get("1h", 0)
+            if "snow" in current:
+                result["current"]["snow_1h"] = current["snow"].get("1h", 0)
 
-                        if sunset_dt > now:
-                            result["current"]["time_until_sunset"] = format_time_remaining(
-                                (sunset_dt - now).total_seconds()
-                            )
-                        else:
-                            result["current"]["sunset_passed"] = True
+            # ---------- today (always present) ----------
+            # This block is the fix for "will it rain today". Previously the
+            # only rain figures returned were the next-hour pop and an 8-hour
+            # average, so the model had to extrapolate a whole-day answer from
+            # a partial window.
+            if daily:
+                today = daily[0]
+                today_block = _day_block(today, tz_offset)
+                today_block["will_it_rain"] = _rain_today_answer(
+                    today, hourly, current, tz_offset
+                )
+                if today.get("uvi") is not None:
+                    today_block["max_uv_index"] = round(today["uvi"], 1)
+                if today.get("rain"):
+                    today_block["rain_total_mm"] = today["rain"]
 
-                    # Calculate daylight hours
-                    if "sunrise" in current and "sunset" in current:
-                        daylight_seconds = current["sunset"] - current["sunrise"]
-                        daylight_hours = daylight_seconds / 3600
-                        result["current"]["daylight_hours"] = round(daylight_hours, 1)
+                result["today"] = today_block
+                _LOGGER.info(
+                    "Today: %s/%s, rain %s%% (%s)",
+                    today_block["high"], today_block["low"],
+                    today_block["rain_chance"], today_block["will_it_rain"],
+                )
 
-                # Process hourly data for rain chances
-                hourly = data.get("hourly", [])
-                if hourly:
-                    # Next hour rain chance
-                    result["current"]["rain_chance_next_hour"] = round(hourly[0].get("pop", 0) * 100)
+            # ---------- 60-minute nowcast ----------
+            nowcast = _minutely_nowcast(minutely, tz_offset)
+            if nowcast:
+                result["next_hour"] = nowcast
+            elif hourly:
+                # Nowcast is not available everywhere (mainly US/EU coverage).
+                # Fall back to the current hour's probability so "is it about
+                # to rain" still gets a grounded answer.
+                result["next_hour"] = f"{round(hourly[0].get('pop', 0) * 100)}% chance of rain this hour"
 
-                    # Average rain chance for next 8 hours
-                    rain_chances_8hr = [h.get("pop", 0) * 100 for h in hourly[:8]]
-                    if rain_chances_8hr:
-                        result["current"]["avg_rain_chance_8hr"] = round(sum(rain_chances_8hr) / len(rain_chances_8hr))
+            # ---------- active alerts ----------
+            # Names always (cheap, and severe weather must surface no matter
+            # what was asked); full text only when alerts were the question.
+            if alerts:
+                if forecast_type == "alerts":
+                    result["alerts"] = _format_alerts(alerts, tz_offset)
+                else:
+                    # Only WARNINGS ride along on an unrelated weather question.
+                    # A live check on 2026-07-29 had an active Heat Advisory,
+                    # which in South Florida is close to a daily occurrence all
+                    # summer — attaching it to "what's the temperature" would
+                    # make the assistant nag about it several times a day.
+                    # Watches and advisories still come back in full when
+                    # alerts are what was actually asked for.
+                    urgent = [
+                        a.get("event", "Weather Alert") for a in alerts
+                        if _is_urgent_alert(a.get("event", ""))
+                    ]
+                    if urgent:
+                        result["active_alerts"] = urgent[:3]
+            elif forecast_type == "alerts":
+                result["alerts"] = []
+                result["alerts_summary"] = "No active weather alerts for this area"
+
+            # ---------- sunrise / sunset ----------
+            if forecast_type == "sun_times":
+                sun: dict[str, Any] = {}
+                if "sunrise" in current:
+                    sunrise_dt = _local_dt(current["sunrise"], tz_offset)
+                    sun["sunrise"] = _fmt_time(sunrise_dt)
+                    if current["sunrise"] > now.timestamp():
+                        sun["time_until_sunrise"] = format_time_remaining(
+                            current["sunrise"] - now.timestamp()
+                        )
                     else:
-                        result["current"]["avg_rain_chance_8hr"] = 0
+                        sun["sunrise_passed"] = True
 
-                # Process daily data for proper high/low temps
-                daily = data.get("daily", [])
-                if daily:
-                    # Today's high/low from daily[0] - this is the REAL daily min/max
-                    today = daily[0]
-                    result["current"]["todays_high"] = round(today.get("temp", {}).get("max", 0))
-                    result["current"]["todays_low"] = round(today.get("temp", {}).get("min", 0))
+                if "sunset" in current:
+                    sunset_dt = _local_dt(current["sunset"], tz_offset)
+                    sun["sunset"] = _fmt_time(sunset_dt)
+                    if current["sunset"] > now.timestamp():
+                        sun["time_until_sunset"] = format_time_remaining(
+                            current["sunset"] - now.timestamp()
+                        )
+                    else:
+                        sun["sunset_passed"] = True
 
-                    _LOGGER.info("Today's high/low from One Call API: %s/%s",
-                                result["current"]["todays_high"], result["current"]["todays_low"])
+                if "sunrise" in current and "sunset" in current:
+                    sun["daylight_hours"] = round(
+                        (current["sunset"] - current["sunrise"]) / 3600, 1
+                    )
 
-                    # Format tomorrow's forecast (when user asks about tomorrow)
-                    if forecast_type == "tomorrow" and len(daily) > 1:
-                        tomorrow = daily[1]
-                        tomorrow_dt = datetime.fromtimestamp(tomorrow.get("dt", 0))
-                        result["tomorrow"] = {
-                            "day": tomorrow_dt.strftime("%A"),
-                            "date": tomorrow_dt.strftime("%B %d"),
-                            "high": round(tomorrow.get("temp", {}).get("max", 0)),
-                            "low": round(tomorrow.get("temp", {}).get("min", 0)),
-                            "conditions": tomorrow.get("weather", [{}])[0].get("description", "Unknown").title(),
-                            "rain_chance": round(tomorrow.get("pop", 0) * 100)
-                        }
-                        _LOGGER.info("Tomorrow's forecast: %s", result["tomorrow"])
+                result["sun"] = sun
 
-                    # Format weekly forecast (only if requested)
-                    if forecast_type in ["weekly", "both"]:
-                        forecast_list = []
-                        for day_data in daily[:7]:  # Up to 7 days
-                            dt = datetime.fromtimestamp(day_data.get("dt", 0))
-                            forecast_list.append({
-                                "day": dt.strftime("%A"),
-                                "date": dt.strftime("%B %d"),
-                                "high": round(day_data.get("temp", {}).get("max", 0)),
-                                "low": round(day_data.get("temp", {}).get("min", 0)),
-                                "conditions": day_data.get("weather", [{}])[0].get("description", "Unknown").title(),
-                                "rain_chance": round(day_data.get("pop", 0) * 100)
-                            })
+            # ---------- hour-by-hour ----------
+            if forecast_type == "hourly":
+                result["hourly"] = _hourly_timeline(hourly, tz_offset)
 
-                        result["forecast"] = forecast_list
-                        _LOGGER.info("Weather forecast: %d days", len(forecast_list))
+            # ---------- a specific named day ----------
+            if requested_day and daily:
+                day_data = _resolve_requested_day(requested_day, daily, tz_offset)
+                if day_data:
+                    result["requested_day"] = _day_block(day_data, tz_offset)
+                else:
+                    result["requested_day_error"] = (
+                        f"No forecast available for '{requested_day}' "
+                        "(forecast only covers the next 7 days)"
+                    )
 
-                _LOGGER.info("Current weather: %s", result["current"])
+            # ---------- tomorrow ----------
+            if forecast_type == "tomorrow" and len(daily) > 1:
+                result["tomorrow"] = _day_block(daily[1], tz_offset)
+                _LOGGER.info("Tomorrow's forecast: %s", result["tomorrow"])
+
+            # ---------- 7-day ----------
+            if forecast_type == "weekly":
+                result["forecast"] = [_day_block(d, tz_offset) for d in daily[:7]]
+                _LOGGER.info("Weather forecast: %d days", len(result["forecast"]))
+
+            _LOGGER.info("Current weather: %s", result["current"])
 
         if not result:
             return {"error": "No weather data retrieved"}
