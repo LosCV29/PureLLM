@@ -344,6 +344,49 @@ def _artist_norm_variants(text: str) -> tuple[str, str]:
     return deleted, spaced
 
 
+_ONES_WORDS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11,
+    "twelve": 12, "thirteen": 13, "fourteen": 14, "fifteen": 15,
+    "sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
+}
+_TENS_WORDS = {
+    "twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+}
+
+
+def _normalize_spelled_numbers(text: str) -> str:
+    """Fold spelled-out numbers to digits: "forty two dog" → "42 dog".
+
+    STT spells numbers out, but artists like 42 Dugg / 21 Savage / 2Pac are
+    written with digits — so no text layer ever matched them until this
+    existed (2026-07-29: "shuffle forty two dog" played a random playlist
+    literally named "Forty two"). Used as an ADDITIONAL variant everywhere,
+    never a replacement — "One Direction" style names stay findable raw.
+    """
+    if not text:
+        return text
+    words = text.split()
+    out: list[str] = []
+    i = 0
+    while i < len(words):
+        w = words[i].lower()
+        if w in _TENS_WORDS:
+            nxt = words[i + 1].lower() if i + 1 < len(words) else ""
+            if nxt in _ONES_WORDS and 1 <= _ONES_WORDS[nxt] <= 9:
+                out.append(str(_TENS_WORDS[w] + _ONES_WORDS[nxt]))
+                i += 2
+                continue
+            out.append(str(_TENS_WORDS[w]))
+        elif w in _ONES_WORDS:
+            out.append(str(_ONES_WORDS[w]))
+        else:
+            out.append(words[i])
+        i += 1
+    return " ".join(out)
+
+
 # Music provider preference. Apple Music is the primary subscription; Spotify was
 # added 2026-07-26 purely as a BACKUP for things Apple's catalog doesn't carry
 # (mixtapes and indie releases — e.g. Wale's "Passive-Aggress Her", which exists
@@ -576,9 +619,13 @@ def _artist_names_match(a: str, b: str) -> bool:
     if not a or not b:
         return False
     # Normalize: strip accents, punctuation, dots → just letters/numbers/spaces.
-    # Punctuation is both deleted and spaced-out; a match on any pairing counts.
-    for norm_a in _artist_norm_variants(a):
-        for norm_b in _artist_norm_variants(b):
+    # Punctuation is both deleted and spaced-out, and spelled-out numbers are
+    # additionally folded to digits ("forty two dog" gains a "42 dog" variant so
+    # it can match "42 Dugg" on the shared "42"). A match on any pairing counts.
+    variants_a = set(_artist_norm_variants(a)) | set(_artist_norm_variants(_normalize_spelled_numbers(a)))
+    variants_b = set(_artist_norm_variants(b)) | set(_artist_norm_variants(_normalize_spelled_numbers(b)))
+    for norm_a in variants_a:
+        for norm_b in variants_b:
             if _artist_norm_match(norm_a, norm_b):
                 return True
     return False
@@ -1489,21 +1536,33 @@ class MusicController:
         if not artist:
             return artist
         try:
-            result = await self._hass.services.async_call(
-                "music_assistant", "search",
-                {"config_entry_id": ma_config_entry_id, "name": artist, "media_type": ["artist"], "limit": 5},
-                blocking=True, return_response=True
-            )
+            # Digit-folded form FIRST when it differs ("forty two dog" → "42
+            # dog"): its result order is far better for digit-styled artists —
+            # "42 dog" puts 42 Dugg at #1, while the raw spelled-out search
+            # leads with Dr. Dog, which would win the plausibility gate on the
+            # shared word "dog" before 42 Dugg is ever considered.
+            names_to_try = []
+            folded = _normalize_spelled_numbers(artist)
+            if folded.lower() != artist.lower():
+                names_to_try.append(folded)
+            names_to_try.append(artist)
+
             rejected: list[str] = []
-            for r in _parse_ma_results(result, "artist"):
-                canonical = (r.get("name") or "").strip()
-                if not canonical:
-                    continue
-                if not _artist_resolution_plausible(artist, canonical):
-                    rejected.append(canonical)
-                    continue
-                _LOGGER.info("MUSIC: Resolved artist '%s' → '%s'", artist, canonical)
-                return canonical
+            for search_name in names_to_try:
+                result = await self._hass.services.async_call(
+                    "music_assistant", "search",
+                    {"config_entry_id": ma_config_entry_id, "name": search_name, "media_type": ["artist"], "limit": 5},
+                    blocking=True, return_response=True
+                )
+                for r in _parse_ma_results(result, "artist"):
+                    canonical = (r.get("name") or "").strip()
+                    if not canonical:
+                        continue
+                    if not _artist_resolution_plausible(artist, canonical):
+                        rejected.append(canonical)
+                        continue
+                    _LOGGER.info("MUSIC: Resolved artist '%s' → '%s'", artist, canonical)
+                    return canonical
             if rejected:
                 _LOGGER.info(
                     "MUSIC: No artist resembling '%s' (ignored %s); keeping original",
@@ -2691,6 +2750,7 @@ class MusicController:
             ma_config_entry_id = ma_entries[0].entry_id
 
             all_playlists = []
+            resolved = ""
 
             if detected_holiday:
                 # For holidays, search using the FULL query first, then fallback to generic terms
@@ -2709,10 +2769,18 @@ class MusicController:
                     all_playlists.extend(_parse_ma_results(search_result, "playlist"))
                 _LOGGER.info("Holiday search for '%s' found %d total playlists", query, len(all_playlists))
             else:
-                # Standard search for non-holiday queries
+                # Resolve the query as an artist name first — "shuffle <artist>"
+                # is the dominant use, and STT renderings like "forty two dog"
+                # find no playlist while the canonical "42 Dugg" has an official
+                # Essentials. Non-artist queries (genres, moods) resolve to
+                # nothing plausible and fall through with the raw query.
+                resolved = await self._resolve_artist_name(ma_config_entry_id, query)
+                search_name = resolved if resolved and resolved.lower() != query_lower else query
+                if search_name != query:
+                    _LOGGER.info("Shuffle query '%s' resolved to artist '%s'", query, search_name)
                 search_result = await self._hass.services.async_call(
                     "music_assistant", "search",
-                    {"config_entry_id": ma_config_entry_id, "name": query, "media_type": ["playlist"], "limit": 10},
+                    {"config_entry_id": ma_config_entry_id, "name": search_name, "media_type": ["playlist"], "limit": 10},
                     blocking=True, return_response=True
                 )
                 all_playlists = _parse_ma_results(search_result, "playlist")
@@ -2739,18 +2807,24 @@ class MusicController:
                 ]
 
                 query_words = query_lower.split()
+                _playlist_stopwords = {"the", "and", "for", "music", "playlist", "mix", "songs", "some"}
 
                 def name_matches_query(playlist_name_str: str) -> bool:
-                    """Check if playlist name contains query or any significant word from query."""
+                    """Does the playlist name plausibly answer the request?
+
+                    Full containment of the query (raw or artist-resolved), or
+                    ALL significant query words present. A single shared word
+                    is NOT enough — "shuffle forty two dog" once matched a
+                    random playlist literally named "Forty two" on "forty".
+                    """
                     name_lower = _strip_accents(playlist_name_str.lower())
-                    query_norm = _strip_accents(query_lower)
-                    # Exact query match
-                    if query_norm in name_lower:
-                        return True
-                    # Match on individual words (handles typos like elliot vs elliott)
-                    for word in query_words:
-                        if len(word) >= 4 and _strip_accents(word) in name_lower:
+                    for whole in (query_lower, resolved.lower() if resolved else ""):
+                        if whole and _strip_accents(whole) in name_lower:
                             return True
+                    significant = [w for w in query_words
+                                   if len(w) >= 3 and w not in _playlist_stopwords]
+                    if significant and all(_strip_accents(w) in name_lower for w in significant):
+                        return True
                     # For holidays, also check holiday search terms
                     if detected_holiday:
                         for term in holiday_search_terms:
