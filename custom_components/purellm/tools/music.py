@@ -374,6 +374,27 @@ def _provider_rank(uri: str) -> int:
     return _PROVIDER_PRIORITY.get(_provider_of(uri), _PROVIDER_FALLBACK_RANK)
 
 
+def _explicit_rank(item: dict) -> int:
+    """Sort rank for censorship (lower = preferred). NEVER play clean over explicit.
+
+    This is an absolute rule, not a preference to be balanced against others:
+    when two copies of the same recording exist, the explicit one always wins.
+    Music Assistant reports `explicit` as True / False / None, and None is
+    COMMON on Apple Music results even when a sibling copy is flagged — so
+    unknown must rank between the two, never below clean.
+
+    It sorts ahead of provider rank deliberately: an explicit copy on Spotify
+    beats a clean copy on Apple. Do NOT add a tie-break above this one (a
+    compilation/"Various Artists" penalty was proposed and REJECTED for exactly
+    that reason — it would have picked the clean single over the explicit cut).
+    """
+    if item.get("explicit") is True:
+        return 0
+    if item.get("explicit") is False:
+        return 2
+    return 1
+
+
 def _search_miss(media_type: str, query: str, artist: str = "") -> dict:
     """Terminal 'not in the catalog' result for a music search.
 
@@ -429,6 +450,83 @@ def _titles_resemble(query: str, title: str) -> bool:
         return True
     # Whole-string similarity as a last resort for heavy STT garble on short titles
     return SequenceMatcher(None, norm_q, norm_t).ratio() >= 0.7
+
+
+# Vowel substitutions ordered by how often speech-to-text confuses them.
+_VOWEL_ORDER = "eaiou"
+_CONSONANT_SWAPS = (("c", "k"), ("k", "c"), ("s", "z"), ("z", "s"),
+                    ("ph", "f"), ("f", "ph"), ("y", "i"), ("i", "y"))
+_PHONETIC_VOWELS = "aeiouy"
+
+
+def _phonetic_key(text: str) -> str:
+    """Coarse pronunciation key: consonant skeleton with vowels as placeholders.
+
+    Equal keys mean "these two spellings could be the same word misheard" — NOT
+    "these are the same word". Used only to VALIDATE a rescue candidate, never
+    to rank one, because it is deliberately lossy ("dreka" and "drake" collide).
+    """
+    s = re.sub(r"[^a-z0-9\s]", "", _strip_accents((text or "").lower()))
+    s = re.sub(r"\s+", " ", s).strip()
+    if not s:
+        return ""
+    s = s.replace("ph", "f").replace("gh", "f")
+    s = s.replace("ck", "k").replace("sch", "sk")
+    s = re.sub(r"c(?=[eiy])", "s", s)               # cent → sent
+    s = s.replace("c", "k").replace("q", "k").replace("x", "ks")
+    s = s.replace("z", "s")
+    s = re.sub(r"(.)\1+", r"\1", s)                 # collapse doubled letters
+    return re.sub(f"[{_PHONETIC_VOWELS}]+", "V", s)
+
+
+def _phonetic_variants(text: str, limit: int = 8) -> list[str]:
+    """Plausible respellings of a possibly-misheard title, most likely first.
+
+    Bridges one or two bad phonemes from STT when NEITHER the catalog nor
+    MusicBrainz tolerates the slip (2026-07-29: "Dreka" by Kevin Gates came
+    through as "Drica" — Music Assistant search returned only unrelated Kevin
+    Gates tracks, and MusicBrainz has no "Dreka" recording at all, so every
+    existing fallback was a dead end).
+
+    Every emitted variant shares the original's phonetic key, so this widens
+    the search strictly within the set of spellings that SOUND the same. Capped
+    at short titles: a long title has too many variants to sweep, and enough
+    surviving words for the normal scorer to match on anyway.
+    """
+    s = re.sub(r"\s+", " ", (text or "").strip().lower())
+    if not s or len(s) > 24 or len(s.split()) > 2:
+        return []
+    key = _phonetic_key(s)
+    if not key:
+        return []
+    seen = {s}
+    out: list[str] = []
+
+    def _push(cand: str) -> bool:
+        """Add a candidate; return True once the cap is reached."""
+        if cand in seen or _phonetic_key(cand) != key:
+            return False
+        seen.add(cand)
+        out.append(cand)
+        return len(out) >= limit
+
+    # Consonant-folded seeds first, then vowel substitutions over every seed —
+    # "drica" needs BOTH edits (c→k and i→e) before it reaches "dreka".
+    seeds = [s]
+    for a, b in _CONSONANT_SWAPS:
+        if a in s:
+            cand = s.replace(a, b)
+            if cand not in seeds and _phonetic_key(cand) == key:
+                seeds.append(cand)
+    for seed in seeds[1:]:
+        if _push(seed):
+            return out
+    for v in _VOWEL_ORDER:
+        for seed in seeds:
+            for i, ch in enumerate(seed):
+                if ch in "aeiou" and ch != v and _push(seed[:i] + v + seed[i + 1:]):
+                    return out
+    return out
 
 
 def _artist_contains(a: str, b: str) -> bool:
@@ -1608,6 +1706,11 @@ class MusicController:
 
         # Prefer explicit over clean when both versions of the same song exist.
         # Apple Music returns explicit as top-level field: True/False/None.
+        # Kept small on purpose: this only has to separate two copies of the SAME
+        # recording (identical name/artist score), and a larger bonus would let an
+        # explicit near-miss title outrank an exact clean one. The absolute
+        # never-clean-over-explicit guarantee lives in _explicit_rank, applied as a
+        # tie-break where the rest of the score is already equal.
         explicit_bonus = 0
         if item.get("explicit") is True:
             explicit_bonus = 15
@@ -1652,7 +1755,8 @@ class MusicController:
             # room instead of diverging per call.
             if score > best_score or (
                 score == best_score and best_uri is not None
-                and (_provider_rank(item_uri), item_uri) < (_provider_rank(best_uri), best_uri)
+                and (_explicit_rank(item), _provider_rank(item_uri), item_uri)
+                < (_explicit_rank(best), _provider_rank(best_uri), best_uri)
             ):
                 best_score = score
                 best = item
@@ -1680,6 +1784,64 @@ class MusicController:
         )
         return _parse_ma_results(search_result, media_type)
 
+    async def _phonetic_rescue(
+        self, config_entry_id: str, query: str, artist: str, media_type: str,
+    ) -> list[tuple[str, list]]:
+        """Last-resort search for a title STT probably misheard.
+
+        Only runs when every normal path (MA search, MusicBrainz canonicalization)
+        found nothing AND the artist is known — the artist is what makes this safe,
+        since the phonetic key alone is lossy enough to match unrelated songs.
+
+        Sweeps the respellings in parallel (one round-trip of latency, not eight)
+        and keeps only results whose title sounds like what was asked for.
+        Returns [(matched_title, [items])] groups, closest spelling first.
+        """
+        if media_type not in ("track", "album") or not artist:
+            return []
+        variants = _phonetic_variants(query)
+        if not variants:
+            return []
+
+        _LOGGER.info("MUSIC: Phonetic rescue for %s '%s' by '%s' — trying %s",
+                     media_type, query, artist, variants)
+        searches = await asyncio.gather(
+            *(self._ma_search_raw(config_entry_id, f"{v} {artist}", media_type)
+              for v in variants),
+            return_exceptions=True,
+        )
+
+        key = _phonetic_key(query)
+        artist_lower = _strip_accents(artist.lower())
+        groups: dict[str, list] = {}
+        seen_uris: set[str] = set()
+        for result in searches:
+            if isinstance(result, BaseException):
+                continue
+            for item in result:
+                uri = item.get("uri") or item.get("media_id")
+                name = item.get("name") or item.get("title") or ""
+                if not uri or uri in seen_uris or _phonetic_key(name) != key:
+                    continue
+                # The artist gate is load-bearing — without it a phonetic match
+                # happily plays a different artist's similarly-named song.
+                if not _artist_names_match(artist_lower, _strip_accents(_extract_artist(item, lowercase=True))):
+                    continue
+                seen_uris.add(uri)
+                groups.setdefault(_normalize_unicode(name), []).append(item)
+
+        if not groups:
+            _LOGGER.info("MUSIC: Phonetic rescue found nothing for '%s'", query)
+            return []
+        # Closest spelling to what was actually heard wins.
+        ordered = sorted(
+            groups.items(),
+            key=lambda kv: -SequenceMatcher(None, query.lower(), kv[0].lower()).ratio(),
+        )
+        _LOGGER.info("MUSIC: Phonetic rescue matched '%s' → %s",
+                     query, [title for title, _ in ordered])
+        return ordered
+
     def _rank_matches(
         self, results: list[dict], query_lower: str, artist_lower: str,
         media_type: str, limit: int = 5, alt_query_lower: str = "",
@@ -1704,11 +1866,14 @@ class MusicController:
             if name_score <= 0 or score <= 0:
                 continue
             scored.append((score, item))
-        # Sort by score desc, then preferred provider, then uri asc — a
-        # deterministic order so the candidate list the LLM sees is stable
-        # across identical searches and Apple wins an otherwise-equal Spotify.
+        # Sort by score desc, then explicit-over-clean, then preferred provider,
+        # then uri asc — a deterministic order so the candidate list the LLM sees
+        # is stable across identical searches. Explicit sorts above provider so
+        # the cross-provider dedupe below can never drop an explicit copy in
+        # favour of a clean one (see _explicit_rank).
         scored.sort(key=lambda x: (
             -x[0],
+            _explicit_rank(x[1]),
             _provider_rank(str(x[1].get("uri") or x[1].get("media_id") or "")),
             str(x[1].get("uri") or x[1].get("media_id") or ""),
         ))
@@ -1829,6 +1994,21 @@ class MusicController:
             alt_query_lower=alt_query_lower,
         )
 
+        # Nothing matched — the title may simply have been misheard. Sweep
+        # same-sounding respellings before declaring it absent from the catalog.
+        if not ranked:
+            for matched_title, items in await self._phonetic_rescue(
+                ma_config_entry_id, query, resolved_artist, media_type,
+            ):
+                ranked = self._rank_matches(
+                    items, query_lower, artist_lower, media_type, limit=5,
+                    alt_query_lower=_normalize_numerals(_strip_accents(matched_title.lower())),
+                )
+                if ranked:
+                    _LOGGER.info("SEARCH: Phonetic rescue resolved '%s' → '%s'",
+                                 query, matched_title)
+                    break
+
         if not ranked:
             return _search_miss(media_type, query, artist)
         _LOGGER.info("SEARCH: %d candidates for %s '%s': %s", len(ranked), media_type, query,
@@ -1915,6 +2095,22 @@ class MusicController:
                         match = await self._search_ma(ma_config_entry_id, mb_title, final_artist, media_type, album)
                 except Exception as err:
                     _LOGGER.debug("MUSIC: MusicBrainz fallback failed: %s", err)
+
+            # Step 4: phonetic rescue — MA and MusicBrainz both came up empty, so
+            # the title itself was probably misheard ("Drica" for "Dreka").
+            if not match:
+                for matched_title, items in await self._phonetic_rescue(
+                    ma_config_entry_id, query, resolved_artist, media_type,
+                ):
+                    match = self._pick_best_match(
+                        items,
+                        _normalize_numerals(_strip_accents(matched_title.lower())),
+                        _strip_accents(resolved_artist.lower()) if resolved_artist else "",
+                    )
+                    if match:
+                        _LOGGER.info("MUSIC: Phonetic rescue resolved '%s' → '%s'",
+                                     query, matched_title)
+                        break
 
             if not match:
                 miss = _search_miss(media_type, query, artist)
