@@ -820,6 +820,9 @@ class MusicController:
         self._last_music_command: str | None = None
         self._last_music_command_time: datetime | None = None
         self._music_debounce_seconds = 3.0
+        # URIs most recently offered to the LLM by search_music, so a media_uri
+        # echoed back with a typo can be snapped to the real one.
+        self._offered_uris: list[str] = []
 
     async def control_music_deferred(
         self, arguments: dict[str, Any],
@@ -966,7 +969,7 @@ class MusicController:
 
             # Direct play of a search_music result: the LLM echoes the chosen
             # candidate's media_uri, so we skip all searching and play it as-is.
-            media_uri = (arguments.get("media_uri") or "").strip()
+            media_uri = self._snap_media_uri((arguments.get("media_uri") or "").strip())
             if media_uri and action in ("play", "shuffle"):
                 if not target_players:
                     return {"error": f"Which room? Available: {', '.join(self._players.keys())}"}
@@ -1784,6 +1787,43 @@ class MusicController:
         )
         return _parse_ma_results(search_result, media_type)
 
+    def _remember_candidates(self, results: list[dict]) -> None:
+        """Record the media_uris search_music just offered the LLM."""
+        for r in results:
+            uri = r.get("media_uri")
+            if uri and uri not in self._offered_uris:
+                self._offered_uris.append(uri)
+        del self._offered_uris[:-40]
+
+    def _snap_media_uri(self, media_uri: str) -> str:
+        """Repair a media_uri the LLM mis-copied from a search_music candidate.
+
+        search_music hands the model a full URI to echo back into control_music.
+        Apple ids are short and numeric, but Spotify ids are 22 characters of
+        base62 and the model does sometimes drop a character on the way through
+        (2026-07-29: '…/4pB4dmSs…' came back as '…/4pBBdmSs…' and Music Assistant
+        answered "No playable items found"). The right URI is one we just handed
+        out, so snap to it rather than failing the turn. Requires the same
+        provider and an otherwise near-identical id, so an unrelated URI the
+        model invented outright is still played (or rejected) as given.
+        """
+        if not media_uri or media_uri in self._offered_uris:
+            return media_uri
+        scheme = _provider_of(media_uri)
+        best, best_ratio = "", 0.0
+        for candidate in self._offered_uris:
+            if _provider_of(candidate) != scheme:
+                continue
+            ratio = SequenceMatcher(None, media_uri, candidate).ratio()
+            if ratio > best_ratio:
+                best, best_ratio = candidate, ratio
+        if best and best_ratio >= 0.9:
+            _LOGGER.warning(
+                "MUSIC: media_uri '%s' was not offered; snapping to '%s' (similarity %.2f)",
+                media_uri, best, best_ratio)
+            return best
+        return media_uri
+
     async def _phonetic_rescue(
         self, config_entry_id: str, query: str, artist: str, media_type: str,
     ) -> list[tuple[str, list]]:
@@ -2013,6 +2053,7 @@ class MusicController:
             return _search_miss(media_type, query, artist)
         _LOGGER.info("SEARCH: %d candidates for %s '%s': %s", len(ranked), media_type, query,
                      [c["name"] for c in ranked])
+        self._remember_candidates(ranked)
         return {"results": ranked}
 
     async def _search_playlists_for_tool(
@@ -2042,6 +2083,7 @@ class MusicController:
         out.sort(key=lambda x: 0 if x["official"] else 1)
         if not out:
             return _search_miss("playlist", query)
+        self._remember_candidates(out[:5])
         return {"results": out[:5]}
 
     async def _play(self, query: str, media_type: str, room: str, target_players: list[str], artist: str = "", album: str = "") -> dict:
