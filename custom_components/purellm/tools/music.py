@@ -584,6 +584,16 @@ def _artist_names_match(a: str, b: str) -> bool:
     return False
 
 
+_GENERIC_ARTIST_TOKENS = frozenset({
+    # Rap/hip-hop prefixes so common they identify nothing on their own:
+    # "Lil Wayne" must NOT match "Lil Tunechi"/"Lil Baby"/"Lil Durk" on "lil"
+    # (2026-07-29: a bootleg act named "Lil Tunechi" won a search this way).
+    # Also makes the long-documented Young M.A ↔ Trummy Young reject actually
+    # hold — they share only "young".
+    "lil", "big", "young", "yung", "dj", "mc", "the",
+})
+
+
 def _artist_norm_match(norm_a: str, norm_b: str) -> bool:
     """Match two already-normalized artist names."""
     # Direct containment after normalization (min 2 chars — a bare "k" matches everything)
@@ -595,13 +605,16 @@ def _artist_norm_match(norm_a: str, norm_b: str) -> bool:
     if not words_a or not words_b:
         return False
     # Ignore 1-char tokens: spacing out "O.T. Genasis" → "o t genasis" must not
-    # collide with "T-Pain" → "t pain" on the shared "t".
-    if {w for w in words_a & words_b if len(w) >= 2}:
+    # collide with "T-Pain" → "t pain" on the shared "t". Also ignore generic
+    # prefix tokens — a shared "lil"/"young" alone is not an artist match.
+    if {w for w in words_a & words_b if len(w) >= 2} - _GENERIC_ARTIST_TOKENS:
         return True
     # Prefix matching on individual words: "genesis" ↔ "genasis" (5-char prefix "genes"/"genas" — no)
-    # Better: check if any word pair shares a 4+ char prefix
-    for wa in words_a:
-        for wb in words_b:
+    # Better: check if any word pair shares a 4+ char prefix. Generic tokens are
+    # excluded here too — "young"/"young" is a 4-char prefix of itself, which
+    # would resurrect exactly the matches the stoplist above rejects.
+    for wa in words_a - _GENERIC_ARTIST_TOKENS:
+        for wb in words_b - _GENERIC_ARTIST_TOKENS:
             min_len = min(len(wa), len(wb))
             if min_len >= 4 and (wa.startswith(wb[:4]) or wb.startswith(wa[:4])):
                 return True
@@ -1960,6 +1973,85 @@ class MusicController:
                 break
         return out
 
+    def _lyric_alias_candidates(
+        self, items: list[dict], query_lower: str, artist_lower: str,
+        media_type: str, limit: int = 2,
+    ) -> list[dict]:
+        """Exact-artist hits the catalog ranked ABOVE the first title match.
+
+        When the user asks by a lyric or alternate title, MA's relevance
+        search puts the real song first while the only title-matching items
+        are bootlegs/covers further down. Those top differently-titled hits
+        are returned as `possible_alias` candidates for the LLM to judge.
+
+        Deliberately narrow:
+        - needs a title-matching item to exist somewhere in the list (the
+          bootleg pattern) — with no cutoff, every artist-only hit for a
+          plain miss like "Drica" would qualify, which is exactly the
+          wrong-song trap the name_score>0 invariant exists to prevent;
+        - the item's artist must EXACTLY equal the resolved artist (no fuzz);
+        - variant/DJ-mix/live junk is excluded the same way the scorer would.
+        """
+        if not artist_lower or media_type not in ("track", "album"):
+            return []
+        cutoff = None
+        for i, item in enumerate(items):
+            _, name_score = self._score_item(item, query_lower, artist_lower)
+            if name_score > 0:
+                cutoff = i
+                break
+        if not cutoff:  # no title match at all, or the title match is already #1
+            return []
+
+        def _sort_key(it: dict) -> tuple:
+            uri = str(it.get("uri") or it.get("media_id") or "")
+            return (_explicit_rank(it), _provider_rank(uri), uri)
+
+        picked: dict[tuple[str, str], dict] = {}
+        order: list[tuple[str, str]] = []
+        for item in items[:cutoff]:
+            item_artist = _strip_accents(_extract_artist(item, lowercase=True))
+            if item_artist != artist_lower:
+                continue
+            uri = item.get("uri") or item.get("media_id")
+            name = item.get("name") or item.get("title") or ""
+            if not uri or not name:
+                continue
+            album_info = item.get("album") or {}
+            album_name = ((album_info.get("name") or album_info.get("title") or "")
+                          if isinstance(album_info, dict) else (album_info or ""))
+            blob = f"{name} {item.get('version') or ''} {album_name}"
+            if (self._VARIANT_KEYWORDS.search(blob)
+                    or self._DJ_MIX_KEYWORDS.search(blob)
+                    or self._NON_ALBUM_VERSION_KEYWORDS.search(blob)):
+                continue
+            ident = (_strip_accents(name.lower()).strip(), item_artist)
+            if ident not in picked:
+                order.append(ident)
+                picked[ident] = item
+            elif _sort_key(item) < _sort_key(picked[ident]):
+                # Same song from both providers — keep the explicit/preferred copy.
+                picked[ident] = item
+
+        out: list[dict] = []
+        for ident in order[:limit]:
+            item = picked[ident]
+            album_info = item.get("album") or {}
+            album_name = ((album_info.get("name") or album_info.get("title") or "")
+                          if isinstance(album_info, dict) else (album_info or ""))
+            candidate = {
+                "name": _normalize_unicode(item.get("name") or item.get("title")),
+                "artist": _extract_artist(item),
+                "media_type": media_type,
+                "media_uri": item.get("uri") or item.get("media_id"),
+                "explicit": bool(item.get("explicit")),
+                "possible_alias": True,
+            }
+            if media_type == "track" and album_name:
+                candidate["album"] = _normalize_unicode(album_name)
+            out.append(candidate)
+        return out
+
     async def search_catalog(
         self, query: str, media_type: str = "track", artist: str = "",
     ) -> dict:
@@ -2001,8 +2093,13 @@ class MusicController:
                     seen_uris.add(uri)
                     candidates.append(it)
 
+        # The artist-scoped search is kept separately (in MA's own relevance
+        # order) for lyric-alias detection below.
+        artist_query_results: list[dict] = []
         if resolved_artist and media_type != "artist":
-            _add(await self._ma_search_raw(ma_config_entry_id, f"{query} {resolved_artist}", media_type))
+            artist_query_results = await self._ma_search_raw(
+                ma_config_entry_id, f"{query} {resolved_artist}", media_type)
+            _add(artist_query_results)
         _add(await self._ma_search_raw(ma_config_entry_id, query, media_type))
 
         # MusicBrainz canonicalization for vague/misheard track & album names.
@@ -2049,12 +2146,37 @@ class MusicController:
                                  query, matched_title)
                     break
 
-        if not ranked:
+        # Lyric-alias detection: when the user asks by a lyric or alternate
+        # title ("Good Kush and Alcohol" for Lil Wayne's "Love Me"), the
+        # catalog's own relevance search puts the REAL song at the top — but
+        # its title doesn't match the query, so the scorer above rejects it
+        # while a title-matching bootleg/cover survives. Surface those
+        # differently-titled exact-artist hits as flagged candidates and let
+        # the LLM decide — it knows the official titles; we don't.
+        alias = self._lyric_alias_candidates(
+            artist_query_results, query_lower, artist_lower, media_type)
+        alias = [c for c in alias
+                 if c["media_uri"] not in {r["media_uri"] for r in ranked}]
+
+        if not ranked and not alias:
             return _search_miss(media_type, query, artist)
-        _LOGGER.info("SEARCH: %d candidates for %s '%s': %s", len(ranked), media_type, query,
-                     [c["name"] for c in ranked])
-        self._remember_candidates(ranked)
-        return {"results": ranked}
+        result: dict[str, Any] = {"results": ranked + alias}
+        if alias:
+            result["instruction"] = (
+                "Candidates marked possible_alias did NOT match the requested "
+                "title, but the catalog's relevance search ranked them highest "
+                "for this query — the user may have asked by a lyric or "
+                "alternate title. Pick one ONLY if you know it is the same "
+                "song under its official title; never pick it just because it "
+                "is by the right artist. If unsure, prefer a title-matching "
+                "candidate, or tell the user you couldn't find it."
+            )
+        _LOGGER.info("SEARCH: %d candidates for %s '%s': %s%s",
+                     len(ranked) + len(alias), media_type, query,
+                     [c["name"] for c in ranked],
+                     f" + alias {[c['name'] for c in alias]}" if alias else "")
+        self._remember_candidates(ranked + alias)
+        return result
 
     async def _search_playlists_for_tool(
         self, config_entry_id: str, query: str,

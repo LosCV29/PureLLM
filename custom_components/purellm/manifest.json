@@ -1,13 +1,20 @@
 {
   "domain": "purellm",
   "name": "PureLLM",
-  "codeowners": ["@LosCV29"],
+  "codeowners": [
+    "@LosCV29"
+  ],
   "config_flow": true,
-  "dependencies": ["conversation", "tts"],
+  "dependencies": [
+    "conversation",
+    "tts"
+  ],
   "documentation": "https://github.com/LosCV29/purellm",
   "issue_tracker": "https://github.com/LosCV29/purellm/issues",
   "homeassistant": "2025.3.0",
   "iot_class": "cloud_polling",
-  "requirements": ["openai>=1.0.0"],
-  "version": "8.1.1"
+  "requirements": [
+    "openai>=1.0.0"
+  ],
+  "version": "8.2.0"
 }
