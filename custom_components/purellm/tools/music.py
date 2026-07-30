@@ -2160,22 +2160,37 @@ class MusicController:
 
         if not ranked and not alias:
             return _search_miss(media_type, query, artist)
-        result: dict[str, Any] = {"results": ranked + alias}
+
+        # Order: when the best title match is only a weak partial (not all
+        # requested words — "Kush" for "Good Kush and Alcohol"), the catalog's
+        # own relevance ranking put the alias candidates above it, so mirror
+        # that and list them first; a partial-word match is usually a different
+        # song. A strong title match (exact/containment/all-words) stays first.
+        def _name_score_of(name: str) -> int:
+            best = self._score_item({"name": name}, query_lower, "")[1]
+            if alt_query_lower:
+                best = max(best, self._score_item({"name": name}, alt_query_lower, "")[1])
+            return best
+
+        strong_title = any(_name_score_of(c["name"]) >= 40 for c in ranked)
+        ordered = (ranked + alias) if (strong_title or not alias) else (alias + ranked)
+        result: dict[str, Any] = {"results": ordered}
         if alias:
             result["instruction"] = (
-                "Candidates marked possible_alias did NOT match the requested "
-                "title, but the catalog's relevance search ranked them highest "
-                "for this query — the user may have asked by a lyric or "
-                "alternate title. Pick one ONLY if you know it is the same "
-                "song under its official title; never pick it just because it "
-                "is by the right artist. If unsure, prefer a title-matching "
-                "candidate, or tell the user you couldn't find it."
+                "The requested title did not exactly match any catalog track. "
+                "Candidates marked possible_alias are the catalog's TOP "
+                "relevance hits for this exact request — when a user asks by "
+                "a lyric or an alternate title, the official song appears "
+                "there. Unmarked candidates only partially matched the "
+                "requested words and are often a different song entirely. "
+                "Play the candidate that IS the song the user asked for; if "
+                "none of them is, say you couldn't find it."
             )
-        _LOGGER.info("SEARCH: %d candidates for %s '%s': %s%s",
-                     len(ranked) + len(alias), media_type, query,
-                     [c["name"] for c in ranked],
-                     f" + alias {[c['name'] for c in alias]}" if alias else "")
-        self._remember_candidates(ranked + alias)
+        _LOGGER.info("SEARCH: %d candidates for %s '%s': %s",
+                     len(ordered), media_type, query,
+                     [c["name"] + (" (alias)" if c.get("possible_alias") else "")
+                      for c in ordered])
+        self._remember_candidates(ordered)
         return result
 
     async def _search_playlists_for_tool(
