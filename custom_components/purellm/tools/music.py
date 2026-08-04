@@ -610,6 +610,21 @@ def _artist_resolution_plausible(requested: str, canonical: str) -> bool:
     return SequenceMatcher(None, a, b).ratio() >= 0.6
 
 
+def _consonant_fold(text: str) -> str:
+    """Fold consonant spellings STT picks interchangeably (c/k, z/s, ph/f).
+
+    Unlike _phonetic_key this keeps vowels, so it stays precise enough for
+    direct name equality: a faithful STT engine hears "Big K.R.I.T." as
+    "Big Crit" (2026-08-04, Voxtral), and only the c↔k choice separates the
+    normalized forms. Folding both sides makes them literally equal without
+    the false-positive surface of vowel-collapsed keys (Dreka↔Drake).
+    """
+    s = text.replace("ph", "f")
+    s = re.sub(r"c(?=[eiy])", "s", s)               # cent → sent
+    s = s.replace("ck", "k").replace("c", "k").replace("z", "s")
+    return re.sub(r"(.)\1+", r"\1", s)
+
+
 def _artist_names_match(a: str, b: str) -> bool:
     """Fuzzy artist name comparison for voice/STT variations.
 
@@ -622,8 +637,11 @@ def _artist_names_match(a: str, b: str) -> bool:
     # Punctuation is both deleted and spaced-out, and spelled-out numbers are
     # additionally folded to digits ("forty two dog" gains a "42 dog" variant so
     # it can match "42 Dugg" on the shared "42"). A match on any pairing counts.
+    # Consonant-folded copies bridge same-sound spellings (Crit↔K.R.I.T.).
     variants_a = set(_artist_norm_variants(a)) | set(_artist_norm_variants(_normalize_spelled_numbers(a)))
     variants_b = set(_artist_norm_variants(b)) | set(_artist_norm_variants(_normalize_spelled_numbers(b)))
+    variants_a |= {_consonant_fold(v) for v in variants_a}
+    variants_b |= {_consonant_fold(v) for v in variants_b}
     for norm_a in variants_a:
         for norm_b in variants_b:
             if _artist_norm_match(norm_a, norm_b):
@@ -1666,9 +1684,16 @@ class MusicController:
         """
 
         def _prefix_match(word_a: str, word_b: str) -> bool:
-            """Two words match if one is a 4+ char prefix of the other."""
+            """Two words match if one is a 4+ char prefix of the other, or —
+            for longer words — near-identical spelling. The similarity arm
+            covers faithful-STT one-phoneme slips on invented titles
+            ("cadillacica" ↔ "cadillactica", 2026-08-04): no prefix rule can
+            bridge a dropped mid-word letter, but 0.85 on 6+ chars stays far
+            from matching genuinely different words."""
             min_len = min(len(word_a), len(word_b))
-            return min_len >= 4 and (word_a.startswith(word_b) or word_b.startswith(word_a))
+            if min_len >= 4 and (word_a.startswith(word_b) or word_b.startswith(word_a)):
+                return True
+            return min_len >= 6 and SequenceMatcher(None, word_a, word_b).ratio() >= 0.85
 
         # Did the user actually ask for a variant version?
         user_wants_variant = bool(self._VARIANT_KEYWORDS.search(query_lower))
