@@ -491,8 +491,10 @@ def _titles_resemble(query: str, title: str) -> bool:
             matched += 1
     if matched * 2 >= len(q_words):
         return True
-    # Whole-string similarity as a last resort for heavy STT garble on short titles
-    return SequenceMatcher(None, norm_q, norm_t).ratio() >= 0.7
+    # Whole-string similarity as a last resort for heavy STT garble on short
+    # titles; folded comparison bridges c/k/z respelling on top of the garble.
+    return (SequenceMatcher(None, norm_q, norm_t).ratio() >= 0.7
+            or SequenceMatcher(None, _consonant_fold(norm_q), _consonant_fold(norm_t)).ratio() >= 0.7)
 
 
 # Vowel substitutions ordered by how often speech-to-text confuses them.
@@ -1693,7 +1695,13 @@ class MusicController:
             min_len = min(len(word_a), len(word_b))
             if min_len >= 4 and (word_a.startswith(word_b) or word_b.startswith(word_a)):
                 return True
-            return min_len >= 6 and SequenceMatcher(None, word_a, word_b).ratio() >= 0.85
+            if min_len < 6:
+                return False
+            # Compare consonant-folded forms so c/k/z-style respellings don't
+            # eat the whole edit budget ("kaddiaktika" ↔ "cadillactica" is 0.61
+            # raw but 0.95 folded — same word, different STT spelling choices).
+            return (SequenceMatcher(None, word_a, word_b).ratio() >= 0.85
+                    or SequenceMatcher(None, _consonant_fold(word_a), _consonant_fold(word_b)).ratio() >= 0.85)
 
         # Did the user actually ask for a variant version?
         user_wants_variant = bool(self._VARIANT_KEYWORDS.search(query_lower))
