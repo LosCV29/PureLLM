@@ -23,6 +23,13 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# The living-room player rides a Snapdroid snapcast client that can be dead
+# (killed by STOP for the screensaver, or a Shield reboot) — the only player
+# with a revive path (script.ensure_snapclient).
+_SNAPCLIENT_PLAYER = "media_player.shield_android_tv"
+# Where play-failure alerts go when playback can't be started at all.
+_PLAY_FAILURE_NOTIFY = "mobile_app_pixel_9"
+
 
 def _parse_ma_results(search_result: Any, media_type: str) -> list:
     """Parse Music Assistant search results into a flat list."""
@@ -932,9 +939,71 @@ class MusicController:
 
         async def _do_play() -> None:
             for player, media_id, media_type, radio in captured:
-                await original(player, media_id, media_type, radio=radio)
+                await self._play_and_verify(player, media_id, media_type, radio)
 
         return result, _do_play
+
+    async def _play_and_verify(
+        self, player: str, media_id: str, media_type: str, radio: bool,
+    ) -> None:
+        """Play with outcome verification and one self-heal retry.
+
+        MA can accept play_media yet play nothing — a dead Snapdroid client or
+        a wedged MA snapcast player object ("Timed out acquiring playback
+        lock") both make MA log a WARNING and return success — so the service
+        call result proves nothing; the only truth is the entity reaching
+        'playing'. Since this runs after the TTS confirmation has already been
+        spoken, a final failure must be surfaced to the user, not just logged.
+        """
+        ok = False
+        try:
+            await self._play_media(player, media_id, media_type, radio=radio)
+            ok = await self._wait_for_playback_start(player, timeout=12.0)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Play on %s raised: %s", player, err)
+        if ok:
+            return
+
+        _LOGGER.warning(
+            "Playback did not start on %s — running self-heal and retrying", player)
+        if player == _SNAPCLIENT_PLAYER:
+            await self._ensure_players_available([player])
+        try:
+            await self._play_media(player, media_id, media_type, radio=radio)
+            ok = await self._wait_for_playback_start(player, timeout=12.0)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("Play retry on %s raised: %s", player, err)
+        if ok:
+            _LOGGER.info("Playback recovered on %s after self-heal retry", player)
+            return
+
+        _LOGGER.error("Playback could not be started on %s after retry", player)
+        await self._notify_play_failure(player)
+
+    async def _notify_play_failure(self, player: str) -> None:
+        """Tell the user playback silently failed (the TTS already claimed success)."""
+        state = self._hass.states.get(player)
+        name = (state.attributes.get("friendly_name") if state else None) or player
+        message = (
+            f"Music failed to start on {name} even after an automatic restart "
+            "of the speaker connection. The Music Assistant player may be "
+            "wedged — if it doesn't recover in a few minutes, restart the "
+            "Music Assistant add-on."
+        )
+        try:
+            await self._hass.services.async_call(
+                "persistent_notification", "create",
+                {"title": "Music playback failed", "message": message,
+                 "notification_id": f"purellm_play_failure_{player}"},
+                blocking=False,
+            )
+            await self._hass.services.async_call(
+                "notify", _PLAY_FAILURE_NOTIFY,
+                {"title": "🎵 Music playback failed", "message": message},
+                blocking=False,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.error("Could not deliver play-failure notification: %s", err)
 
     async def control_music(self, arguments: dict[str, Any]) -> dict[str, Any]:
         """Control music playback.
