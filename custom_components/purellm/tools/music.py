@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import re
 import unicodedata
@@ -27,6 +29,12 @@ _LOGGER = logging.getLogger(__name__)
 # (killed by STOP for the screensaver, or a Shield reboot) — the only player
 # with a revive path (script.ensure_snapclient).
 _SNAPCLIENT_PLAYER = "media_player.shield_android_tv"
+# Snapserver JSON-RPC endpoint + the client name to check. The HA entity can
+# read available/idle — even 'playing' — while the snapclient is dead, because
+# MA's Native output link keeps the player alive and streams to nobody
+# (2026-08-08 incident). Snapserver's own connected flag is the only truth.
+_SNAPSERVER_ADDR = ("192.168.68.82", 1705)
+_SNAPSERVER_CLIENT = "SHIELD Android TV"
 # Where play-failure alerts go when playback can't be started at all.
 _PLAY_FAILURE_NOTIFY = "mobile_app_pixel_9"
 
@@ -951,14 +959,28 @@ class MusicController:
         MA can accept play_media yet play nothing — a dead Snapdroid client or
         a wedged MA snapcast player object ("Timed out acquiring playback
         lock") both make MA log a WARNING and return success — so the service
-        call result proves nothing; the only truth is the entity reaching
-        'playing'. Since this runs after the TTS confirmation has already been
-        spoken, a final failure must be surfaced to the user, not just logged.
+        call result proves nothing. Nor is the entity reaching 'playing'
+        enough for the living room: a dead snapclient with the Native output
+        link up leaves the entity happily 'playing' while audio streams to
+        nobody (2026-08-08), so Shield plays additionally check snapserver's
+        connected flag before AND after playing. Since this runs after the
+        TTS confirmation has already been spoken, a final failure must be
+        surfaced to the user, not just logged.
         """
         ok = False
         try:
+            if player == _SNAPCLIENT_PLAYER and await self._snapclient_connected() is False:
+                _LOGGER.warning(
+                    "Snapclient not connected at snapserver — reviving before play")
+                await self._run_ensure_snapclient()
             await self._play_media(player, media_id, media_type, radio=radio)
             ok = await self._wait_for_playback_start(player, timeout=12.0)
+            if ok and player == _SNAPCLIENT_PLAYER \
+                    and await self._snapclient_connected() is False:
+                _LOGGER.warning(
+                    "Entity is 'playing' but the snapclient is DISCONNECTED "
+                    "(Native-link masking) — treating as failure")
+                ok = False
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Play on %s raised: %s", player, err)
         if ok:
@@ -967,10 +989,16 @@ class MusicController:
         _LOGGER.warning(
             "Playback did not start on %s — running self-heal and retrying", player)
         if player == _SNAPCLIENT_PLAYER:
-            await self._ensure_players_available([player])
+            await self._run_ensure_snapclient()
         try:
             await self._play_media(player, media_id, media_type, radio=radio)
             ok = await self._wait_for_playback_start(player, timeout=12.0)
+            if ok and player == _SNAPCLIENT_PLAYER \
+                    and await self._snapclient_connected() is False:
+                _LOGGER.error(
+                    "Retry reached 'playing' but the snapclient is still "
+                    "disconnected — audio is going nowhere")
+                ok = False
         except Exception as err:  # noqa: BLE001
             _LOGGER.error("Play retry on %s raised: %s", player, err)
         if ok:
@@ -1233,14 +1261,7 @@ class MusicController:
             if state is not None and state.state != "unavailable":
                 continue
             _LOGGER.info("Player %s unavailable — running ensure_snapclient", pid)
-            try:
-                await self._hass.services.async_call(
-                    "script", "turn_on",
-                    {"entity_id": "script.ensure_snapclient"},
-                    blocking=True,
-                )
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("ensure_snapclient call failed: %s", err)
+            if not await self._run_ensure_snapclient():
                 continue
             # Wait (up to ~16s) for the player to come back.
             elapsed = 0.0
@@ -1251,6 +1272,55 @@ class MusicController:
                     break
                 await asyncio.sleep(0.5)
                 elapsed += 0.5
+
+    async def _run_ensure_snapclient(self) -> bool:
+        """Fire script.ensure_snapclient (blocking) — it always issues the
+        Snapdroid ADB start and clears the user-stopped flag."""
+        try:
+            await self._hass.services.async_call(
+                "script", "turn_on",
+                {"entity_id": "script.ensure_snapclient"},
+                blocking=True,
+            )
+            return True
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("ensure_snapclient call failed: %s", err)
+            return False
+
+    async def _snapclient_connected(self) -> bool | None:
+        """Ask snapserver whether the Shield snapclient is actually connected.
+
+        Returns True/False from snapserver's own connected flag, or None when
+        the check itself fails (snapserver unreachable, malformed reply) —
+        callers treat None as 'unknown, don't block playback on it'.
+        """
+        try:
+            return await asyncio.wait_for(self._query_snapserver(), timeout=5.0)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Snapserver connectivity check failed: %s", err)
+            return None
+
+    async def _query_snapserver(self) -> bool | None:
+        reader, writer = await asyncio.open_connection(*_SNAPSERVER_ADDR)
+        try:
+            writer.write(b'{"id":7,"jsonrpc":"2.0","method":"Server.GetStatus"}\n')
+            await writer.drain()
+            while True:
+                line = await reader.readline()
+                if not line:
+                    return None
+                msg = json.loads(line)
+                if msg.get("id") != 7:
+                    continue  # interleaved async notifications
+                for group in msg["result"]["server"]["groups"]:
+                    for client in group["clients"]:
+                        if client["host"]["name"] == _SNAPSERVER_CLIENT:
+                            return bool(client["connected"])
+                return False  # no client entry at all = not connected
+        finally:
+            writer.close()
+            with contextlib.suppress(Exception):
+                await writer.wait_closed()
 
     def _transport_players(
         self, all_players: list[str], target_players: list[str] | None,
