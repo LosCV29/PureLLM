@@ -805,6 +805,25 @@ def _parse_ordinal_theme(text: str) -> tuple[int | None, str | None]:
     return ordinal, theme
 
 
+def _album_title_is_generic(album: str) -> bool:
+    """True when the album arg is empty or pure theme/ordinal filler.
+
+    "christmas album" / "first christmas album" are descriptions the themed
+    picker should resolve; "Happy Thanksgiving & Merry Christmas" is an
+    explicit title that merely CONTAINS a theme word — hijacking it into the
+    themed picker played a different album than the one the user named
+    (2026-08-10)."""
+    if not album:
+        return True
+    filler = {"album", "albums", "the", "a", "an", "my", "favorite", "favourite"}
+    for word in _ORDINALS:
+        filler.update(word.split())
+    for keyword in ALBUM_THEME_KEYWORDS:
+        filler.update(keyword.split())
+    words = re.findall(r"[a-z0-9']+", album.lower())
+    return all(w in filler for w in words)
+
+
 # =============================================================================
 # CURATED MEDIA — phrase shortcuts that play an exact pinned playlist/artist
 # instead of a fuzzy catalog search. Guarantees reliable, kid-safe results
@@ -1226,7 +1245,10 @@ class MusicController:
 
                 # Try themed/ordinal album search if detected
                 # e.g. "play Kelly Clarkson's first christmas album"
-                if (ordinal is not None or theme) and artist and media_type == "album":
+                # — but never when the user named a specific album whose title
+                # happens to contain a theme word; exact search handles those.
+                if (ordinal is not None or theme) and artist and media_type == "album" \
+                        and _album_title_is_generic(album):
                     themed_result = await self._find_themed_album(artist, ordinal, theme)
                     if themed_result:
                         found_name = _normalize_unicode(themed_result.get("name") or themed_result.get("title"))
