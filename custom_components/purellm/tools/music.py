@@ -918,6 +918,10 @@ class MusicController:
         # URIs most recently offered to the LLM by search_music, so a media_uri
         # echoed back with a typo can be snapped to the real one.
         self._offered_uris: list[str] = []
+        # Pending post-skip resume watchers, keyed by entity_id, so an explicit
+        # stop/pause can cancel them instead of having a watcher un-stop the
+        # music seconds later (2026-08-10).
+        self._resume_tasks: dict[str, asyncio.Task] = {}
 
     async def control_music_deferred(
         self, arguments: dict[str, Any],
@@ -982,6 +986,15 @@ class MusicController:
                     "(Native-link masking) — treating as failure")
                 ok = False
         except Exception as err:  # noqa: BLE001
+            if self._is_content_error(err):
+                # MA rejected the item itself (empty/unplayable playlist,
+                # usually a bad search match) — the player is fine, so the
+                # self-heal + same-URI retry below cannot help (2026-08-10).
+                _LOGGER.error(
+                    "MA rejected the media item on %s (%s) — bad content "
+                    "match, skipping self-heal retry", player, err)
+                await self._notify_play_failure(player, content_error=True)
+                return
             _LOGGER.warning("Play on %s raised: %s", player, err)
         if ok:
             return
@@ -1000,6 +1013,12 @@ class MusicController:
                     "disconnected — audio is going nowhere")
                 ok = False
         except Exception as err:  # noqa: BLE001
+            if self._is_content_error(err):
+                _LOGGER.error(
+                    "MA rejected the media item on retry on %s (%s) — bad "
+                    "content match", player, err)
+                await self._notify_play_failure(player, content_error=True)
+                return
             _LOGGER.error("Play retry on %s raised: %s", player, err)
         if ok:
             _LOGGER.info("Playback recovered on %s after self-heal retry", player)
@@ -1008,16 +1027,36 @@ class MusicController:
         _LOGGER.error("Playback could not be started on %s after retry", player)
         await self._notify_play_failure(player)
 
-    async def _notify_play_failure(self, player: str) -> None:
+    @staticmethod
+    def _is_content_error(err: Exception) -> bool:
+        """True when MA rejected the item itself rather than the player failing.
+
+        "No playable item found to start playback" is MA's answer for an
+        empty/unplayable playlist or track (seen 2026-08-10 when an STT
+        mishear matched a junk Spotify playlist) — retrying the same URI or
+        reviving the speaker cannot fix it."""
+        msg = str(err).lower()
+        return "no playable item" in msg or "no playable items" in msg
+
+    async def _notify_play_failure(self, player: str, content_error: bool = False) -> None:
         """Tell the user playback silently failed (the TTS already claimed success)."""
         state = self._hass.states.get(player)
         name = (state.attributes.get("friendly_name") if state else None) or player
-        message = (
-            f"Music failed to start on {name} even after an automatic restart "
-            "of the speaker connection. The Music Assistant player may be "
-            "wedged — if it doesn't recover in a few minutes, restart the "
-            "Music Assistant add-on."
-        )
+        if content_error:
+            message = (
+                f"The music I picked couldn't be played on {name} — Music "
+                "Assistant reported no playable tracks in it. That's almost "
+                "always a bad content match (often a misheard name), not a "
+                "player problem. Just ask again, maybe with slightly "
+                "different wording."
+            )
+        else:
+            message = (
+                f"Music failed to start on {name} even after an automatic restart "
+                "of the speaker connection. The Music Assistant player may be "
+                "wedged — if it doesn't recover in a few minutes, restart the "
+                "Music Assistant add-on."
+            )
         try:
             await self._hass.services.async_call(
                 "persistent_notification", "create",
@@ -2549,6 +2588,7 @@ class MusicController:
         2. Otherwise, find all playing players and pause the most recently active one
            (based on media_position_updated_at timestamp)
         """
+        self._cancel_pending_resumes()
         _LOGGER.info("Looking for player in 'playing' state...")
 
         # If specific room was requested, only consider those players
@@ -2614,6 +2654,7 @@ class MusicController:
         2. Otherwise, find all playing/paused players and stop the most recently active one
            (based on media_position_updated_at timestamp)
         """
+        self._cancel_pending_resumes()
         _LOGGER.info("Looking for player in 'playing' or 'paused' state...")
 
         # If specific room was requested, only consider those players
@@ -2717,9 +2758,30 @@ class MusicController:
         if not entry or entry.platform != "music_assistant":
             _LOGGER.debug("Skipping post-skip resume for %s (not a Music Assistant player)", entity_id)
             return
-        self._hass.async_create_background_task(
+        old = self._resume_tasks.pop(entity_id, None)
+        if old and not old.done():
+            old.cancel()
+        task = self._hass.async_create_background_task(
             self._resume_if_idle(entity_id), name=f"purellm_resume_{entity_id}"
         )
+        self._resume_tasks[entity_id] = task
+        task.add_done_callback(
+            lambda t, eid=entity_id: self._resume_tasks.pop(eid, None)
+            if self._resume_tasks.get(eid) is t else None
+        )
+
+    def _cancel_pending_resumes(self) -> None:
+        """Cancel post-skip resume watchers on an explicit stop/pause.
+
+        The watcher polls for up to 90s after a skip; a stop inside that
+        window looks exactly like the flow-stream stall it exists to fix, so
+        without cancellation it resumes the music the user just stopped
+        (observed 2026-08-10: stop at :48, watcher resumed at :53)."""
+        for eid, task in list(self._resume_tasks.items()):
+            if not task.done():
+                _LOGGER.info("Cancelling pending post-skip resume for %s (explicit stop/pause)", eid)
+                task.cancel()
+        self._resume_tasks.clear()
 
     async def _resume_if_idle(self, entity_id: str) -> None:
         """Restart playback if a manual skip left the player idle.
