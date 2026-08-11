@@ -126,6 +126,29 @@ async def manage_list(
                     "message": f"Added '{item}' to {list_friendly}"
                 }
 
+            # Contents dedup: the time-window guard above only catches LLM
+            # re-calls; a human re-adding something already on the list got a
+            # duplicate row (observed: milk x3 on the family list). Exact
+            # case-insensitive match against ACTIVE items only — "milk
+            # chocolate" still adds when "milk" is on the list, and a
+            # completed copy doesn't block re-adding.
+            existing = await _get_items(hass, target_list, "needs_action")
+            already = next(
+                (li.get("summary") for li in existing
+                 if li.get("summary", "").lower().strip() == item.lower()),
+                None,
+            )
+            if already:
+                list_friendly = hass.states.get(target_list).attributes.get("friendly_name", "list")
+                _LOGGER.info("Dedup: '%s' already active on %s, not re-adding", already, target_list)
+                return {
+                    "success": True,
+                    "action": "already_present",
+                    "item": already,
+                    "list": list_friendly,
+                    "message": f"'{already}' is already on {list_friendly} — no need to add it again"
+                }
+
             await hass.services.async_call(
                 "todo", "add_item",
                 {"entity_id": target_list, "item": item},
