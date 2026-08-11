@@ -328,11 +328,11 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     # ===== LISTS (always enabled) =====
     tools.append(_tool(
         "manage_list",
-        "Manage shopping/to-do lists. clear/show/sort REQUIRE status param.",
+        "Manage the household lists (Shopping, Costco, Amazon, ...). clear/show/sort REQUIRE status param.",
         {
             "action": {"type": "string", "enum": ["add", "complete", "remove", "remove_all", "show", "clear", "sort", "list_all"]},
-            "item": {"type": "string"},
-            "list_name": {"type": "string"},
+            "item": {"type": "string", "description": "The item alone, WITHOUT the list name ('hdmi cable', not 'hdmi cable to amazon')."},
+            "list_name": {"type": "string", "description": "Which list: 'shopping', 'costco', 'amazon', etc. Extract from phrases like 'to the costco list' or 'to amazon'. Omit only when no list is named (defaults to the shopping list)."},
             "status": {"type": "string", "enum": ["active", "completed"], "description": "Required for clear/show/sort"}
         },
         ["action"]
