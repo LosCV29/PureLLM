@@ -130,6 +130,10 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
     "list": [
         " list", "shopping", "grocery", "to-do", "todo",
         "add to my", "add it to",
+        # Named household lists (todo.costco / todo.amazon, added 2026-08-11)
+        # so phrasing that omits the word "list" ("add batteries to amazon")
+        # still routes to manage_list.
+        "costco", "amazon",
     ],
     "calendar": [
         "calendar", " events", "schedule", "appointment", "birthday",
