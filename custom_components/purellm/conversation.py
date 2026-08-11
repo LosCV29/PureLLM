@@ -1713,16 +1713,43 @@ class PureLLMConversationEntity(ConversationEntity):
 
         all_tools = self._build_tools()
         intents = classify_intent(user_text)
-        tools = filter_tools_by_intent(all_tools, intents, user_text)
+        # Follow-up replies drop the keywords the router keys on: "Yes add
+        # peas" after "Added corn to the shopping list. Anything else?" is a
+        # NO-MATCH, so manage_list vanishes from the offered tools and the
+        # model improvises (control_device on the list entity, web_search).
+        # Inherit intents from the exchange that prompted the reply so the
+        # same tool family stays on the table. Direct-classification stays
+        # authoritative when it matched; garbled retries never inherit (the
+        # cached exchange is the unintelligible one).
+        inherited_intents: set[str] = set()
+        if (
+            not intents
+            and is_followup_response
+            and self._pending_followup
+            and not self._pending_followup.get("garbled")
+        ):
+            inherited_intents = classify_intent(
+                f"{self._pending_followup.get('user_query', '')} "
+                f"{self._pending_followup.get('assistant_question', '')}"
+            )
+            if inherited_intents:
+                _LOGGER.info(
+                    "PureLLM intent-router: follow-up NO-MATCH → inheriting "
+                    "%s from pending exchange",
+                    sorted(inherited_intents),
+                )
+        tools = filter_tools_by_intent(all_tools, intents or inherited_intents, user_text)
         # Gates the routine-domain guard in _execute_control_device: on a
         # no-match turn, automations/scripts/scenes/buttons are off-limits.
+        # Inherited intents deliberately do NOT open that gate — they come
+        # from our own follow-up question, not the user's words.
         self._intent_matched = bool(intents)
 
         lang_code = (user_input.language or "en").split("-")[0].lower()
         system_prompt = self._get_effective_system_prompt(
             language_code=lang_code,
             room=self._current_satellite_room,
-            conversational=not intents,
+            conversational=not (intents or inherited_intents),
         )
 
         # Append extra_system_prompt if provided (from start_conversation).
