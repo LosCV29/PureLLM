@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any, TYPE_CHECKING
 
@@ -68,6 +69,14 @@ async def manage_list(
     action = arguments.get("action", "").lower()
     item = arguments.get("item", "").strip()
     list_name = arguments.get("list_name", "").lower().strip()
+    # The model often passes the spoken phrase verbatim ("the amazon list"),
+    # which the substring match below can't map to the friendly name "Amazon".
+    # Strip articles and the trailing word "list" before matching.
+    for _prefix in ("the ", "my ", "our "):
+        if list_name.startswith(_prefix):
+            list_name = list_name[len(_prefix):]
+    if list_name.endswith(" list"):
+        list_name = list_name[: -len(" list")].strip()
 
     try:
         # Get all todo entities
@@ -185,31 +194,71 @@ async def manage_list(
             if result and target_list in result:
                 items = result[target_list].get("items", [])
 
-            # Find matching item
-            item_lower = item.lower()
-            matched_item = None
-            for list_item in items:
-                summary = list_item.get("summary", "").lower()
-                if item_lower in summary or summary in item_lower:
-                    matched_item = list_item.get("summary")
-                    break
+            # Find matching item(s). The model sometimes packs a spoken
+            # conjunction into ONE call ("corn and peas"); the old
+            # bidirectional substring match would hit a single item
+            # ('corn' ⊂ 'corn and peas'), remove only it, and report the
+            # whole phrase removed — ghost items that "removal" never
+            # touched. Exact summary match wins first so items genuinely
+            # named with a conjunction ("mac and cheese") stay intact;
+            # only then do we split on ',' / ' and ' and remove each part.
+            item_lower = item.lower().strip()
 
-            if not matched_item:
+            def _fuzzy_match(needle: str) -> str | None:
+                for list_item in items:
+                    summary = list_item.get("summary", "").lower()
+                    if needle in summary or summary in needle:
+                        return list_item.get("summary")
+                return None
+
+            to_remove: list[str] = []
+            not_found: list[str] = []
+
+            exact = next(
+                (li.get("summary") for li in items
+                 if li.get("summary", "").lower() == item_lower),
+                None,
+            )
+            if exact:
+                to_remove = [exact]
+            else:
+                parts = [p.strip() for p in re.split(r",| and ", item_lower) if p.strip()]
+                if len(parts) >= 2:
+                    for part in parts:
+                        matched = _fuzzy_match(part)
+                        if matched:
+                            to_remove.append(matched)
+                        else:
+                            not_found.append(part)
+                if not to_remove:
+                    not_found = []
+                    matched = _fuzzy_match(item_lower)
+                    if matched:
+                        to_remove = [matched]
+
+            if not to_remove:
                 return {"error": f"Could not find '{item}' on the list"}
 
-            await hass.services.async_call(
-                "todo", "remove_item",
-                {"entity_id": target_list, "item": matched_item},
-                blocking=True
-            )
+            # Dedup while preserving order (both parts can fuzzy-hit one item)
+            to_remove = list(dict.fromkeys(to_remove))
+            for matched_item in to_remove:
+                await hass.services.async_call(
+                    "todo", "remove_item",
+                    {"entity_id": target_list, "item": matched_item},
+                    blocking=True
+                )
 
             list_friendly = hass.states.get(target_list).attributes.get("friendly_name", "list")
+            message = f"Removed {', '.join(to_remove)} from {list_friendly}"
+            if not_found:
+                message += f". Couldn't find on the list: {', '.join(not_found)}"
             return {
                 "success": True,
                 "action": "removed",
-                "item": matched_item,
+                "items": to_remove,
+                "not_found": not_found,
                 "list": list_friendly,
-                "message": f"Removed '{matched_item}' from {list_friendly}"
+                "message": message
             }
 
         elif action == "remove_all" or action == "delete_all":
