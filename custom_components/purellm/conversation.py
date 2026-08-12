@@ -2512,11 +2512,14 @@ class PureLLMConversationEntity(ConversationEntity):
                 data["url"] = live_view_path
                 data["clickAction"] = live_view_path
 
-            # Image attachment - iOS needs explicit content-type
+            # Image attachment - iOS needs explicit content-type, and its
+            # companion app percent-encodes "?" in attachment URLs (requests a
+            # literal filename -> 404), so the iOS attachment must carry no
+            # query params. Android's image field tolerates the ?t= cache-buster.
             if image_url:
                 data["image"] = image_url
                 data["attachment"] = {
-                    "url": image_url,
+                    "url": image_url.split("?")[0],
                     "content-type": "jpeg",
                 }
 

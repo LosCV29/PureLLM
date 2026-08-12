@@ -244,7 +244,14 @@ class PureLLMSnapshotView(HomeAssistantView):
 
         with open(filepath, "rb") as fh:
             data = fh.read()
-        return web.Response(body=data, content_type="image/jpeg")
+        # no-store: iOS attachments fetch this WITHOUT a cache-buster query
+        # param (the iOS app percent-encodes "?" -> 404), so the response
+        # itself must never be cached anywhere along the path.
+        return web.Response(
+            body=data,
+            content_type="image/jpeg",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
 
 
 async def _wait_for_media_player_idle(
