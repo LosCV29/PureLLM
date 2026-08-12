@@ -2502,11 +2502,15 @@ class PureLLMConversationEntity(ConversationEntity):
                 "push": {"interruption-level": "time-sensitive"},
             }
 
-            # Tap action -> open camera entity in HA
-            camera_entity = f"camera.{camera_name}" if camera_name else ""
-            if camera_entity:
-                data["url"] = f"entityId:{camera_entity}"
-                data["clickAction"] = f"entityId:{camera_entity}"
+            # Tap action -> open the camera's fullscreen live view on the
+            # "camera-live" dashboard.  A dashboard path (not entityId:) because
+            # the more-info camera dialog requires a manual play tap (unmuted
+            # autoplay is blocked) and leaks audio after close; the dashboard's
+            # picture-entity live card autoplays muted and tears down cleanly.
+            live_view_path = f"/camera-live/{camera_name}" if camera_name else ""
+            if live_view_path:
+                data["url"] = live_view_path
+                data["clickAction"] = live_view_path
 
             # Image attachment - iOS needs explicit content-type
             if image_url:
@@ -2518,11 +2522,11 @@ class PureLLMConversationEntity(ConversationEntity):
 
             # Action buttons
             actions = []
-            if camera_entity:
+            if live_view_path:
                 actions.append({
                     "action": "URI",
-                    "title": "View Live",
-                    "uri": f"entityId:{camera_entity}",
+                    "title": "🎥 Watch Live Feed",
+                    "uri": live_view_path,
                     "icon": "sfsymbols:video.fill",
                 })
             if actions:
