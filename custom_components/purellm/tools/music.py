@@ -35,6 +35,8 @@ _SNAPCLIENT_PLAYER = "media_player.shield_android_tv"
 # (2026-08-08 incident). Snapserver's own connected flag is the only truth.
 _SNAPSERVER_ADDR = ("192.168.68.82", 1705)
 _SNAPSERVER_CLIENT = "SHIELD Android TV"
+# Settle time after a cold-started snapclient shows connected, before play.
+_SNAPCLIENT_SETTLE_S = 1.5
 # Where play-failure alerts go when playback can't be started at all.
 _PLAY_FAILURE_NOTIFY = "mobile_app_pixel_9"
 
@@ -996,14 +998,11 @@ class MusicController:
                 _LOGGER.warning(
                     "Snapclient not connected at snapserver — reviving before play")
                 await self._run_ensure_snapclient()
+                await self._wait_snapclient_connected()
             await self._play_media(player, media_id, media_type, radio=radio)
             ok = await self._wait_for_playback_start(player, timeout=12.0)
-            if ok and player == _SNAPCLIENT_PLAYER \
-                    and await self._snapclient_connected() is False:
-                _LOGGER.warning(
-                    "Entity is 'playing' but the snapclient is DISCONNECTED "
-                    "(Native-link masking) — treating as failure")
-                ok = False
+            if ok and player == _SNAPCLIENT_PLAYER:
+                ok = await self._verify_snapclient_audio(player)
         except Exception as err:  # noqa: BLE001
             if self._is_content_error(err):
                 # MA rejected the item itself (empty/unplayable playlist,
@@ -1022,15 +1021,16 @@ class MusicController:
             "Playback did not start on %s — running self-heal and retrying", player)
         if player == _SNAPCLIENT_PLAYER:
             await self._run_ensure_snapclient()
+            await self._wait_snapclient_connected()
         try:
             await self._play_media(player, media_id, media_type, radio=radio)
             ok = await self._wait_for_playback_start(player, timeout=12.0)
-            if ok and player == _SNAPCLIENT_PLAYER \
-                    and await self._snapclient_connected() is False:
-                _LOGGER.error(
-                    "Retry reached 'playing' but the snapclient is still "
-                    "disconnected — audio is going nowhere")
-                ok = False
+            if ok and player == _SNAPCLIENT_PLAYER:
+                ok = await self._verify_snapclient_audio(player)
+                if not ok:
+                    _LOGGER.error(
+                        "Retry reached 'playing' but the snapclient is still "
+                        "not receiving the stream — audio is going nowhere")
         except Exception as err:  # noqa: BLE001
             if self._is_content_error(err):
                 _LOGGER.error(
@@ -1045,6 +1045,44 @@ class MusicController:
 
         _LOGGER.error("Playback could not be started on %s after retry", player)
         await self._notify_play_failure(player)
+
+    async def _verify_snapclient_audio(self, player: str) -> bool:
+        """Post-play truth check for the Shield: entity 'playing' is not enough.
+
+        The snapclient must be connected at snapserver AND its group must be
+        on an MA stream — 'connected' but parked on the idle 'default'
+        stream, or a Native-link stream set up while the client was still
+        (re)connecting, plays silence with every entity signal green
+        (2026-08-10, 2026-08-17). If the client is connected but not
+        attached, one stop/play bounce re-runs MA's stream assignment and
+        has recovered every occurrence so far; re-verify after it.
+        Check errors (None) never block playback.
+        """
+        status = await self._snapclient_status()
+        if status is None:
+            return True
+        connected, stream_id = status
+        if not connected:
+            _LOGGER.warning(
+                "Entity is 'playing' but the snapclient is DISCONNECTED "
+                "(Native-link masking) — treating as failure")
+            return False
+        if stream_id != "default":
+            return True
+        _LOGGER.warning(
+            "Snapclient connected but its group is on snapserver's idle "
+            "'default' stream while %s reads 'playing' — silent start; "
+            "bouncing", player)
+        await self._bounce_snapclient_playback(player)
+        if not await self._wait_for_playback_start(player, timeout=12.0):
+            return False
+        attached = await self._snapclient_attached()
+        if attached is False:
+            _LOGGER.error(
+                "Snapclient still not attached to an MA stream after bounce")
+            return False
+        _LOGGER.info("Snapclient attached to MA stream after bounce")
+        return True
 
     @staticmethod
     def _is_content_error(err: Exception) -> bool:
@@ -1333,6 +1371,11 @@ class MusicController:
                     break
                 await asyncio.sleep(0.5)
                 elapsed += 0.5
+            # 'available' only means MA's Native link is up — wait for the
+            # snapclient itself to be connected at snapserver (+settle) so
+            # play_media doesn't race the cold start (2026-08-17).
+            if pid == _SNAPCLIENT_PLAYER:
+                await self._wait_snapclient_connected()
 
     async def _run_ensure_snapclient(self) -> bool:
         """Fire script.ensure_snapclient (blocking) — it always issues the
@@ -1355,13 +1398,60 @@ class MusicController:
         the check itself fails (snapserver unreachable, malformed reply) —
         callers treat None as 'unknown, don't block playback on it'.
         """
+        status = await self._snapclient_status()
+        return None if status is None else status[0]
+
+    async def _snapclient_status(self) -> tuple[bool, str] | None:
+        """(connected, group stream_id) for the Shield snapclient, or None on
+        check error. stream_id is what snapserver is actually feeding the
+        client — 'default' means it is parked on the idle stream and hears
+        nothing even while 'connected'."""
         try:
             return await asyncio.wait_for(self._query_snapserver(), timeout=5.0)
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Snapserver connectivity check failed: %s", err)
             return None
 
-    async def _query_snapserver(self) -> bool | None:
+    async def _snapclient_attached(self) -> bool | None:
+        """True when the snapclient is connected AND its group is on an MA
+        stream (not snapserver's idle 'default'); None on check error."""
+        status = await self._snapclient_status()
+        if status is None:
+            return None
+        connected, stream_id = status
+        return connected and stream_id != "default"
+
+    async def _wait_snapclient_connected(self, timeout: float = 10.0) -> bool:
+        """After a Snapdroid cold start, wait until snapserver reports the
+        client connected, then let it settle briefly BEFORE play. Firing
+        play_media into a half-connected client leaves MA's Native output
+        link and stream set up against nobody / the wrong group (2026-08-17
+        silent-start analysis) — the entity still reads 'playing'."""
+        elapsed = 0.0
+        while elapsed < timeout:
+            if await self._snapclient_connected():
+                _LOGGER.info("Snapclient connected at snapserver after %.1fs", elapsed)
+                await asyncio.sleep(_SNAPCLIENT_SETTLE_S)
+                return True
+            await asyncio.sleep(0.5)
+            elapsed += 0.5
+        _LOGGER.warning(
+            "Snapclient still not connected at snapserver after %.0fs", timeout)
+        return False
+
+    async def _bounce_snapclient_playback(self, player: str) -> None:
+        """media_stop → media_play on the Shield: restarts the Queue Flow
+        stream and re-runs MA's group/stream assignment (the fix that
+        recovered every silent-start so far: 2026-08-10, 2026-08-17)."""
+        _LOGGER.warning("Bouncing playback on %s (stop/play)", player)
+        with contextlib.suppress(Exception):
+            await self._hass.services.async_call(
+                "media_player", "media_stop", {"entity_id": player}, blocking=True)
+        await asyncio.sleep(2.0)
+        await self._hass.services.async_call(
+            "media_player", "media_play", {"entity_id": player}, blocking=True)
+
+    async def _query_snapserver(self) -> tuple[bool, str] | None:
         reader, writer = await asyncio.open_connection(*_SNAPSERVER_ADDR)
         try:
             writer.write(b'{"id":7,"jsonrpc":"2.0","method":"Server.GetStatus"}\n')
@@ -1376,8 +1466,8 @@ class MusicController:
                 for group in msg["result"]["server"]["groups"]:
                     for client in group["clients"]:
                         if client["host"]["name"] == _SNAPSERVER_CLIENT:
-                            return bool(client["connected"])
-                return False  # no client entry at all = not connected
+                            return bool(client["connected"]), str(group.get("stream_id", ""))
+                return False, ""  # no client entry at all = not connected
         finally:
             writer.close()
             with contextlib.suppress(Exception):
@@ -2970,7 +3060,23 @@ class MusicController:
                     "response_text": f"I couldn't transfer the music to the {self._get_room_name(target)} — the speaker there isn't accepting playback right now.",
                 }
 
+        if target == _SNAPCLIENT_PLAYER:
+            # The 2026-08-10 silent-transfer variant: entity playing, client
+            # connected, no audio. Verify in the background (don't hold TTS)
+            # and bounce if the client isn't attached to an MA stream.
+            self._hass.async_create_task(self._verify_transfer_audio(target))
+
         return {"status": "transferred", "response_text": f"Music transferred to {self._get_room_name(target)}"}
+
+    async def _verify_transfer_audio(self, player: str) -> None:
+        try:
+            if not await self._wait_for_playback_start(player, timeout=12.0):
+                _LOGGER.warning("Transfer target %s never reached 'playing'", player)
+                return
+            if not await self._verify_snapclient_audio(player):
+                await self._notify_play_failure(player)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Post-transfer audio verify failed: %s", err)
 
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
         """Search for Apple Music playlist by artist, genre, or holiday and play shuffled.
