@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 from typing import Any, Awaitable, Callable, TYPE_CHECKING
 
@@ -16,6 +16,7 @@ from urllib.parse import quote
 from homeassistant.components.media_player import MediaPlayerEntityFeature
 from homeassistant.helpers import entity_registry as er, device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
 from ..utils.helpers import COMMON_ROOM_NAMES
 from ..utils.http_client import fetch_json, CACHE_TTL_LONG
@@ -39,6 +40,15 @@ _SNAPSERVER_CLIENT = "SHIELD Android TV"
 _SNAPCLIENT_SETTLE_S = 1.5
 # Where play-failure alerts go when playback can't be started at all.
 _PLAY_FAILURE_NOTIFY = "mobile_app_pixel_9"
+# ADB side-channel to the Shield (androidtv integration; output lands in the
+# entity's adb_response attribute). The ONLY signal that was right on
+# 2026-08-20: a real stream start makes Snapdroid close its audio player and
+# open a NEW AAudio stream (snapclient recreates decoder+player on every
+# CodecHeader). A silent start keeps the old, hours-old stream — every
+# snapserver/HA/audio_flinger signal stays green.
+_SHIELD_ADB_PLAYER = "media_player.shield_adb"
+_SNAPDROID_PKG = "de.badaix.snapcast"
+_AAUDIO_OPEN_MARK = "AAudioStreamBuilder_openStream() returns 0"
 
 
 def _parse_ma_results(search_result: Any, media_type: str) -> list:
@@ -999,10 +1009,11 @@ class MusicController:
                     "Snapclient not connected at snapserver — reviving before play")
                 await self._run_ensure_snapclient()
                 await self._wait_snapclient_connected()
+            play_ts = dt_util.now()
             await self._play_media(player, media_id, media_type, radio=radio)
             ok = await self._wait_for_playback_start(player, timeout=12.0)
             if ok and player == _SNAPCLIENT_PLAYER:
-                ok = await self._verify_snapclient_audio(player)
+                ok = await self._verify_snapclient_audio(player, play_ts)
         except Exception as err:  # noqa: BLE001
             if self._is_content_error(err):
                 # MA rejected the item itself (empty/unplayable playlist,
@@ -1020,13 +1031,16 @@ class MusicController:
         _LOGGER.warning(
             "Playback did not start on %s — running self-heal and retrying", player)
         if player == _SNAPCLIENT_PLAYER:
-            await self._run_ensure_snapclient()
-            await self._wait_snapclient_connected()
+            # A stalled-but-"connected" Snapdroid session (2026-08-20) is not
+            # fixed by the idempotent start — cold-restart the client so it
+            # gets a fresh session, header and audio stream.
+            await self._cold_restart_snapclient()
         try:
+            play_ts = dt_util.now()
             await self._play_media(player, media_id, media_type, radio=radio)
             ok = await self._wait_for_playback_start(player, timeout=12.0)
             if ok and player == _SNAPCLIENT_PLAYER:
-                ok = await self._verify_snapclient_audio(player)
+                ok = await self._verify_snapclient_audio(player, play_ts)
                 if not ok:
                     _LOGGER.error(
                         "Retry reached 'playing' but the snapclient is still "
@@ -1046,43 +1060,105 @@ class MusicController:
         _LOGGER.error("Playback could not be started on %s after retry", player)
         await self._notify_play_failure(player)
 
-    async def _verify_snapclient_audio(self, player: str) -> bool:
+    async def _verify_snapclient_audio(self, player: str, since: datetime) -> bool:
         """Post-play truth check for the Shield: entity 'playing' is not enough.
 
-        The snapclient must be connected at snapserver AND its group must be
-        on an MA stream — 'connected' but parked on the idle 'default'
-        stream, or a Native-link stream set up while the client was still
-        (re)connecting, plays silence with every entity signal green
-        (2026-08-10, 2026-08-17). If the client is connected but not
-        attached, one stop/play bounce re-runs MA's stream assignment and
-        has recovered every occurrence so far; re-verify after it.
-        Check errors (None) never block playback.
+        Two layers. (1) snapserver must report the client connected — a dead
+        client with MA's Native link up leaves the entity 'playing' while
+        audio streams to nobody (2026-08-08). (2) The Shield itself must have
+        opened a NEW AAudio stream since the play command: snapclient
+        recreates its audio player on every CodecHeader, so a real start
+        always shows `AAudioStreamBuilder_openStream() returns 0` in logcat
+        within seconds. On 2026-08-20 the silent first play kept a 3-hour-old
+        stream (no header processed — the client session was stalled at the
+        instant MA switched the group) while connected/stream_id/frames all
+        looked fine. No new stream → one stop/play bounce (forces a real
+        stream switch → header → new player), re-check; still none → False so
+        the caller cold-restarts Snapdroid and retries. Check errors never
+        block playback.
         """
         status = await self._snapclient_status()
-        if status is None:
-            return True
-        connected, stream_id = status
-        if not connected:
+        if status is not None and not status[0]:
             _LOGGER.warning(
                 "Entity is 'playing' but the snapclient is DISCONNECTED "
                 "(Native-link masking) — treating as failure")
             return False
-        if stream_id != "default":
+        opened = await self._shield_audio_opened_since(since)
+        if opened is None:
+            _LOGGER.info("Shield AAudio check unavailable — trusting entity state")
+            return True
+        if opened:
+            _LOGGER.info("Shield opened a new audio stream since play — audible")
             return True
         _LOGGER.warning(
-            "Snapclient connected but its group is on snapserver's idle "
-            "'default' stream while %s reads 'playing' — silent start; "
-            "bouncing", player)
+            "%s reads 'playing' and the snapclient is connected, but the "
+            "Shield opened NO new audio stream since the play command — "
+            "silent start; bouncing", player)
+        bounce_ts = dt_util.now()
         await self._bounce_snapclient_playback(player)
         if not await self._wait_for_playback_start(player, timeout=12.0):
             return False
-        attached = await self._snapclient_attached()
-        if attached is False:
-            _LOGGER.error(
-                "Snapclient still not attached to an MA stream after bounce")
+        opened = await self._shield_audio_opened_since(bounce_ts)
+        if opened is False:
+            _LOGGER.error("Shield still opened no audio stream after bounce")
             return False
-        _LOGGER.info("Snapclient attached to MA stream after bounce")
+        _LOGGER.info("Shield opened a new audio stream after bounce — audible")
         return True
+
+    async def _shield_audio_opened_since(self, since: datetime) -> bool | None:
+        """True if Snapdroid opened a new AAudio stream on the Shield after
+        `since` (logcat), False if not, None when ADB/logcat can't tell."""
+        # 2s slack for HA<->Shield clock skew; both run America/New_York.
+        ts = (since - timedelta(seconds=2)).strftime("%m-%d %H:%M:%S.000")
+        for attempt in range(2):
+            out = await self._adb_shell(
+                f"logcat -d -t '{ts}' | grep -c '{_AAUDIO_OPEN_MARK}'")
+            if out is None:
+                return None
+            m = re.search(r"\d+", out)
+            if m is None:
+                return None
+            if int(m.group()) > 0:
+                return True
+            if attempt == 0:
+                await asyncio.sleep(3.0)  # header may trail the play slightly
+        return False
+
+    async def _adb_shell(self, command: str, timeout: float = 10.0) -> str | None:
+        """Run a shell command on the Shield via androidtv.adb_command and
+        return its output. Unique markers defeat stale adb_response reads
+        (the attribute is shared by every caller)."""
+        tag = f"PL{int(dt_util.utcnow().timestamp() * 1000) % 100000000}"
+        full = f"echo {tag}S; {command}; echo {tag}E"
+        try:
+            await asyncio.wait_for(
+                self._hass.services.async_call(
+                    "androidtv", "adb_command",
+                    {"entity_id": _SHIELD_ADB_PLAYER, "command": full},
+                    blocking=True),
+                timeout)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Shield ADB command failed: %s", err)
+            return None
+        for _ in range(10):
+            state = self._hass.states.get(_SHIELD_ADB_PLAYER)
+            resp = (state.attributes.get("adb_response") or "") if state else ""
+            if f"{tag}S" in resp and f"{tag}E" in resp:
+                return resp.split(f"{tag}S", 1)[1].split(f"{tag}E", 1)[0].strip()
+            await asyncio.sleep(0.3)
+        _LOGGER.warning("Shield ADB response never carried marker %s", tag)
+        return None
+
+    async def _cold_restart_snapclient(self) -> None:
+        """force-stop Snapdroid, then ensure_snapclient + wait connected —
+        gives the client a fresh snapserver session (new header → new audio
+        stream). The plain start is idempotent and leaves a stalled session
+        alone (2026-08-20)."""
+        _LOGGER.warning("Cold-restarting Snapdroid on the Shield")
+        await self._adb_shell(f"am force-stop {_SNAPDROID_PKG}", timeout=8.0)
+        await asyncio.sleep(2.0)
+        await self._run_ensure_snapclient()
+        await self._wait_snapclient_connected()
 
     @staticmethod
     def _is_content_error(err: Exception) -> bool:
@@ -1411,15 +1487,6 @@ class MusicController:
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Snapserver connectivity check failed: %s", err)
             return None
-
-    async def _snapclient_attached(self) -> bool | None:
-        """True when the snapclient is connected AND its group is on an MA
-        stream (not snapserver's idle 'default'); None on check error."""
-        status = await self._snapclient_status()
-        if status is None:
-            return None
-        connected, stream_id = status
-        return connected and stream_id != "default"
 
     async def _wait_snapclient_connected(self, timeout: float = 10.0) -> bool:
         """After a Snapdroid cold start, wait until snapserver reports the
@@ -3064,16 +3131,17 @@ class MusicController:
             # The 2026-08-10 silent-transfer variant: entity playing, client
             # connected, no audio. Verify in the background (don't hold TTS)
             # and bounce if the client isn't attached to an MA stream.
-            self._hass.async_create_task(self._verify_transfer_audio(target))
+            self._hass.async_create_task(
+                self._verify_transfer_audio(target, dt_util.now() - timedelta(seconds=15)))
 
         return {"status": "transferred", "response_text": f"Music transferred to {self._get_room_name(target)}"}
 
-    async def _verify_transfer_audio(self, player: str) -> None:
+    async def _verify_transfer_audio(self, player: str, since: datetime) -> None:
         try:
             if not await self._wait_for_playback_start(player, timeout=12.0):
                 _LOGGER.warning("Transfer target %s never reached 'playing'", player)
                 return
-            if not await self._verify_snapclient_audio(player):
+            if not await self._verify_snapclient_audio(player, since):
                 await self._notify_play_failure(player)
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Post-transfer audio verify failed: %s", err)
