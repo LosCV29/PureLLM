@@ -55,6 +55,27 @@ _TTS_NEVER = ("elevenlabs",)
 _TTS_LAST_RESORT = ("cloud", "google")
 
 
+def _clean_message(message: str) -> str:
+    """Strip artifacts the LLM adds around a relayed message.
+
+    The local brain wraps relayed text in placeholder brackets when it is
+    unsure — the first live test produced "Carlos, [you have a call from the
+    family]" — and TTS reads those brackets out or mangles the phrase. Brackets
+    are never speech, so removing them is always right. The words themselves
+    are left exactly as the model produced them; enforcing verbatim-ness is the
+    tool description's job, not something to attempt with a regex.
+    """
+    text = (message or "").strip()
+    # Whole message wrapped in brackets -> unwrap.
+    for opener, closer in (("[", "]"), ("(", ")"), ("{", "}"), ("<", ">")):
+        if text.startswith(opener) and text.endswith(closer) and len(text) > 2:
+            text = text[1:-1].strip()
+    # Stray brackets left mid-sentence -> drop the characters, keep the words.
+    for ch in "[]{}":
+        text = text.replace(ch, "")
+    return " ".join(text.split()).strip()
+
+
 def _normalize_room(room: str) -> str:
     """Lowercase, strip articles and possessives from a spoken room name."""
     text = " ".join((room or "").lower().replace("_", " ").split())
@@ -268,9 +289,9 @@ async def announce_on_speaker(
     """
     mapping = room_player_mapping or {}
     room = _normalize_room(arguments.get("room") or "")
-    # Verbatim beyond outer whitespace — emphasis and punctuation are part of
-    # what was said (same rule as send_partner_message).
-    message = (arguments.get("message") or "").strip()
+    # Verbatim beyond outer whitespace and LLM bracket artifacts — emphasis and
+    # punctuation are part of what was said (same rule as send_partner_message).
+    message = _clean_message(arguments.get("message") or "")
 
     if not message:
         return {"error": "No message given. Ask what they want said."}
