@@ -225,12 +225,37 @@ def _resolve_tts_entity(hass: "HomeAssistant") -> str | None:
     return fallback
 
 
+# Placeholder words the LLM fills the optional `sender` argument with instead
+# of leaving it out. The first live test of v8.5.1 produced sender='user',
+# which was spoken as "Message from User." — worse than no attribution at all.
+# Any of these means "I don't actually know", so fall back to the HA user.
+_SENDER_PLACEHOLDERS = frozenset({
+    "user", "the user", "me", "myself", "i", "my", "self", "sender",
+    "unknown", "none", "null", "n/a", "na", "someone", "somebody", "person",
+    "assistant", "system", "home assistant", "homeassistant", "ha",
+    "speaker", "caller", "requester", "owner", "resident", "name",
+})
+
+
+def _clean_sender(override: str | None) -> str | None:
+    """Reject placeholder junk in the optional sender argument."""
+    text = " ".join((override or "").strip().strip(".,!?'\"").split()).lower()
+    if not text or text in _SENDER_PLACEHOLDERS:
+        return None
+    # A real name is alphabetic; "user 1", "<name>" and similar are not.
+    first = text.split()[0]
+    if not first.isalpha() or first in _SENDER_PLACEHOLDERS:
+        return None
+    return first.title()
+
+
 async def _resolve_sender(
     hass: "HomeAssistant", user_id: str | None, override: str | None,
 ) -> str | None:
     """Human first name of whoever sent the message, for the attribution."""
-    if override and override.strip():
-        return override.strip().split()[0].title()
+    cleaned = _clean_sender(override)
+    if cleaned:
+        return cleaned
     if not user_id:
         return None
     try:

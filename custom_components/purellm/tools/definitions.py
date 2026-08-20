@@ -294,8 +294,11 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
             "sender": {
                 "type": "string",
                 "description": (
-                    "Only if the user says who it is from and that is someone "
-                    "other than themselves. Normally omit."
+                    "OMIT THIS. Only ever set it when the user says the "
+                    "message is from a named THIRD person ('tell Carlos that "
+                    "Maria called'), and then it is that person's name. Never "
+                    "'user', 'me' or any placeholder — the sender is detected "
+                    "automatically."
                 ),
             },
         },
