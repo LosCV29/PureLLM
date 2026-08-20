@@ -689,6 +689,7 @@ from .tools import thermostat as thermostat_tool
 from .tools import device as device_tool
 from .tools import speaker_volume as speaker_volume_tool
 from .tools import fan_speed as fan_speed_tool
+from .tools import white_noise_sound as white_noise_sound_tool
 from .tools.music import MusicController
 from .tools import timer as timer_tool
 from .tools import lists as lists_tool
@@ -2730,6 +2731,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     room_player_mapping=self.room_player_mapping,
                 ),
                 "set_fan_speed": lambda: fan_speed_tool.set_fan_speed(arguments, self.hass),
+                "set_white_noise_sound": lambda: white_noise_sound_tool.set_white_noise_sound(arguments, self.hass),
                 "control_timer": lambda: timer_tool.control_timer(
                     arguments, self.hass,
                     device_id=self._current_user_input.device_id if self._current_user_input else None,

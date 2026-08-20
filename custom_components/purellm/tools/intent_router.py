@@ -170,6 +170,8 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "garage door", "mailbox",
         "front door", "back door", "side gate",
         "purifier", "diffuser",
+        "white noise", "sound machine", "noise machine",
+        "ruido blanco", "máquina de ruido", "maquina de ruido",
         " tv", "television", "apple tv", "roku", "fire stick",
         "pause the", "resume the", "mute the", "unmute the",
         "volume up", "volume down",
@@ -217,7 +219,7 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
 
 # Map intent categories → tool function names
 _INTENT_TO_TOOLS: dict[str, list[str]] = {
-    "music": ["control_music", "search_music"],
+    "music": ["control_music", "search_music", "set_white_noise_sound"],
     "weather": ["get_weather_forecast"],
     "thermostat": ["control_thermostat"],
     "camera": ["check_camera"],
@@ -231,7 +233,7 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
     "places": ["find_nearby_places"],
     "knowledge": ["calculate_age", "get_wikipedia_summary"],
     "datetime": ["get_current_datetime"],
-    "device": ["control_device", "check_device_status", "set_speaker_volume", "set_fan_speed"],
+    "device": ["control_device", "check_device_status", "set_speaker_volume", "set_fan_speed", "set_white_noise_sound"],
     "device_status": ["check_device_status"],
     "search": ["web_search"],
     "sofabaton": ["control_sofabaton", "control_device"],

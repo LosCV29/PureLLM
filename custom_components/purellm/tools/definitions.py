@@ -400,6 +400,24 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
         [],
     ))
 
+    # Dedicated white-noise-machine sound tool — small and single-purpose so
+    # weak local models reliably pick sounds instead of failing through
+    # control_device (which can't express a tone at all). Plain on/off of the
+    # machine stays with control_device.
+    tools.append(_tool(
+        "set_white_noise_sound",
+        "Play a specific SOUND on the baby's white noise machine (sound machine), and/or set "
+        "its volume. Use for 'play rain on the white noise machine', 'change the white noise "
+        "to ocean waves', 'put on the shushing sound', 'set the white noise volume to 40'. "
+        "Call with no arguments to LIST the sounds it can play. Do NOT use for music or "
+        "speakers (use control_music), and use control_device just to turn the machine on/off.",
+        {
+            "sound": {"type": "string", "description": "Sound name, e.g. 'rain', 'ocean waves', 'shushing', 'lullaby'."},
+            "volume": {"type": "integer", "description": "Volume 0-100 (starts playback if the machine is off)."},
+        },
+        [],
+    ))
+
     # ===== SOFABATON ACTIVITIES =====
     if config.sofabaton_activities:
         activity_names = [a.get("name", "") for a in config.sofabaton_activities if a.get("name")]
