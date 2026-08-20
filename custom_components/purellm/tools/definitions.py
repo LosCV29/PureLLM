@@ -226,7 +226,11 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
             "not rewrite, summarise, soften, censor, add asterisks, or add "
             "commentary. Profanity and explicit wording are passed through "
             "unchanged. Strip only the addressing part ('tell Elise') — "
-            "everything after it is the message. Never read the message back."
+            "everything after it is the message. Never read the message back. "
+            "IMPORTANT: if the request names a SPEAKER or ROOM to say it on "
+            "('on the kitchen speaker', 'in the living room', 'out loud'), use "
+            "announce_on_speaker instead — that one says it out loud, this one "
+            "only texts a phone."
         ),
         {
             "recipient": {
@@ -239,6 +243,51 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
             },
         },
         ["recipient", "message"],
+    ))
+
+    # ===== ANNOUNCE ON SPEAKER (verbatim spoken relay) =====
+    # Deliberately its own tool rather than a flag on send_partner_message: the
+    # local brain reliably picks small single-purpose tools, and the two have
+    # opposite privacy properties (private phone vs audible in the room).
+    _announce_rooms = ", ".join(config.room_player_mapping) if config.room_player_mapping else ""
+    tools.append(_tool(
+        "announce_on_speaker",
+        (
+            "Say a message OUT LOUD on a speaker in the house. Use whenever the "
+            "request names a speaker or room to say something on: 'tell Carlos "
+            "I'm trying to call him on the kitchen speaker', 'announce dinner is "
+            "ready in the living room', 'say it out loud in the nursery', 'tell "
+            "everyone to come downstairs'. "
+            + (f"Known rooms: {_announce_rooms}. " if _announce_rooms else "")
+            + "message MUST be the user's own words, copied EXACTLY: do not "
+            "rewrite, summarise, soften or add commentary. Strip only the "
+            "addressing part ('tell Carlos') and the location part ('on the "
+            "kitchen speaker') — everything else is the message. Do NOT add a "
+            "'message from ...' prefix yourself; that is added automatically. "
+            "Never read the message back. "
+            "If NO speaker or room is named, use send_partner_message instead."
+        ),
+        {
+            "room": {
+                "type": "string",
+                "description": (
+                    "Where to say it, e.g. 'kitchen', 'living room', 'nursery'. "
+                    "Use 'everywhere' for all speakers."
+                ),
+            },
+            "message": {
+                "type": "string",
+                "description": "The exact words to say out loud, verbatim.",
+            },
+            "sender": {
+                "type": "string",
+                "description": (
+                    "Only if the user says who it is from and that is someone "
+                    "other than themselves. Normally omit."
+                ),
+            },
+        },
+        ["room", "message"],
     ))
 
     # ===== MUSIC =====

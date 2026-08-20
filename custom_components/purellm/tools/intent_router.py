@@ -38,6 +38,23 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "let elise know", "let carlos know",
         "ask elise", "ask carlos",
     ],
+    # Spoken relay — say it out loud in a room (v8.5.0). Patterns are the
+    # LOCATION/out-loud forms, since the addressing forms above already pull in
+    # the messaging group; "tell Carlos ... on the kitchen speaker" matches
+    # both and the model chooses between two clearly-described tools. The bare
+    # room words are intentionally NOT patterns here — "turn on the kitchen
+    # lights" must not offer an announce tool.
+    "announce": [
+        "on the kitchen speaker", "on the living room speaker",
+        "on the bedroom speaker", "on the nursery speaker",
+        "on the bathroom speaker", "on the office speaker",
+        "on the speaker", "on the speakers", "over the speaker",
+        "on speaker", "through the speaker", "on the intercom", "intercom",
+        "announce", "announcement", "out loud", "aloud", "say it in the",
+        "say out loud", "broadcast", "over the house", "in the house",
+        "everywhere", "all the speakers", "every speaker", "whole house",
+        "page the", "anuncia", "en voz alta", "por el altavoz",
+    ],
     "music": [
         "play ", "shuffle", "pause", "resume", "skip",
         "next song", "previous song", "restart track",
@@ -238,7 +255,11 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
     "search": ["web_search"],
     "sofabaton": ["control_sofabaton", "control_device"],
     "plants": ["check_plant_status"],
-    "partner_message": ["send_partner_message"],
+    # The two relay channels always travel together: whichever intent matched,
+    # the model must be able to see both the phone one and the out-loud one, or
+    # it will deliver on the only channel it was given (2026-08-20).
+    "partner_message": ["send_partner_message", "announce_on_speaker"],
+    "announce": ["announce_on_speaker", "send_partner_message"],
 }
 
 # Tools that are always included regardless of matched intent.

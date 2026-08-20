@@ -680,6 +680,7 @@ from .tools.intent_router import classify_intent, filter_tools_by_intent
 # Tool handlers
 from .tools import weather as weather_tool
 from .tools import partner_message as partner_message_tool
+from .tools import announce as announce_tool
 from .tools import sports as sports_tool
 from .tools import places as places_tool
 from .tools import wikipedia as wikipedia_tool
@@ -2740,6 +2741,15 @@ class PureLLMConversationEntity(ConversationEntity):
                 "manage_list": lambda: lists_tool.manage_list(arguments, self.hass),
                 "send_partner_message": lambda: partner_message_tool.send_partner_message(
                     arguments, self.hass, partner_map=PARTNER_MESSAGE_CONTACTS,
+                ),
+                "announce_on_speaker": lambda: announce_tool.announce_on_speaker(
+                    arguments, self.hass,
+                    room_player_mapping=self.room_player_mapping,
+                    user_id=(
+                        self._current_user_input.context.user_id
+                        if self._current_user_input and self._current_user_input.context
+                        else None
+                    ),
                 ),
                 # Places (with notification post-processing)
                 "find_nearby_places": lambda: places_tool.find_nearby_places(
