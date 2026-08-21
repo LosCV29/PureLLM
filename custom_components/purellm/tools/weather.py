@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, TYPE_CHECKING
 
 from ..const import API_TIMEOUT
-from ..utils.helpers import format_time_remaining
+from ..utils.helpers import format_time_remaining, str_arg
 from ..utils.http_client import fetch_json, log_and_error
 
 if TYPE_CHECKING:
@@ -151,7 +151,7 @@ def _day_block(day_data: dict[str, Any], tz_offset: int) -> dict[str, Any]:
         "date": dt.strftime("%B %d"),
         "high": round(day_data.get("temp", {}).get("max", 0)),
         "low": round(day_data.get("temp", {}).get("min", 0)),
-        "conditions": day_data.get("weather", [{}])[0].get("description", "Unknown").title(),
+        "conditions": (day_data.get("weather") or [{}])[0].get("description", "Unknown").title(),
         "rain_chance": round(day_data.get("pop", 0) * 100),
     }
     # NOT "wind_speed": a daily figure sitting next to current.wind_speed under
@@ -307,7 +307,7 @@ def _hourly_timeline(
         timeline.append({
             "time": _fmt_hour(dt),
             "temp": round(hour.get("temp", 0)),
-            "conditions": hour.get("weather", [{}])[0].get("description", "Unknown").title(),
+            "conditions": (hour.get("weather") or [{}])[0].get("description", "Unknown").title(),
             "rain_chance": round(hour.get("pop", 0) * 100),
         })
     return timeline
@@ -378,7 +378,7 @@ async def get_weather_forecast(
     """Get weather forecast from OpenWeatherMap."""
     forecast_type = _normalize_forecast_type(arguments.get("forecast_type"))
     requested_day = (arguments.get("day") or "").strip()
-    location_query = arguments.get("location", "").strip()
+    location_query = str_arg(arguments, "location", "").strip()
 
     if not api_key:
         return {"error": "OpenWeatherMap API key not configured. Add it in Settings → PureLLM → API Keys."}
@@ -463,7 +463,7 @@ async def get_weather_forecast(
                 "temperature": round(current.get("temp", 0)),
                 "feels_like": round(current.get("feels_like", 0)),
                 "humidity": current.get("humidity", 0),
-                "conditions": current.get("weather", [{}])[0].get("description", "Unknown").title(),
+                "conditions": (current.get("weather") or [{}])[0].get("description", "Unknown").title(),
                 "wind_speed": round(current.get("wind_speed", 0)),
                 "location": location_name or "Current Location",
                 "local_time": _fmt_time(_local_dt(int(now.timestamp()), tz_offset)),

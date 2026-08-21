@@ -7,6 +7,8 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
+from ..utils.helpers import str_arg
+
 _LOGGER = logging.getLogger(__name__)
 
 # Normalize HVAC mode aliases to Home Assistant values
@@ -43,9 +45,9 @@ async def control_thermostat(
     Returns:
         Thermostat control result dict
     """
-    action = arguments.get("action", "").lower()
+    action = str_arg(arguments, "action", "").lower()
     temp_arg = arguments.get("temperature")
-    hvac_mode_raw = arguments.get("hvac_mode", "").strip().lower() if arguments.get("hvac_mode") else ""
+    hvac_mode_raw = str_arg(arguments, "hvac_mode", "").strip().lower() if arguments.get("hvac_mode") else ""
 
     if action not in ["raise", "lower", "set", "check", "set_mode"]:
         return {"error": "Invalid action. Use 'raise', 'lower', 'set', 'check', or 'set_mode'"}

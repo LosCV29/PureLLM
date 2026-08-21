@@ -19,6 +19,8 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
+from ..utils.helpers import str_arg
+
 _LOGGER = logging.getLogger(__name__)
 
 # Storage key for tracking PureLLM-started timers
@@ -103,9 +105,11 @@ def get_player_for_device(
                         )
                         return entry.entity_id
 
-                # Fallback: match device name against room_player_mapping keys
-                device_name = (device.name or "").lower()
-                if room_player_mapping:
+                # Fallback: match device name against room_player_mapping keys.
+                # Guarded on a non-empty name: "" is a substring of every room,
+                # so a nameless device would silently claim the first room.
+                device_name = (device.name or "").lower().strip()
+                if device_name and room_player_mapping:
                     for room, player in room_player_mapping.items():
                         if device_name in room.lower() or room.lower() in device_name:
                             return player
@@ -114,7 +118,8 @@ def get_player_for_device(
                 # Normalize underscores/spaces so "respeaker kitchen" matches
                 # "respeaker_kitchen_media_player".
                 device_name_norm = device_name.replace("_", " ")
-                all_states = hass.states.async_all()
+                # Same guard: an empty name matches the first media_player.
+                all_states = hass.states.async_all() if device_name_norm else []
                 for state in all_states:
                     if state.entity_id.startswith("media_player."):
                         friendly = state.attributes.get("friendly_name", "").lower()
@@ -213,37 +218,54 @@ def _parse_duration(duration_str: str) -> timedelta | None:
 
     total_seconds = 0
 
-    # Check for known phrases first
-    for phrase, seconds in DURATION_PHRASES.items():
-        if phrase in duration_str:
-            total_seconds += seconds
-            duration_str = duration_str.replace(phrase, '')
+    # Compound "and a half" forms run BEFORE the phrase table: the table
+    # matches raw substrings, and "2 and a half hours" contains "half hour",
+    # so the table would eat it as a plain 30 minutes.
 
-    # Handle "X and a half hours/minutes"
-    half_hour_match = re.search(r'(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+and\s+a\s+half\s+hour', duration_str)
+    # Trailing form: "an hour and a half", "2 hours and a half".
+    tail_hour = re.search(r'(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an)\s*(?:hours?|hrs?)\s+and\s+a\s+half', duration_str)
+    if tail_hour:
+        num = _word_to_number(tail_hour.group(1)) or 1
+        total_seconds += num * 3600 + 1800
+        duration_str = duration_str[:tail_hour.start()] + duration_str[tail_hour.end():]
+
+    tail_min = re.search(r'(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an)\s*(?:minutes?|mins?)\s+and\s+a\s+half', duration_str)
+    if tail_min:
+        num = _word_to_number(tail_min.group(1)) or 1
+        total_seconds += num * 60 + 30
+        duration_str = duration_str[:tail_min.start()] + duration_str[tail_min.end():]
+
+    # Leading form: "2 and a half hours".
+    half_hour_match = re.search(r'(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an)\s+and\s+a\s+half\s+hours?', duration_str)
     if half_hour_match:
         num = _word_to_number(half_hour_match.group(1)) or 1
         total_seconds += num * 3600 + 1800  # hours + 30 min
         duration_str = duration_str[:half_hour_match.start()] + duration_str[half_hour_match.end():]
 
-    half_min_match = re.search(r'(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+and\s+a\s+half\s+min', duration_str)
+    half_min_match = re.search(r'(\d+|one|two|three|four|five|six|seven|eight|nine|ten|a|an)\s+and\s+a\s+half\s+min', duration_str)
     if half_min_match:
         num = _word_to_number(half_min_match.group(1)) or 1
         total_seconds += num * 60 + 30  # minutes + 30 sec
         duration_str = duration_str[:half_min_match.start()] + duration_str[half_min_match.end():]
 
+    # Check for known phrases
+    for phrase, seconds in DURATION_PHRASES.items():
+        if phrase in duration_str:
+            total_seconds += seconds
+            duration_str = duration_str.replace(phrase, '')
+
     # Handle decimal values like "1.5 hours"
-    decimal_hour = re.search(r'(\d+\.?\d*)\s*(?:hour|hr|h)\b', duration_str)
+    decimal_hour = re.search(r'(\d+\.?\d*)\s*(?:hours?|hrs?|h)\b', duration_str)
     if decimal_hour:
         total_seconds += int(float(decimal_hour.group(1)) * 3600)
         duration_str = duration_str[:decimal_hour.start()] + duration_str[decimal_hour.end():]
 
-    decimal_min = re.search(r'(\d+\.?\d*)\s*(?:minute|min|m)\b', duration_str)
+    decimal_min = re.search(r'(\d+\.?\d*)\s*(?:minutes?|mins?|m)\b', duration_str)
     if decimal_min:
         total_seconds += int(float(decimal_min.group(1)) * 60)
         duration_str = duration_str[:decimal_min.start()] + duration_str[decimal_min.end():]
 
-    decimal_sec = re.search(r'(\d+\.?\d*)\s*(?:second|sec|s)\b', duration_str)
+    decimal_sec = re.search(r'(\d+\.?\d*)\s*(?:seconds?|secs?|s)\b', duration_str)
     if decimal_sec:
         total_seconds += int(float(decimal_sec.group(1)))
         duration_str = duration_str[:decimal_sec.start()] + duration_str[decimal_sec.end():]
@@ -446,7 +468,7 @@ async def control_timer(
     Returns:
         Timer operation result
     """
-    action = arguments.get("action", "").lower().strip()
+    action = str_arg(arguments, "action", "").lower().strip()
     duration = arguments.get("duration", "")
     timer_name = arguments.get("name", "")
     add_time = arguments.get("add_time", "")  # For extending timers

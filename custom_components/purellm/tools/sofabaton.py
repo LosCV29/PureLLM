@@ -7,6 +7,8 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
+from ..utils.helpers import str_arg
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -25,8 +27,8 @@ async def control_sofabaton(
     Returns:
         Control result dict
     """
-    activity_name = arguments.get("activity", "").strip().lower()
-    action = arguments.get("action", "").strip().lower()
+    activity_name = str_arg(arguments, "activity", "").strip().lower()
+    action = str_arg(arguments, "action", "").strip().lower()
 
     if not activity_name:
         return {"error": "No activity specified"}

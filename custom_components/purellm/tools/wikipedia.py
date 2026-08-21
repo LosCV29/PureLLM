@@ -8,7 +8,7 @@ from typing import Any, TYPE_CHECKING
 from urllib.parse import quote
 
 from ..const import VERSION
-from ..utils.helpers import get_nested
+from ..utils.helpers import get_nested, str_arg
 from ..utils.http_client import CACHE_TTL_LONG, fetch_json, log_and_error
 
 if TYPE_CHECKING:
@@ -22,7 +22,7 @@ async def calculate_age(
     session: "aiohttp.ClientSession",
 ) -> dict[str, Any]:
     """Calculate a person's age from Wikidata birthdate."""
-    person_name = arguments.get("person_name", "").strip()
+    person_name = str_arg(arguments, "person_name", "").strip()
 
     if not person_name:
         return {"error": "No person name provided"}
@@ -173,7 +173,7 @@ async def get_wikipedia_summary(
     Every failure path carries an instruction telling the LLM not to
     answer from memory.
     """
-    topic = arguments.get("topic", "").strip()
+    topic = str_arg(arguments, "topic", "").strip()
 
     if not topic:
         return {"error": "No topic provided", "instruction": _WIKI_FAIL_INSTRUCTION}

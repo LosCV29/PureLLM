@@ -93,3 +93,23 @@ def format_time_remaining(total_seconds: float) -> str:
     if hours > 0:
         return f"{hours}h {minutes}m"
     return f"{minutes}m"
+
+def str_arg(arguments: dict, key: str, default: str = "") -> str:
+    """Read a string tool argument without trusting the model to send one.
+
+    Tool arguments are LLM-generated JSON. A hallucinated number, null, or
+    object used to raise AttributeError on the first .lower()/.strip(), which
+    aborted the whole tool call and surfaced a raw Python error to the user.
+    """
+    value = arguments.get(key, default)
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        # The model occasionally wraps a single value in a list.
+        value = value[0] if len(value) == 1 else " ".join(str(v) for v in value)
+        return value if isinstance(value, str) else str(value)
+    if isinstance(value, dict):
+        return default
+    return str(value)

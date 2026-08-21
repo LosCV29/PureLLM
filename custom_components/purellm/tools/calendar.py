@@ -8,6 +8,8 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
+from ..utils.helpers import str_arg
+
 _LOGGER = logging.getLogger(__name__)
 
 # Holiday integration calendars typically contain country/region names,
@@ -44,7 +46,7 @@ async def get_calendar_events(
     """
     from homeassistant.util import dt as dt_util
 
-    query_type = arguments.get("query_type", "upcoming").lower()
+    query_type = str_arg(arguments, "query_type", "upcoming").lower()
 
     try:
         now = datetime.now(hass_timezone)

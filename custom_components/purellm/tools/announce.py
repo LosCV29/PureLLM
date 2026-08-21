@@ -234,17 +234,64 @@ _SENDER_PLACEHOLDERS = frozenset({
     "unknown", "none", "null", "n/a", "na", "someone", "somebody", "person",
     "assistant", "system", "home assistant", "homeassistant", "ha",
     "speaker", "caller", "requester", "owner", "resident", "name",
+    # Generic relations. These read as placeholders ("Message from Wife.")
+    # and the HA-user fallback names the actual person, which is better.
+    # Household roles that work as real attributions -- mom, dad, grandma --
+    # are deliberately NOT here: "Message from Mom." is a good announcement.
+    "friend", "wife", "husband", "partner", "spouse", "family", "neighbor",
+    "neighbour", "boss", "colleague", "coworker", "roommate", "contact",
+    "visitor", "guest", "everyone", "everybody", "guy", "girl", "man",
+    "woman", "people", "they", "them", "someone else", "your friend",
 })
+
+
+# Honorifics are not the name — "Dr. Smith" should announce as "Smith".
+_SENDER_TITLES = frozenset({
+    "dr", "doctor", "mr", "mrs", "ms", "miss", "sir", "madam", "prof",
+    "professor", "father", "fr", "rev", "reverend", "capt", "captain",
+})
+
+# Determiners the model glues onto a placeholder: "the caller", "a friend".
+# Stripped before the placeholder check so those are caught the same way the
+# bare noun is (mirrors _normalize_room, which has always done this).
+_SENDER_ARTICLES = (
+    "the ", "a ", "an ", "my ", "our ", "your ", "his ", "her ", "their ",
+    "some ", "this ", "that ",
+)
 
 
 def _clean_sender(override: str | None) -> str | None:
     """Reject placeholder junk in the optional sender argument."""
-    text = " ".join((override or "").strip().strip(".,!?'\"").split()).lower()
+    # Tool arguments come straight from the LLM: a number or an object here
+    # must not raise, or the whole announcement is abandoned upstream.
+    if override is None:
+        return None
+    if not isinstance(override, str):
+        override = str(override)
+    # The local brain wraps values it is unsure about in brackets, exactly as
+    # _clean_message documents. Brackets are never part of a name.
+    text = override
+    for ch in "[]{}<>":
+        text = text.replace(ch, "")
+    text = " ".join(text.strip().strip(".,!?'\"").split()).lower()
+    for article in _SENDER_ARTICLES:
+        if text.startswith(article):
+            text = text[len(article):].strip()
+            break
     if not text or text in _SENDER_PLACEHOLDERS:
         return None
-    # A real name is alphabetic; "user 1", "<name>" and similar are not.
-    first = text.split()[0]
-    if not first.isalpha() or first in _SENDER_PLACEHOLDERS:
+    words = text.split()
+    # Drop a leading honorific so the real name is what gets announced.
+    if len(words) > 1 and words[0].rstrip(".") in _SENDER_TITLES:
+        words = words[1:]
+    first = words[0].strip(".")
+    if not first or first in _SENDER_PLACEHOLDERS:
+        return None
+    # A real name is alphabetic once internal hyphens and apostrophes are
+    # allowed for: "Jean-Luc" and "O'Brien" are names, "user 1" and "name" are
+    # not. A single letter is never a name.
+    core = first.replace("-", "").replace("'", "").replace("’", "")
+    if len(core) < 2 or not core.isalpha():
         return None
     return first.title()
 

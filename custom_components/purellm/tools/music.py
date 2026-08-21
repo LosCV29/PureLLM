@@ -18,7 +18,7 @@ from homeassistant.helpers import entity_registry as er, device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
-from ..utils.helpers import COMMON_ROOM_NAMES
+from ..utils.helpers import COMMON_ROOM_NAMES, str_arg
 from ..utils.http_client import fetch_json, CACHE_TTL_LONG
 
 if TYPE_CHECKING:
@@ -1214,10 +1214,10 @@ class MusicController:
         Returns:
             Result dict
         """
-        action = arguments.get("action", "").lower()
+        action = str_arg(arguments, "action", "").lower()
         query = arguments.get("query", "")
         media_type = arguments.get("media_type", "artist")
-        room = arguments.get("room", "").lower() if arguments.get("room") else ""
+        room = str_arg(arguments, "room", "").lower() if arguments.get("room") else ""
         artist = arguments.get("artist", "")
         album = arguments.get("album", "")
 
@@ -2791,10 +2791,13 @@ class MusicController:
         # Smart selection: pick the most recently active player
         # Sort by last_updated descending (most recent first), with None values last
         def sort_key(item: tuple[str, datetime | None]) -> tuple[int, datetime]:
-            pid, ts = item
+            _pid, ts = item
+            # Sorted with reverse=True, so the HIGHER bucket comes
+            # first: a real timestamp must outrank None, not the
+            # other way round.
             if ts is None:
-                return (1, datetime.min)  # None timestamps go last
-            return (0, ts)
+                return (0, datetime.min)  # None timestamps go last
+            return (1, ts)
 
         playing_players.sort(key=sort_key, reverse=True)
         pid = playing_players[0][0]
@@ -2855,10 +2858,13 @@ class MusicController:
 
         # Smart selection: pick the most recently active player
         def sort_key(item: tuple[str, datetime | None]) -> tuple[int, datetime]:
-            pid, ts = item
+            _pid, ts = item
+            # reverse=True puts the higher bucket first: a real
+            # timestamp must outrank None so the most recently
+            # active player is the one picked.
             if ts is None:
-                return (1, datetime.min)
-            return (0, ts)
+                return (0, datetime.min)  # None timestamps go last
+            return (1, ts)
 
         active_players.sort(key=sort_key, reverse=True)
         pid = active_players[0][0]

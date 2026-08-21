@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     import aiohttp
     from homeassistant.util import dt as dt_util
 
+from ..utils.helpers import str_arg
+
 _LOGGER = logging.getLogger(__name__)
 
 # Common ESPN API headers
@@ -348,7 +350,7 @@ async def _fetch_teams_for_league(
     teams_url = f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/teams?limit=1000"
     data, status = await fetch_json(session, teams_url, headers=ESPN_HEADERS, cache_ttl=TEAMS_CACHE_TTL)
     if data and status == 200:
-        teams = data.get("sports", [{}])[0].get("leagues", [{}])[0].get("teams", [])
+        teams = ((data.get("sports") or [{}])[0].get("leagues") or [{}])[0].get("teams", [])
         return (sport, league, teams)
     return (sport, league, [])
 
@@ -666,7 +668,7 @@ async def get_international_soccer_info(
         sport, league, events = res
         league_label = _league_display_name(events, league)
         for ev in events:
-            comp = ev.get("competitions", [{}])[0]
+            comp = (ev.get("competitions") or [{}])[0]
             competitors = comp.get("competitors", [])
             if not _match_team_in_competitors(competitors, team_id, team_abbrev, full_name):
                 continue
@@ -1056,7 +1058,7 @@ async def get_sports_info(
                     sb_data = await sb_resp.json()
 
                     for sb_event in sb_data.get("events", []):
-                        sb_comp = sb_event.get("competitions", [{}])[0]
+                        sb_comp = (sb_event.get("competitions") or [{}])[0]
                         sb_status_full = sb_comp.get("status", {})
                         sb_status = sb_status_full.get("type", {})
                         sb_state = sb_status.get("state", "")
@@ -1177,7 +1179,7 @@ async def get_sports_info(
                     for fut_event in future_data.get("events", []):
                         if next_game_from_scoreboard:
                             break
-                        fut_comp = fut_event.get("competitions", [{}])[0]
+                        fut_comp = (fut_event.get("competitions") or [{}])[0]
                         # Skip completed or in-progress games
                         fut_status = fut_comp.get("status", {}).get("type", {})
                         if fut_status.get("state", "") != "pre":
@@ -1239,7 +1241,7 @@ async def get_sports_info(
                         # Find last completed game
                         last_game = None
                         for event in events:
-                            status_info = event.get("competitions", [{}])[0].get("status", {}).get("type", {})
+                            status_info = (event.get("competitions") or [{}])[0].get("status", {}).get("type", {})
                             is_completed = status_info.get("completed", False)
                             if is_completed:
                                 game_date_str = event.get("date", "")
@@ -1256,7 +1258,7 @@ async def get_sports_info(
                                         pass
 
                         if last_game:
-                            comp = last_game.get("competitions", [{}])[0]
+                            comp = (last_game.get("competitions") or [{}])[0]
                             playoff_series = _extract_playoff_series(comp, last_game)
                             if playoff_series and "playoff_series" not in result:
                                 result["playoff_series"] = playoff_series
@@ -1305,7 +1307,7 @@ async def get_sports_info(
                         _LOGGER.debug("Sports: Checking schedule for next game, %d events total", len(events))
 
                         for event in events:
-                            status_info = event.get("competitions", [{}])[0].get("status", {}).get("type", {})
+                            status_info = (event.get("competitions") or [{}])[0].get("status", {}).get("type", {})
                             is_completed = status_info.get("completed", False)
                             state = status_info.get("state", "")
                             event_date = event.get("date", "")[:10]
@@ -1327,7 +1329,7 @@ async def get_sports_info(
                                         pass
 
                         if next_game:
-                            comp = next_game.get("competitions", [{}])[0]
+                            comp = (next_game.get("competitions") or [{}])[0]
                             playoff_series = _extract_playoff_series(comp, next_game)
                             if playoff_series and "playoff_series" not in result:
                                 result["playoff_series"] = playoff_series
@@ -1436,7 +1438,7 @@ async def get_ufc_info(
                         event_info["formatted_date"] = "Yesterday"
                     else:
                         event_info["formatted_date"] = event_dt_local.strftime("%A, %B %d")
-                except:
+                except Exception:  # noqa: BLE001 - date formatting is best-effort
                     event_info["formatted_date"] = event_info["date"]
             result["events"].append(event_info)
 
@@ -1502,8 +1504,8 @@ LEAGUE_CODES = {
 
 def _parse_league_and_date(arguments: dict[str, Any], hass_timezone) -> tuple:
     """Parse league and date from arguments. Returns (league_display, sport, league_code, date_label, date_str, error)."""
-    league_input = arguments.get("league", "").lower().strip()
-    date_input = arguments.get("date", "today").lower().strip()
+    league_input = str_arg(arguments, "league", "").lower().strip()
+    date_input = str_arg(arguments, "date", "today").lower().strip()
 
     if not league_input:
         return None, None, None, None, None, "No league specified. Try: NFL, NBA, MLB, NHL, Premier League, etc."
@@ -1632,7 +1634,7 @@ async def list_league_games(
         # Build game list
         game_summaries = []
         for event in events:
-            comp = event.get("competitions", [{}])[0]
+            comp = (event.get("competitions") or [{}])[0]
             competitors = comp.get("competitors", [])
             status_full = comp.get("status", {})
             status_info = status_full.get("type", {})
@@ -1668,7 +1670,7 @@ async def list_league_games(
                         if not _is_time_tbd(event, game_dt):
                             game_dt_local = game_dt.astimezone(hass_timezone)
                             time_str = game_dt_local.strftime("%I:%M %p").lstrip("0")
-                    except:
+                    except Exception:  # noqa: BLE001 - time parsing is best-effort
                         pass
                 summary = f"{away_name} @ {home_name} - {time_str}"
 

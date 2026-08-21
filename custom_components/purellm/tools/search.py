@@ -14,6 +14,8 @@ from ..utils.http_client import log_and_error
 if TYPE_CHECKING:
     import aiohttp
 
+from ..utils.helpers import str_arg
+
 _LOGGER = logging.getLogger(__name__)
 
 TAVILY_API_URL = "https://api.tavily.com/search"
@@ -259,7 +261,7 @@ async def web_search(
     Tavily is optimized for LLM applications and returns structured,
     relevant results with optional AI-generated answers.
     """
-    query = arguments.get("query", "").strip()
+    query = str_arg(arguments, "query", "").strip()
 
     if not query:
         return _search_failure("No search query provided")

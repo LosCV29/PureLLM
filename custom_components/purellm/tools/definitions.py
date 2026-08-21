@@ -110,14 +110,18 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
 
     # ===== THERMOSTAT =====
     if config.enable_thermostat and config.thermostat_entity:
-        temp_unit = config.temp_unit
+        # Scale is stated on the argument, not in the prose description: the
+        # model needs it to send a correct value for "set", but naming the
+        # scale in the description leaks it into the spoken reply, and the
+        # spoken form is always bare "degrees" (see format_temp).
+        scale = "Celsius" if config.temp_unit == "°C" else "Fahrenheit"
         step = config.thermostat_temp_step
         tools.append(_tool(
             "control_thermostat",
             f"Control thermostat. raise/lower=±{step} degrees, set=exact temp, set_mode, check=status.",
             {
                 "action": {"type": "string", "enum": ["raise", "lower", "set", "check", "set_mode"]},
-                "temperature": {"type": "number", "description": "Temp in degrees"},
+                "temperature": {"type": "number", "description": f"Temp in degrees {scale}"},
                 "hvac_mode": {"type": "string", "enum": ["heat", "cool", "heat_cool", "auto", "off"]}
             },
             ["action"]

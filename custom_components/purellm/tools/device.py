@@ -7,7 +7,7 @@ import re
 from typing import Any, TYPE_CHECKING
 
 from ..utils.fuzzy_matching import find_entity_by_name, infer_domains_from_name
-from ..utils.helpers import format_human_readable_state, get_friendly_name
+from ..utils.helpers import format_human_readable_state, get_friendly_name, str_arg
 from .fan_speed import LEVEL_MAP as FAN_LEVEL_MAP
 from .thermostat import HVAC_MODE_MAP
 
@@ -35,7 +35,7 @@ async def check_device_status(
     Returns:
         Device status dict
     """
-    device = arguments.get("device", "").strip()
+    device = str_arg(arguments, "device", "").strip()
 
     # Extract device name from original query using patterns
     extracted_device = None
@@ -171,25 +171,25 @@ async def control_device(
     from homeassistant.helpers import area_registry as ar
     from homeassistant.helpers import device_registry as dr
 
-    action = arguments.get("action", "").strip().lower()
+    action = str_arg(arguments, "action", "").strip().lower()
     brightness = arguments.get("brightness")
     position = arguments.get("position")
-    color = arguments.get("color", "").strip().lower()
+    color = str_arg(arguments, "color", "").strip().lower()
     color_temp = arguments.get("color_temp")
     volume = arguments.get("volume")
     temperature = arguments.get("temperature")
-    hvac_mode_raw = arguments.get("hvac_mode", "").strip().lower()
-    fan_speed = arguments.get("fan_speed", "").strip().lower()
+    hvac_mode_raw = str_arg(arguments, "hvac_mode", "").strip().lower()
+    fan_speed = str_arg(arguments, "fan_speed", "").strip().lower()
 
     # Normalize HVAC mode aliases to Home Assistant values (shared with thermostat tool)
     hvac_mode = HVAC_MODE_MAP.get(hvac_mode_raw, hvac_mode_raw) if hvac_mode_raw else ""
     _LOGGER.debug("HVAC mode: raw=%s, normalized=%s", hvac_mode_raw, hvac_mode)
 
-    direct_entity_id = arguments.get("entity_id", "").strip()
+    direct_entity_id = str_arg(arguments, "entity_id", "").strip()
     entity_ids_list = arguments.get("entity_ids", [])
-    area_name = arguments.get("area", "").strip()
-    domain_filter = arguments.get("domain", "").strip().lower()
-    device_name = arguments.get("device", "").strip()
+    area_name = str_arg(arguments, "area", "").strip()
+    domain_filter = str_arg(arguments, "domain", "").strip().lower()
+    device_name = str_arg(arguments, "device", "").strip()
 
     # Check if device_name is actually an entity_id (e.g., "light.master_dimmer_switch_light")
     # If so, treat it as a direct entity_id instead of running fuzzy matching

@@ -24,6 +24,8 @@ from urllib.parse import urlparse
 if TYPE_CHECKING:
     import aiohttp
 
+from ..utils.helpers import str_arg
+
 _LOGGER = logging.getLogger(__name__)
 
 # Frame-sequence capture settings.
@@ -387,7 +389,7 @@ async def check_camera(
     A live snapshot for display is fetched from Frigate's
     ``/api/<camera>/latest.jpg`` endpoint.
     """
-    location = arguments.get("location", "").lower().strip()
+    location = str_arg(arguments, "location", "").lower().strip()
     query = arguments.get("query", "")
 
     if not location:

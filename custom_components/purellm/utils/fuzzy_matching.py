@@ -212,9 +212,12 @@ def normalize_cover_query(query: str) -> list[str]:
                     new_words[i] = replacement
                     variations.add(" ".join(new_words))
 
-    # Return shorter (stopwords stripped) first
+    # Return shorter (stopwords stripped) first. Ties break on the string
+    # itself: `variations` is a set, so length alone leaves the order at
+    # the mercy of the hash seed and the same phrase could resolve to a
+    # different entity after a restart.
     result = list(variations)
-    result.sort(key=len)
+    result.sort(key=lambda v: (len(v), v))
     return result
 
 
@@ -372,9 +375,12 @@ def _find_entity_by_query(
         if entity_suffix == query_lower or entity_suffix == query_as_suffix:
             partial_matches.append((5 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or entity_suffix))
 
-    # Check states not in entity registry
+    # Check states not in entity registry.
+    # The id set is built once: rebuilding it inside the loop made this
+    # O(entities x states) on every name lookup, in the voice hot path.
+    registered_ids = set(ent_reg.entities.keys())
     for entity_id, state in all_states.items():
-        if entity_id not in {e.entity_id for e in ent_reg.entities.values()}:
+        if entity_id not in registered_ids:
             friendly_name = state.attributes.get("friendly_name", "")
             domain_pri = get_domain_priority(entity_id)
             exposed = _is_exposed(hass, entity_id)
@@ -388,7 +394,9 @@ def _find_entity_by_query(
 
     # Return best match - sort by match priority first, then domain priority
     if partial_matches:
-        partial_matches.sort(key=lambda x: (x[0], x[1]))
+        # entity_id is the final tiebreaker so an exact tie resolves the
+        # same way every time rather than on registry iteration order.
+        partial_matches.sort(key=lambda x: (x[0], x[1], x[2]))
         return (partial_matches[0][2], partial_matches[0][3])
 
     _LOGGER.warning("No entity found for query: '%s'", query_lower)

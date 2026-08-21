@@ -1065,12 +1065,23 @@ class PureLLMConversationEntity(ConversationEntity):
             )
 
         # Warm up provider connection in background (pre-establish SSL handshake)
-        # This saves 100-300ms on the first real query
-        asyncio.create_task(self._warmup_provider_connection())
+        # This saves 100-300ms on the first real query.
+        # Tracked via the config entry: a bare asyncio.create_task() is only
+        # weakly referenced by the loop (it can be collected mid-flight) and
+        # would keep running against a torn-down entity after a reload.
+        self.entry.async_create_background_task(
+            self.hass,
+            self._warmup_provider_connection(),
+            name=f"{DOMAIN}_warmup_provider",
+        )
 
         # Fetch Frigate camera names in background for tool descriptions
         if self.enable_cameras and self.frigate_url:
-            asyncio.create_task(self._fetch_frigate_camera_names())
+            self.entry.async_create_background_task(
+                self.hass,
+                self._fetch_frigate_camera_names(),
+                name=f"{DOMAIN}_frigate_camera_names",
+            )
 
         # Listen for config updates
         self.entry.async_on_unload(
@@ -1209,7 +1220,10 @@ class PureLLMConversationEntity(ConversationEntity):
         conversational=True (intent router matched nothing) swaps the smart-home
         prompt for a plain conversational persona — see CONVERSATION_MODE_PROMPT.
         """
-        today = datetime.now().strftime("%Y-%m-%d")
+        # dt_util.now() honours the timezone configured in HA. Naive
+        # datetime.now() is the host's clock, which is UTC on container
+        # installs -- that hands the model tomorrow's date all evening.
+        today = dt_util.now().strftime("%Y-%m-%d")
         cache_key = (today, language_code, room, conversational)
         if self._cached_system_prompt and self._cached_system_prompt_key == cache_key:
             return self._cached_system_prompt
@@ -2275,7 +2289,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
                     tool_results = await asyncio.gather(*tool_tasks, return_exceptions=True)
 
-                    for tool_call, result in zip(unique_tool_calls, tool_results):
+                    for tool_call, result in zip(unique_tool_calls, tool_results, strict=True):
                         if isinstance(result, Exception):
                             _LOGGER.error("Tool %s failed: %s", tool_call["function"]["name"], result)
                             result = {"error": str(result)}

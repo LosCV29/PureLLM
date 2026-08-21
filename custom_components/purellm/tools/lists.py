@@ -9,6 +9,8 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
+from ..utils.helpers import str_arg
+
 _LOGGER = logging.getLogger(__name__)
 
 # Time-based dedup for add operations.  Prevents the same item from being
@@ -66,9 +68,9 @@ async def manage_list(
     Returns:
         List operation result
     """
-    action = arguments.get("action", "").lower()
-    item = arguments.get("item", "").strip()
-    list_name = arguments.get("list_name", "").lower().strip()
+    action = str_arg(arguments, "action", "").lower()
+    item = str_arg(arguments, "item", "").strip()
+    list_name = str_arg(arguments, "list_name", "").lower().strip()
     # The model often passes the spoken phrase verbatim ("the amazon list"),
     # which the substring match below can't map to the friendly name "Amazon".
     # Strip articles and the trailing word "list" before matching.
@@ -332,7 +334,7 @@ async def manage_list(
 
         elif action == "show" or action == "get" or action == "read":
             # Check if user wants completed items
-            show_completed = arguments.get("status", "").lower() in ("completed", "done", "checked")
+            show_completed = str_arg(arguments, "status", "").lower() in ("completed", "done", "checked")
             status_filter = "completed" if show_completed else "needs_action"
 
             items = await _get_items(hass, target_list, status_filter)
@@ -360,7 +362,7 @@ async def manage_list(
 
         elif action == "sort" or action == "alphabetize":
             # Check if user wants to sort completed items
-            sort_completed = arguments.get("status", "").lower() in ("completed", "done", "checked")
+            sort_completed = str_arg(arguments, "status", "").lower() in ("completed", "done", "checked")
             status_filter = "completed" if sort_completed else "needs_action"
             status_label = "completed" if sort_completed else "active"
 
@@ -406,7 +408,7 @@ async def manage_list(
 
         elif action == "clear":
             # Respect status parameter — clear active or completed items
-            clear_completed = arguments.get("status", "").lower() in ("completed", "done", "checked")
+            clear_completed = str_arg(arguments, "status", "").lower() in ("completed", "done", "checked")
             status_filter = "completed" if clear_completed else "needs_action"
             status_label = "completed" if clear_completed else "active"
 
