@@ -359,18 +359,52 @@ _MIN_CATALOG_FOR_FALLBACK_FILTER = 8
 _STATS = {"matched": 0, "unmatched": 0}
 
 
+# Clause punctuation, flattened to whitespace for a SECOND matching pass.
+#
+# Many patterns above are space-anchored (" event ", " light ", " wind ",
+# " final ") because the bare word would match inside a longer one
+# ("eventually", "lighter", "window", "finally"). A comma or question mark
+# sitting exactly where the anchoring space should be defeats them:
+# "turn on the light, please" and "do i have an event?" both missed.
+#
+# Apostrophes, hyphens and slashes are deliberately NOT here. They join words
+# rather than end them, so flattening them would invent boundaries that are
+# not there ("light-hearted" would start matching " light ") and would break
+# the patterns that contain them ("what's on my", "to-do", "a.c.", "a/c").
+_CLAUSE_PUNCT = str.maketrans({c: " " for c in '.,!?;:"“”«»()[]{}…—–'})
+
+
+def _depunctuated(padded: str) -> str | None:
+    """Padded text with clause punctuation flattened to single spaces.
+
+    Returns None when the text holds no clause punctuation, so the caller can
+    skip a second pass over every pattern — the common case on voice input,
+    which arrives unpunctuated.
+    """
+    flattened = padded.translate(_CLAUSE_PUNCT)
+    if flattened == padded:
+        return None
+    return f" {' '.join(flattened.split())} "
+
+
 def classify_intent(user_text: str) -> set[str]:
     """Classify user text into intent categories using keyword matching.
 
     Returns a set of matched intent category names.
     Empty set = no match → caller should fall back to all tools.
+
+    Each pattern is tried against the raw padded text FIRST, then against the
+    punctuation-flattened variant. Raw-first makes the second pass purely
+    additive: anything that matched before still matches, and the patterns
+    that themselves contain punctuation keep working.
     """
     text = f" {user_text.lower().strip()} "
+    depunct = _depunctuated(text)
     matched: set[str] = set()
 
     for intent, patterns in _INTENT_PATTERNS.items():
         for pattern in patterns:
-            if pattern in text:
+            if pattern in text or (depunct is not None and pattern in depunct):
                 matched.add(intent)
                 break
 
