@@ -180,7 +180,14 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "lights", "light on", "light off",
         "lock", "unlock",
         " fan", "switch",
-        "vacuum", "blinds", "shades",
+        "vacuum",
+        # Singular forms only: the match is a substring test, so "shade"
+        # covers "shades" but not the reverse. Listing only the plurals
+        # meant "set the living room shade to ninety percent" NO-MATCHed
+        # and fell to the conversational path, which answered "Done --"
+        # without calling control_device (2026-08-23). Same plural/singular
+        # trap the v8.6.0 timer regexes had, mirrored.
+        "blind", "shade", "curtain", "drape", "roller",
         " dim", "brightness",
         "open the", "close the",
         "porch light", "backyard light", "kitchen light",
