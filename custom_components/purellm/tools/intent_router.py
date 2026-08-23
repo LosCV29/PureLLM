@@ -48,7 +48,7 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "on the kitchen speaker", "on the living room speaker",
         "on the bedroom speaker", "on the nursery speaker",
         "on the bathroom speaker", "on the office speaker",
-        "on the speaker", "on the speakers", "over the speaker",
+        "on the speaker", "over the speaker",
         "on speaker", "through the speaker", "on the intercom", "intercom",
         "announce", "announcement", "out loud", "aloud", "say it in the",
         "say out loud", "broadcast", "over the house", "in the house",
@@ -64,7 +64,7 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         # media_player entity in another room (2026-07-26). Note the old
         # " track " / " song " patterns require a TRAILING space, so the very
         # common "next track." / "skip this song." never matched.
-        "next track", "next tracks", "previous track", "prev track",
+        "next track", "previous track", "prev track",
         "last song", "last track", "go back a song", "go back a track",
         "skip back", "skip ahead", "skip this", "skip it", "next one",
         "restart the song", "restart the track", "play it again",
@@ -131,18 +131,21 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
     "sports": [
         " game", "score", " nfl", " nba", " mlb", " nhl", " mls",
         "ufc", "fight card", "premier league", "champions league",
-        "la liga", "standings", "league games",
+        "la liga", "standings",
         "heat play", "dolphins", "marlins", "panthers",
         "inter miami", "hurricanes",
         # Postseason terms — without these, "what is the X playoff series at?"
         # only matches the greedy "what is the " in knowledge intent and the
         # sports tool never gets exposed.
         " playoff", " series", " seed", "semifinal",
-        "conference final", " finals",
+        # " final " needs the trailing space: bare " final" would match
+        # " finally", which is common chitchat and would pull a chat turn
+        # into the smart-home prompt.
+        "conference final", " final ", " finals",
     ],
     "timer": [
-        "timer", "set a timer", "countdown",
-        "minute timer", "second timer", "hour timer",
+        # "timer" alone covers "set a timer" / "<unit> timer" / "timers".
+        "timer", "countdown",
     ],
     "list": [
         " list", "shopping", "grocery", "to-do", "todo",
@@ -153,9 +156,14 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "costco", "amazon",
     ],
     "calendar": [
-        "calendar", " events", "schedule", "appointment", "birthday",
+        # " event " is space-anchored on BOTH sides so "eventually" cannot
+        # match; the haystack is padded (" {text} ") so it still hits a
+        # sentence-final "do i have an event". " events" stays because the
+        # trailing "s" defeats the closing space.
+        "calendar", " event ", " events", "schedule", "appointment",
+        "birthday",
         "what's on my", "whats on my", "what do i have",
-        "holiday", "holidays", "next holiday",
+        "holiday", "next holiday",
     ],
     "places": [
         "nearest ", "closest ", "find a ",
@@ -177,7 +185,13 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
     "device": [
         "turn on", "turn off", "toggle",
         "launch ",
-        "lights", "light on", "light off",
+        # Covers light/lights/lighting and every "<room> light" phrasing,
+        # replacing the per-room entries. " light " is anchored on BOTH
+        # sides: bare " light" also matches " lighter" and " lightning",
+        # which would drag chitchat and weather turns into the smart-home
+        # prompt. The haystack is padded, so " light " still hits a
+        # sentence-final "turn on the kitchen light".
+        " light ", " lights", " lighting",
         "lock", "unlock",
         " fan", "switch",
         "vacuum",
@@ -190,7 +204,6 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "blind", "shade", "curtain", "drape", "roller",
         " dim", "brightness",
         "open the", "close the",
-        "porch light", "backyard light", "kitchen light",
         "garage door", "mailbox",
         "front door", "back door", "side gate",
         "purifier", "diffuser",
@@ -230,7 +243,7 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "watch ", "start watching",
     ],
     "plants": [
-        " plant", " plants",
+        " plant",
         "moisture", " soil ",
         "watering", "watered",
         "need water", "needs water", "need watering",
