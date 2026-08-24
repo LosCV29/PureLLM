@@ -3,15 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 from datetime import datetime, timedelta, timezone
-from typing import Any, TYPE_CHECKING
+from typing import Any
+
+import aiohttp
 
 from ..const import API_TIMEOUT
 from ..utils.helpers import format_time_remaining, str_arg
 from ..utils.http_client import fetch_json, log_and_error
-
-if TYPE_CHECKING:
-    import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -567,6 +567,41 @@ def _build_response_text(
 
 
 async def get_weather_forecast(
+    arguments: dict[str, Any],
+    session: "aiohttp.ClientSession",
+    api_key: str,
+    latitude: float,
+    longitude: float,
+    user_query: str = "",
+) -> dict[str, Any]:
+    """Get weather forecast, forcing IPv4 for every OpenWeatherMap call.
+
+    2026-08-23: OpenWeatherMap's IPv6 edge blackholes traffic from this
+    network. Connections open and never complete, so each call burned the full
+    API_TIMEOUT and the tool answered "I couldn't check the weather". Measured
+    from inside the HA container: forced-v6 timed out 3/3 against
+    2604:86c0:3001:17::2, forced-v4 returned 200 in 0.22s, while google.com,
+    cloudflare.com and googleapis.com over v6 were all fine — so this is OWM's
+    v6 path, NOT broken IPv6 here (do not disable IPv6 on the HA VM; Matter
+    and Thread need it).
+
+    It presents as INTERMITTENT because OWM's DNS rotates between edge nodes:
+    the same code succeeded minutes earlier when AAAA resolved to a reachable
+    address. Pinning to AF_INET removes the coin flip.
+
+    HA's shared session cannot express a per-request address family, so OWM
+    calls get their own short-lived session. That costs one TLS handshake per
+    weather question, which is fine at this call volume. `session` (the shared
+    one) is still accepted so callers don't change.
+    """
+    connector = aiohttp.TCPConnector(family=socket.AF_INET, limit=4)
+    async with aiohttp.ClientSession(connector=connector) as ipv4_session:
+        return await _get_weather_forecast(
+            arguments, ipv4_session, api_key, latitude, longitude, user_query
+        )
+
+
+async def _get_weather_forecast(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
     api_key: str,
