@@ -367,6 +367,205 @@ def _resolve_requested_day(
     return None
 
 
+def _degrees(value: Any) -> str:
+    """Spoken temperature: bare degrees, never a unit suffix.
+
+    Mirrors PureLLM.format_temp. The One Call request is hardcoded to
+    units=imperial, so naming the scale here would put "Fahrenheit" into a
+    string the satellites read out loud -- the thermostat tool definition
+    carries the same rule for the same reason.
+    """
+    return f"{value} degrees"
+
+
+def _join_prose(items: list[str]) -> str:
+    """'a', 'a and b', 'a, b and c' -- spoken, so no Oxford comma."""
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _temp_span(values: list[int], label_max: bool = True) -> str:
+    """'84 degrees' when flat, '78 to 90 degrees' when it moves."""
+    low, high = min(values), max(values)
+    return _degrees(low) if low == high else f"{low} to {_degrees(high)}"
+
+
+def _weekly_response(forecast: list[dict[str, Any]]) -> str:
+    """One or two sentences over the 7-day array.
+
+    A day-by-day readout is unusable in speech, so this reports the range plus
+    the days that actually matter (rain). Rain days use the DAILY threshold,
+    not the hourly one: OWM's daily pop is a 24h max, and anything lower calls
+    out half of a South Florida week as rainy.
+    """
+    if not forecast:
+        return ""
+
+    highs = [d["high"] for d in forecast]
+    lows = [d["low"] for d in forecast]
+    text = (
+        f"Over the next {len(forecast)} days, highs run {_temp_span(highs)} "
+        f"with lows around {_degrees(min(lows))}."
+    )
+
+    wet = [
+        d["day"] for d in forecast
+        if d.get("rain_chance", 0) >= _RAIN_LIKELY_DAILY_POP * 100
+    ]
+    if wet:
+        verb = "is" if len(wet) == 1 else "are"
+        text += f" {_join_prose(wet)} {verb} the most likely to see rain."
+    else:
+        text += " No day stands out as a rain day."
+    return text
+
+
+def _hourly_response(timeline: list[dict[str, Any]], next_hour: str | None) -> str:
+    """Next-12h summary: the nowcast first, then the shape of the window."""
+    parts = []
+    if next_hour:
+        parts.append(next_hour.rstrip(".") + ".")
+    if timeline:
+        temps = [h["temp"] for h in timeline]
+        wet = [
+            h["time"] for h in timeline
+            if h.get("rain_chance", 0) >= _RAIN_LIKELY_POP * 100
+        ]
+        sentence = (
+            f"Over the next {len(timeline)} hours temperatures run "
+            f"{_temp_span(temps)}"
+        )
+        if wet:
+            sentence += f", with rain most likely around {_join_prose(wet[:3])}"
+        parts.append(sentence + ".")
+    return " ".join(parts)
+
+
+def _article(percent: int) -> str:
+    """'a 40%' but 'an 80%' -- these strings are spoken, not read."""
+    spoken = str(percent)
+    return "an" if spoken.startswith("8") or spoken in ("11", "18") else "a"
+
+
+def _day_response(day: dict[str, Any]) -> str:
+    """One sentence for a named day / tomorrow block."""
+    # "will see <conditions>" rather than "will be": OWM descriptions are noun
+    # phrases ("heavy intensity rain"), and "Saturday will be heavy intensity
+    # rain" is not a sentence anyone says out loud.
+    return (
+        f"{day['day']} will see {day['conditions'].lower()} with a high of "
+        f"{_degrees(day['high'])} and a low of {day['low']}, and "
+        f"{_article(day['rain_chance'])} {day['rain_chance']}% chance of rain."
+    )
+
+
+def _build_response_text(
+    result: dict[str, Any],
+    forecast_type: str,
+    requested_day: str,
+) -> str:
+    """Compose the one-or-two sentences the model repeats verbatim.
+
+    Added because nearly every field this tool returns is a NUMBER, so the
+    model had to assemble the sentence itself and a "say it verbatim" rule in
+    the configured prompt had nothing to bind to. `today.will_it_rain` and
+    `next_hour` were already whole sentences for exactly that reason; this
+    extends the same treatment to the remaining forecast types.
+
+    The structured fields stay in the payload untouched -- a follow-up ("what
+    about the humidity") still needs them.
+    """
+    current = result.get("current") or {}
+    today = result.get("today") or {}
+    next_hour = result.get("next_hour")
+
+    # A named day beats forecast_type: "what about Saturday" arrives as
+    # forecast_type=today with day=saturday.
+    if requested_day and result.get("requested_day"):
+        text = _day_response(result["requested_day"])
+    elif requested_day and result.get("requested_day_error"):
+        text = result["requested_day_error"]
+
+    elif forecast_type == "alerts":
+        alerts = result.get("alerts")
+        if not alerts:
+            text = result.get(
+                "alerts_summary", "There are no active weather alerts for this area"
+            ).rstrip(".") + "."
+        else:
+            named = []
+            for alert in alerts:
+                part = f"a {alert['event']}"
+                if alert.get("until"):
+                    part += f" until {alert['until']}"
+                named.append(part)
+            verb = "is" if len(named) == 1 else "are"
+            text = f"There {verb} {_join_prose(named)}."
+
+    elif forecast_type == "sun_times":
+        sun = result.get("sun") or {}
+        bits = []
+        if sun.get("sunrise"):
+            bits.append(f"sunrise is at {sun['sunrise']}")
+        if sun.get("sunset"):
+            bits.append(f"sunset is at {sun['sunset']}")
+        if not bits:
+            return ""
+        text = _join_prose(bits)
+        text = text[0].upper() + text[1:] + "."
+        if sun.get("time_until_sunset"):
+            text += f" That's {sun['time_until_sunset']} from now."
+
+    elif forecast_type == "weekly":
+        text = _weekly_response(result.get("forecast") or [])
+
+    elif forecast_type == "tomorrow" and result.get("tomorrow"):
+        text = _day_response(result["tomorrow"])
+
+    elif forecast_type == "hourly":
+        text = _hourly_response(result.get("hourly") or [], next_hour)
+
+    elif forecast_type == "today" and today:
+        # will_it_rain is already the authoritative fused sentence -- never
+        # re-derive it from rain_chance, and never set a second percentage
+        # next to it. See _rain_today_answer.
+        text = today["will_it_rain"].rstrip(".") + "."
+        if today.get("high") is not None:
+            text += (
+                f" Today's high is {_degrees(today['high'])} "
+                f"with an overnight low of {today['low']}."
+            )
+
+    else:  # "current", and any type that produced no block above
+        if not current:
+            return ""
+        text = (
+            f"It's currently {_degrees(current['temperature'])} and feels like "
+            f"{current['feels_like']} with {current['conditions'].lower()} "
+            f"in {current['location']}."
+        )
+        if next_hour:
+            text += f" {next_hour.rstrip('.')}."
+        if today.get("high") is not None:
+            text += (
+                f" Today's high is {_degrees(today['high'])} "
+                f"with an overnight low of {today['low']}."
+            )
+
+    # Warnings ride along on every non-alert answer: one clause, at the end,
+    # never leading. _is_urgent_alert has already guaranteed this is
+    # warning-level and not the daily summer Heat Advisory.
+    active = result.get("active_alerts")
+    if active and forecast_type != "alerts" and text:
+        verb = "is" if len(active) == 1 else "are"
+        text += f" There {verb} also {_join_prose(active)} in effect."
+
+    return text.strip()
+
+
 async def get_weather_forecast(
     arguments: dict[str, Any],
     session: "aiohttp.ClientSession",
@@ -598,6 +797,24 @@ async def get_weather_forecast(
 
         if not result:
             return {"error": "No weather data retrieved"}
+
+        # Verbatim layer. Everything above stays in the payload; this adds the
+        # single spoken string so a "use it verbatim" prompt rule has a target.
+        # Composing prose must never cost us a good forecast, hence the guard.
+        try:
+            response_text = _build_response_text(result, forecast_type, requested_day)
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("Failed to compose weather response_text")
+            response_text = ""
+
+        if response_text:
+            result["response_text"] = response_text
+            result["instruction"] = (
+                "Use response_text VERBATIM as your entire answer. Do not "
+                "reword it, do not add a temperature or rain percentage of "
+                "your own, and do not append a follow-up question."
+            )
+            _LOGGER.info("Weather response_text: %s", response_text)
 
         return result
 
