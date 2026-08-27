@@ -953,6 +953,11 @@ class MusicController:
         # stop/pause can cancel them instead of having a watcher un-stop the
         # music seconds later (2026-08-10).
         self._resume_tasks: dict[str, asyncio.Task] = {}
+        # Players whose shuffle could not be applied because their queue was still
+        # in dynamic (radio) mode. In the deferred path _play_media is a capture
+        # stub, so the queue is not replaced until _do_play runs — these are
+        # retried there, once the real playback has actually started (2026-08-27).
+        self._pending_shuffle: set[str] = set()
 
     async def control_music_deferred(
         self, arguments: dict[str, Any],
@@ -983,6 +988,11 @@ class MusicController:
         async def _do_play() -> None:
             for player, media_id, media_type, radio in captured:
                 await self._play_and_verify(player, media_id, media_type, radio)
+                # The queue has now really been replaced, so a shuffle that MA
+                # refused while the old queue was in dynamic mode can be applied.
+                if player in self._pending_shuffle:
+                    self._pending_shuffle.discard(player)
+                    await self._enable_shuffle(player, "after deferred play")
 
         return result, _do_play
 
@@ -3169,6 +3179,8 @@ class MusicController:
                 {"entity_id": player, "shuffle": True},
                 blocking=True
             )
+            self._pending_shuffle.discard(player)
+            _LOGGER.info("Shuffle applied %s play on %s", when, player)
             return True
         except Exception as shuffle_err:  # noqa: BLE001
             _LOGGER.info("Shuffle not applied %s play on %s: %s", when, player, shuffle_err)
@@ -3386,11 +3398,15 @@ class MusicController:
                 # Set shuffle BEFORE playing so the playlist starts in random order.
                 # MA refuses this while the queue is still in dynamic (radio) mode, so a
                 # failure here is expected and must not abort the play.
-                shuffled = await self._enable_shuffle(player, "before")
+                self._pending_shuffle.discard(player)
+                if not await self._enable_shuffle(player, "before"):
+                    self._pending_shuffle.add(player)
                 await self._play_media(player, playlist_uri, "playlist")
-                if not shuffled:
-                    # _play_media enqueues with "replace", which drops the queue out of
-                    # dynamic mode — so the retry now succeeds and the queue shuffles.
+                if player in self._pending_shuffle:
+                    # Inline path: _play_media really ran and enqueued with "replace",
+                    # dropping the queue out of dynamic mode, so this retry succeeds.
+                    # Deferred path: _play_media was only a capture stub, so this still
+                    # fails and the player stays pending for _do_play to retry.
                     await self._enable_shuffle(player, "after")
 
             # Return the EXACT playlist title for verbatim announcement
