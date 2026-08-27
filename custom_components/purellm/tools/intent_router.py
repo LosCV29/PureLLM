@@ -207,6 +207,12 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "garage door", "mailbox",
         "front door", "back door", "side gate",
         "purifier", "diffuser",
+        # LG ThinQ washer/dryer. Singular forms subsume the plurals, and
+        # these carry both control_device (switch.washer_power) and
+        # check_device_status (the Time Remaining / Current status
+        # sensors). Without them "how much time is left on the washer"
+        # NO-MATCHed outright (2026-08-27).
+        " dryer", " washer", "washing machine", " laundry",
         "white noise", "sound machine", "noise machine",
         "ruido blanco", "máquina de ruido", "maquina de ruido",
         " tv", "television", "apple tv", "roku", "fire stick",
@@ -247,7 +253,15 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "moisture", " soil ",
         "watering", "watered",
         "need water", "needs water", "need watering",
-        "thirsty", " dry", " wet",
+        # " dry " is anchored on BOTH sides: bare " dry" also matches
+        # " dryer" and " drying", which sent every laundry question
+        # ("how much time is left on the dryer") into the plants intent —
+        # the model only ever saw check_plant_status and answered "I don't
+        # have a dryer connected" (2026-08-27). The haystack is padded, so
+        # " dry " still hits a sentence-final "are my plants dry", and the
+        # depunct pass keeps "is my plant dry?" working. Plant phrasings
+        # that use "drying" are still covered by " plant".
+        "thirsty", " dry ", " wet",
         "hydrated", "hydration",
         "overwater", "underwater", "drown",
         " dli",
