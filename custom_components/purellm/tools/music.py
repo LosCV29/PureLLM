@@ -3162,6 +3162,23 @@ class MusicController:
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Post-transfer audio verify failed: %s", err)
 
+    async def _clear_queue(self, player: str) -> None:
+        """Clear a player's queue so MA drops it out of dynamic (radio) mode.
+
+        Verified 2026-08-27 against MA 2.10: replacing the queue does NOT clear
+        the dynamic flag, but clearing it does. Only called when shuffle has
+        already been refused and the queue is about to be replaced anyway.
+        """
+        try:
+            await self._hass.services.async_call(
+                "media_player", "clear_playlist",
+                {"entity_id": player},
+                blocking=True
+            )
+            _LOGGER.info("Cleared queue on %s to leave dynamic mode", player)
+        except Exception as clear_err:  # noqa: BLE001
+            _LOGGER.info("Could not clear queue on %s: %s", player, clear_err)
+
     async def _enable_shuffle(self, player: str, when: str) -> bool:
         """Turn shuffle on for a player, tolerating a refusal from Music Assistant.
 
@@ -3400,13 +3417,18 @@ class MusicController:
                 # failure here is expected and must not abort the play.
                 self._pending_shuffle.discard(player)
                 if not await self._enable_shuffle(player, "before"):
-                    self._pending_shuffle.add(player)
+                    # MA refuses shuffle while the queue is in dynamic (radio) mode,
+                    # and a "replace" enqueue does NOT clear that flag - only
+                    # clearing the queue does (verified against MA 2.10). The queue
+                    # is replaced immediately below anyway, so clearing costs nothing.
+                    await self._clear_queue(player)
+                    if not await self._enable_shuffle(player, "after clear"):
+                        self._pending_shuffle.add(player)
                 await self._play_media(player, playlist_uri, "playlist")
                 if player in self._pending_shuffle:
-                    # Inline path: _play_media really ran and enqueued with "replace",
-                    # dropping the queue out of dynamic mode, so this retry succeeds.
-                    # Deferred path: _play_media was only a capture stub, so this still
-                    # fails and the player stays pending for _do_play to retry.
+                    # Last resort. In the deferred path _play_media was only a capture
+                    # stub, so this still fails and _do_play retries once the real
+                    # playback has started.
                     await self._enable_shuffle(player, "after")
 
             # Return the EXACT playlist title for verbatim announcement
