@@ -56,6 +56,7 @@ async def check_device_status(
                     extracted_device = extracted_device[:-len(suffix)].strip()
             break
 
+    llm_device = device
     if extracted_device and len(extracted_device) > len(device):
         _LOGGER.info("Device extraction: LLM said '%s', extracted '%s'", device, extracted_device)
         device = extracted_device
@@ -64,6 +65,21 @@ async def check_device_status(
         return {"error": "No device specified. Please specify a device name like 'front door', 'garage', etc."}
 
     entity_id, friendly_name = find_entity_by_name(hass, device)
+
+    # The patterns above are open-ended ("is the ..." runs to end-of-string), so
+    # they can swallow trailing words that belong to no entity name: "is the
+    # dryer still running" extracts "dryer still running" and matches nothing,
+    # while the model's own argument was a clean "dryer" (2026-08-27). The
+    # extraction only wins because it is LONGER, so never let it lose a lookup
+    # the model's argument would have resolved.
+    if not entity_id and llm_device and llm_device != device:
+        entity_id, friendly_name = find_entity_by_name(hass, llm_device)
+        if entity_id:
+            _LOGGER.info(
+                "Device extraction: '%s' matched nothing, falling back to the model's '%s'",
+                device, llm_device,
+            )
+            device = llm_device
 
     if not entity_id:
         return {"error": f"Could not find a device matching '{device}'. Try using the exact name as shown in Home Assistant."}

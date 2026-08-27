@@ -16,5 +16,5 @@
   "requirements": [
     "openai>=1.0.0"
   ],
-  "version": "8.6.6"
+  "version": "8.6.7"
 }
