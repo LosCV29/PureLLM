@@ -3152,6 +3152,28 @@ class MusicController:
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Post-transfer audio verify failed: %s", err)
 
+    async def _enable_shuffle(self, player: str, when: str) -> bool:
+        """Turn shuffle on for a player, tolerating a refusal from Music Assistant.
+
+        MA 2.10 raises InvalidCommand ("Cannot change shuffle while the queue is in
+        dynamic mode") whenever the player's current queue was built by radio mode.
+        That refusal says nothing about whether the playlist can be played, so it must
+        never propagate — before this was caught, it aborted _shuffle entirely and no
+        music played at all.
+
+        Returns True if shuffle was actually applied.
+        """
+        try:
+            await self._hass.services.async_call(
+                "media_player", "shuffle_set",
+                {"entity_id": player, "shuffle": True},
+                blocking=True
+            )
+            return True
+        except Exception as shuffle_err:  # noqa: BLE001
+            _LOGGER.info("Shuffle not applied %s play on %s: %s", when, player, shuffle_err)
+            return False
+
     async def _shuffle(self, query: str, room: str, target_players: list[str]) -> dict:
         """Search for Apple Music playlist by artist, genre, or holiday and play shuffled.
 
@@ -3361,13 +3383,15 @@ class MusicController:
             _LOGGER.info("Playing playlist '%s' shuffled on %s", playlist_name, target_players)
 
             for player in target_players:
-                # Set shuffle BEFORE playing so the playlist starts in random order
-                await self._hass.services.async_call(
-                    "media_player", "shuffle_set",
-                    {"entity_id": player, "shuffle": True},
-                    blocking=True
-                )
+                # Set shuffle BEFORE playing so the playlist starts in random order.
+                # MA refuses this while the queue is still in dynamic (radio) mode, so a
+                # failure here is expected and must not abort the play.
+                shuffled = await self._enable_shuffle(player, "before")
                 await self._play_media(player, playlist_uri, "playlist")
+                if not shuffled:
+                    # _play_media enqueues with "replace", which drops the queue out of
+                    # dynamic mode — so the retry now succeeds and the queue shuffles.
+                    await self._enable_shuffle(player, "after")
 
             # Return the EXACT playlist title for verbatim announcement
             # Include room name and confirm it's an official Apple Music playlist
