@@ -1676,12 +1676,38 @@ class MusicController:
         _LOGGER.info("Playing media: uri='%s', type='%s', radio=%s on %s",
                     media_id, media_type, radio, player)
 
+        # The requested item ALWAYS goes in first, with radio_mode off.
+        #
+        # radio_mode is deprecated in MA 2.10 and is NOT a "play this, then
+        # keep going" flag — queue_loader._handle_play_media REPLACES the
+        # seed with f"radio_playlist://playlist/{uri}" and drops the seed
+        # itself, so the requested song never entered the queue at all:
+        # "play Fruta Fresca by Carlos Vives" opened a "Fruta Fresca Endless
+        # Mix" on Carito / El Negrito and never played Fruta Fresca
+        # (2026-08-31, verified against the recorder history).
         await self._hass.services.async_call(
             "music_assistant", "play_media",
-            {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": radio},
+            {"media_id": media_id, "media_type": media_type, "enqueue": "replace", "radio_mode": False},
             target={"entity_id": player},
             blocking=True
         )
+
+        # Then append the endless mix BEHIND it, using the dynamic playlist
+        # URI directly rather than the deprecated flag. The song plays first
+        # and similar tracks follow it, which is the intended behaviour.
+        if radio:
+            try:
+                await self._hass.services.async_call(
+                    "music_assistant", "play_media",
+                    {"media_id": f"radio_playlist://playlist/{media_id}", "enqueue": "add"},
+                    target={"entity_id": player},
+                    blocking=True
+                )
+                _LOGGER.info("Queued radio continuation behind '%s' on %s", media_id, player)
+            except Exception as err:  # noqa: BLE001
+                # A missing continuation must never cost the user the song
+                # they actually asked for.
+                _LOGGER.warning("Could not queue radio continuation for %s: %s", media_id, err)
 
         return True
 
