@@ -744,8 +744,17 @@ async def _empty_stream():
     yield  # pragma: no cover — makes this a generator
 
 
-_CLAIMS_PLAYBACK = re.compile(
-    r"(?:playing|played|put on|queued|starting|started)", re.IGNORECASE)
+# Plain substring match on purpose: a regex here needs word-boundary escapes,
+# easy to mangle when this file is patched programmatically (v8.6.18 shipped
+# with a literal backspace byte instead of a word boundary, so the guard below
+# could never fire). A false positive is harmless — see the guard.
+_PLAYBACK_WORDS = ("playing", "played", "put on", "queued", "starting", "started")
+
+
+def _claims_playback(text: str) -> bool:
+    """True if the assistant's reply asserts that audio started."""
+    low = (text or "").lower()
+    return any(word in low for word in _PLAYBACK_WORDS)
 
 
 def _tool_ran(called_tools: set[str], name: str) -> bool:
@@ -2365,7 +2374,7 @@ class PureLLMConversationEntity(ConversationEntity):
                     if (
                         _tool_ran(called_tools, "search_music")
                         and not _tool_ran(called_tools, "control_music")
-                        and _CLAIMS_PLAYBACK.search(accumulated_content)
+                        and _claims_playback(accumulated_content)
                     ):
                         _LOGGER.warning(
                             "Fabricated playback claim after search_music with no "
