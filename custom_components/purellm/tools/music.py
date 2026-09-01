@@ -879,9 +879,6 @@ CURATED_MEDIA: list[dict] = [
         "uri": "apple_music://track/1645556889",
         "media_type": "track",
         "radio": True,
-        # The continuation seeds from the artist (see _play_media), so this
-        # must be named here or the pin would play once and stop.
-        "artist": "Connie Francis",
         "match_any": ["pretty little baby"],
     },
 ]
@@ -972,14 +969,13 @@ class MusicController:
         actions (pause, resume, volume, etc.) return play_action=None because
         they don't emit audio that should wait for TTS.
         """
-        captured: list[tuple[str, str, str, bool, str]] = []
+        captured: list[tuple[str, str, str, bool]] = []
         original = self._play_media
 
-        async def _capture(player: str, media_id: str, media_type: str, radio: bool = False,
-                           radio_artist: str = "") -> bool:
+        async def _capture(player: str, media_id: str, media_type: str, radio: bool = False) -> bool:
             # Must mirror _play_media's signature exactly — a kwarg added there
             # and not here raises TypeError and kills the whole play.
-            captured.append((player, media_id, media_type, radio, radio_artist))
+            captured.append((player, media_id, media_type, radio))
             return True
 
         self._play_media = _capture  # type: ignore[method-assign]
@@ -992,8 +988,8 @@ class MusicController:
             return result, None
 
         async def _do_play() -> None:
-            for player, media_id, media_type, radio, radio_artist in captured:
-                await self._play_and_verify(player, media_id, media_type, radio, radio_artist)
+            for player, media_id, media_type, radio in captured:
+                await self._play_and_verify(player, media_id, media_type, radio)
                 # The queue has now really been replaced, so a shuffle that MA
                 # refused while the old queue was in dynamic mode can be applied.
                 if player in self._pending_shuffle:
@@ -1003,7 +999,7 @@ class MusicController:
         return result, _do_play
 
     async def _play_and_verify(
-        self, player: str, media_id: str, media_type: str, radio: bool, radio_artist: str = "",
+        self, player: str, media_id: str, media_type: str, radio: bool,
     ) -> None:
         """Play with outcome verification and one self-heal retry.
 
@@ -1026,7 +1022,7 @@ class MusicController:
                 await self._run_ensure_snapclient()
                 await self._wait_snapclient_connected()
             play_ts = dt_util.now()
-            await self._play_media(player, media_id, media_type, radio=radio, radio_artist=radio_artist)
+            await self._play_media(player, media_id, media_type, radio=radio)
             ok = await self._wait_for_playback_start(player, timeout=12.0)
             if ok and player == _SNAPCLIENT_PLAYER:
                 ok = await self._verify_snapclient_audio(player, play_ts)
@@ -1053,7 +1049,7 @@ class MusicController:
             await self._cold_restart_snapclient()
         try:
             play_ts = dt_util.now()
-            await self._play_media(player, media_id, media_type, radio=radio, radio_artist=radio_artist)
+            await self._play_media(player, media_id, media_type, radio=radio)
             ok = await self._wait_for_playback_start(player, timeout=12.0)
             if ok and player == _SNAPCLIENT_PLAYER:
                 ok = await self._verify_snapclient_audio(player, play_ts)
@@ -1356,7 +1352,7 @@ class MusicController:
                 # Single tracks play in radio mode so similar music follows
                 # instead of stopping after one song.
                 await self._play_on_players(target_players, media_uri, uri_type,
-                                            radio=(uri_type == "track"), radio_artist=artist or "")
+                                            radio=(uri_type == "track"))
                 _LOGGER.info("MUSIC: Direct play of '%s' (uri=%s, type=%s)", label, media_uri, uri_type)
                 return {"status": "playing", "response_text": f"Playing {label}{room_suffix}"}
 
@@ -1369,8 +1365,7 @@ class MusicController:
                         return {"error": f"Which room? Available: {', '.join(self._players.keys())}"}
                     await self._play_on_players(
                         target_players, curated["uri"], curated["media_type"],
-                        radio=curated.get("radio", False),
-                    radio_artist=curated.get("artist", ""))
+                        radio=curated.get("radio", False))
                     _LOGGER.info("MUSIC: Curated shortcut '%s' → %s (radio=%s)",
                                  curated["id"], curated["uri"], curated.get("radio", False))
                     return {"status": "playing", "response_text": f"Playing {curated['name']} in the {room}"}
@@ -1668,7 +1663,6 @@ class MusicController:
         media_id: str,
         media_type: str,
         radio: bool = False,
-        radio_artist: str = "",
     ) -> bool:
         """Play media via Music Assistant.
 
@@ -1678,8 +1672,6 @@ class MusicController:
             media_type: The type of media (track, album, artist, playlist)
             radio: After the requested media, keep playing more of the same
                 artist instead of stopping after one song
-            radio_artist: Artist the continuation mix is seeded from. Required
-                whenever radio is True — without it the item plays alone.
 
         Returns:
             True if command was sent successfully
@@ -1736,11 +1728,11 @@ class MusicController:
         # Enqueuing the artist itself resolves to "artist <name> (all_tracks)",
         # which is always populated and always actually that artist.
         if radio:
-            artist_uri = await self._resolve_artist_uri(radio_artist)
+            artist_uri = await self._queue_current_artist_uri(player)
             if not artist_uri:
                 _LOGGER.warning(
-                    "No artist URI for '%s' — '%s' will play without a continuation",
-                    radio_artist, media_id)
+                    "No artist on the queued item — '%s' will play without a continuation",
+                    media_id)
             else:
                 try:
                     await self._hass.services.async_call(
@@ -1749,7 +1741,7 @@ class MusicController:
                         target={"entity_id": player},
                         blocking=True
                     )
-                    _LOGGER.info("Queued %s catalog behind '%s' on %s", radio_artist, media_id, player)
+                    _LOGGER.info("Queued %s behind '%s' on %s", artist_uri, media_id, player)
                 except Exception as err:  # noqa: BLE001
                     # A missing continuation must never cost the user the song
                     # they actually asked for.
@@ -1758,7 +1750,7 @@ class MusicController:
         return True
 
     async def _play_on_players(self, target_players: list[str], uri: str, media_type: str,
-                               radio: bool = False, radio_artist: str = "") -> None:
+                               radio: bool = False) -> None:
         """Play media on target players."""
         await self._ensure_players_available(target_players)
         for player in target_players:
@@ -1775,7 +1767,7 @@ class MusicController:
                     {"entity_id": player, "shuffle": False},
                     blocking=True
                 )
-            await self._play_media(player, uri, media_type, radio=radio, radio_artist=radio_artist)
+            await self._play_media(player, uri, media_type, radio=radio)
 
     async def _call_media_service(self, entity_id: str, service: str) -> None:
         """Call a media_player service using area targeting when available."""
@@ -2828,7 +2820,7 @@ class MusicController:
             # Single tracks play in radio mode so similar music follows
             # instead of stopping after one song.
             await self._play_on_players(target_players, found_uri, media_type,
-                                        radio=(media_type == "track"), radio_artist=found_artist or artist or "")
+                                        radio=(media_type == "track"))
 
             return {"status": "playing", "response_text": f"Playing {display_name} in the {room}"}
 
@@ -3246,18 +3238,25 @@ class MusicController:
         except Exception as clear_err:  # noqa: BLE001
             _LOGGER.info("Could not clear queue on %s: %s", player, clear_err)
 
-    async def _resolve_artist_uri(self, artist: str) -> str:
-        """Resolve an artist name to its Music Assistant URI, or "" if unknown."""
-        if not artist:
-            return ""
+    async def _queue_current_artist_uri(self, player: str) -> str:
+        """Return the artist URI of whatever is currently first in the queue.
+
+        Read from MA itself rather than from the caller: the direct-URI play
+        path gets a media_uri with no artist name attached (the model supplies
+        only the URI), so anything depending on a passed-in artist silently
+        loses the continuation. The queue always knows what it just accepted.
+        """
         try:
-            ma_entries = self._hass.config_entries.async_entries("music_assistant")
-            if not ma_entries:
-                return ""
-            match = await self._search_ma(ma_entries[0].entry_id, artist, "", "artist")
-            return match.get("uri", "") if match else ""
+            resp = await self._hass.services.async_call(
+                "music_assistant", "get_queue",
+                {}, target={"entity_id": player},
+                blocking=True, return_response=True,
+            )
+            queue = (resp or {}).get(player) or {}
+            artists = ((queue.get("current_item") or {}).get("media_item") or {}).get("artists") or []
+            return artists[0].get("uri", "") if artists else ""
         except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("Could not resolve artist URI for '%s': %s", artist, err)
+            _LOGGER.warning("Could not read current artist from %s queue: %s", player, err)
             return ""
 
     async def _disable_repeat(self, player: str) -> bool:
