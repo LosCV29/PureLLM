@@ -969,11 +969,14 @@ class MusicController:
         actions (pause, resume, volume, etc.) return play_action=None because
         they don't emit audio that should wait for TTS.
         """
-        captured: list[tuple[str, str, str, bool]] = []
+        captured: list[tuple[str, str, str, bool, str]] = []
         original = self._play_media
 
-        async def _capture(player: str, media_id: str, media_type: str, radio: bool = False) -> bool:
-            captured.append((player, media_id, media_type, radio))
+        async def _capture(player: str, media_id: str, media_type: str, radio: bool = False,
+                           radio_artist: str = "") -> bool:
+            # Must mirror _play_media's signature exactly — a kwarg added there
+            # and not here raises TypeError and kills the whole play.
+            captured.append((player, media_id, media_type, radio, radio_artist))
             return True
 
         self._play_media = _capture  # type: ignore[method-assign]
@@ -986,8 +989,8 @@ class MusicController:
             return result, None
 
         async def _do_play() -> None:
-            for player, media_id, media_type, radio in captured:
-                await self._play_and_verify(player, media_id, media_type, radio)
+            for player, media_id, media_type, radio, radio_artist in captured:
+                await self._play_and_verify(player, media_id, media_type, radio, radio_artist)
                 # The queue has now really been replaced, so a shuffle that MA
                 # refused while the old queue was in dynamic mode can be applied.
                 if player in self._pending_shuffle:
@@ -997,7 +1000,7 @@ class MusicController:
         return result, _do_play
 
     async def _play_and_verify(
-        self, player: str, media_id: str, media_type: str, radio: bool,
+        self, player: str, media_id: str, media_type: str, radio: bool, radio_artist: str = "",
     ) -> None:
         """Play with outcome verification and one self-heal retry.
 
@@ -1020,7 +1023,7 @@ class MusicController:
                 await self._run_ensure_snapclient()
                 await self._wait_snapclient_connected()
             play_ts = dt_util.now()
-            await self._play_media(player, media_id, media_type, radio=radio)
+            await self._play_media(player, media_id, media_type, radio=radio, radio_artist=radio_artist)
             ok = await self._wait_for_playback_start(player, timeout=12.0)
             if ok and player == _SNAPCLIENT_PLAYER:
                 ok = await self._verify_snapclient_audio(player, play_ts)
@@ -1047,7 +1050,7 @@ class MusicController:
             await self._cold_restart_snapclient()
         try:
             play_ts = dt_util.now()
-            await self._play_media(player, media_id, media_type, radio=radio)
+            await self._play_media(player, media_id, media_type, radio=radio, radio_artist=radio_artist)
             ok = await self._wait_for_playback_start(player, timeout=12.0)
             if ok and player == _SNAPCLIENT_PLAYER:
                 ok = await self._verify_snapclient_audio(player, play_ts)
