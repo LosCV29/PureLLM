@@ -879,6 +879,9 @@ CURATED_MEDIA: list[dict] = [
         "uri": "apple_music://track/1645556889",
         "media_type": "track",
         "radio": True,
+        # The continuation seeds from the artist (see _play_media), so this
+        # must be named here or the pin would play once and stop.
+        "artist": "Connie Francis",
         "match_any": ["pretty little baby"],
     },
 ]
@@ -1366,7 +1369,8 @@ class MusicController:
                         return {"error": f"Which room? Available: {', '.join(self._players.keys())}"}
                     await self._play_on_players(
                         target_players, curated["uri"], curated["media_type"],
-                        radio=curated.get("radio", False))
+                        radio=curated.get("radio", False),
+                    radio_artist=curated.get("artist", ""))
                     _LOGGER.info("MUSIC: Curated shortcut '%s' → %s (radio=%s)",
                                  curated["id"], curated["uri"], curated.get("radio", False))
                     return {"status": "playing", "response_text": f"Playing {curated['name']} in the {room}"}
@@ -1674,8 +1678,8 @@ class MusicController:
             media_type: The type of media (track, album, artist, playlist)
             radio: Enable MA radio mode — after the requested media, keep
                 playing dynamically-picked similar tracks
-            radio_artist: Artist name to fall back to when the track's own
-                endless mix comes back empty
+            radio_artist: Artist the continuation mix is seeded from. Required
+                whenever radio is True — without it the item plays alone.
 
         Returns:
             True if command was sent successfully
@@ -1692,6 +1696,12 @@ class MusicController:
         # repeat" loop reproduced on the kitchen speaker 2026-09-01 with
         # repeat: off the whole time.
         await self._clear_queue(player)
+
+        # With the queue now empty and non-dynamic, MA accepts repeat_set, so
+        # a stale "repeat one" can never survive into the new queue. This is
+        # ordered AFTER the clear on purpose: MA refuses repeat changes while
+        # a queue is dynamic, exactly as it refuses shuffle.
+        await self._disable_repeat(player)
 
         # The requested item ALWAYS goes in first, with radio_mode off.
         #
@@ -1712,24 +1722,33 @@ class MusicController:
         # Then append the endless mix BEHIND it, using the dynamic playlist
         # URI directly rather than the deprecated flag. The song plays first
         # and similar tracks follow it, which is the intended behaviour.
+        #
+        # The mix is seeded from the ARTIST, never from the track. A track's own
+        # "<title> Endless Mix" is frequently empty on Apple Music (interludes,
+        # intros, obscure cuts): MA returns "There is nothing to play here" and
+        # the room is left with a single-item queue. The artist's mix is always
+        # populated, because the artist was just matched in order to find the
+        # song at all - so this is one path that works every time rather than a
+        # track attempt with an artist backup.
         if radio:
-            try:
-                await self._hass.services.async_call(
-                    "music_assistant", "play_media",
-                    {"media_id": f"radio_playlist://playlist/{media_id}", "enqueue": "add"},
-                    target={"entity_id": player},
-                    blocking=True
-                )
-                _LOGGER.info("Queued radio continuation behind '%s' on %s", media_id, player)
-            except Exception as err:  # noqa: BLE001
-                # A missing continuation must never cost the user the song
-                # they actually asked for.
-                _LOGGER.warning("Could not queue radio continuation for %s: %s", media_id, err)
-                # Some tracks have an endless mix with no playable items at all
-                # ("There is nothing to play here"). Leaving it there gives the
-                # room a one-item queue, so fall back to the artist so music
-                # actually keeps going after the song.
-                await self._queue_artist_fallback(player, radio_artist)
+            artist_uri = await self._resolve_artist_uri(radio_artist)
+            if not artist_uri:
+                _LOGGER.warning(
+                    "No artist URI for '%s' — '%s' will play without a continuation",
+                    radio_artist, media_id)
+            else:
+                try:
+                    await self._hass.services.async_call(
+                        "music_assistant", "play_media",
+                        {"media_id": f"radio_playlist://playlist/{artist_uri}", "enqueue": "add"},
+                        target={"entity_id": player},
+                        blocking=True
+                    )
+                    _LOGGER.info("Queued %s radio behind '%s' on %s", radio_artist, media_id, player)
+                except Exception as err:  # noqa: BLE001
+                    # A missing continuation must never cost the user the song
+                    # they actually asked for.
+                    _LOGGER.warning("Could not queue radio continuation for %s: %s", media_id, err)
 
         return True
 
@@ -1738,15 +1757,9 @@ class MusicController:
         """Play media on target players."""
         await self._ensure_players_available(target_players)
         for player in target_players:
-            # Clear any lingering repeat mode so a single track doesn't loop
-            # forever. MA 2.10 refuses this while the queue is in dynamic
-            # (radio) mode - the SAME guard that blocks shuffle - so a plain
-            # attempt silently does nothing on exactly the queues most likely
-            # to be stuck repeating. Clear the queue and retry, as _shuffle
-            # does; the queue is replaced immediately below anyway.
-            if not await self._disable_repeat(player, "before"):
-                await self._clear_queue(player)
-                await self._disable_repeat(player, "after clear")
+            # Repeat is cleared inside _play_media, immediately after the queue
+            # is cleared - doing it here would run against the OLD queue (and,
+            # in the deferred path, long before playback actually starts).
 
             # Albums must start at track 1 — clear any inherited shuffle state
             # before we kick playback so the player doesn't open the album
@@ -3228,37 +3241,21 @@ class MusicController:
         except Exception as clear_err:  # noqa: BLE001
             _LOGGER.info("Could not clear queue on %s: %s", player, clear_err)
 
-    async def _queue_artist_fallback(self, player: str, artist: str) -> None:
-        """Append an artist behind the current track when its endless mix is empty.
-
-        MA resolves radio_playlist://playlist/<track_uri> to a "<title> Endless
-        Mix". For some tracks that mix contains nothing playable and the add
-        fails outright, which would leave the room with a single-item queue.
-        Falling back to the artist keeps the "song first, then more like it"
-        behaviour Carlos actually asked for.
-        """
+    async def _resolve_artist_uri(self, artist: str) -> str:
+        """Resolve an artist name to its Music Assistant URI, or "" if unknown."""
         if not artist:
-            _LOGGER.info("No artist to fall back to for %s; queue holds one track", player)
-            return
+            return ""
         try:
             ma_entries = self._hass.config_entries.async_entries("music_assistant")
             if not ma_entries:
-                return
+                return ""
             match = await self._search_ma(ma_entries[0].entry_id, artist, "", "artist")
-            if not match or not match.get("uri"):
-                _LOGGER.info("Artist fallback found no match for '%s'", artist)
-                return
-            await self._hass.services.async_call(
-                "music_assistant", "play_media",
-                {"media_id": match["uri"], "media_type": "artist", "enqueue": "add"},
-                target={"entity_id": player},
-                blocking=True
-            )
-            _LOGGER.info("Queued artist fallback '%s' behind current track on %s", artist, player)
+            return match.get("uri", "") if match else ""
         except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("Artist fallback failed for '%s' on %s: %s", artist, player, err)
+            _LOGGER.warning("Could not resolve artist URI for '%s': %s", artist, err)
+            return ""
 
-    async def _disable_repeat(self, player: str, when: str) -> bool:
+    async def _disable_repeat(self, player: str) -> bool:
         """Turn repeat off for a player, tolerating a refusal from Music Assistant.
 
         MA 2.10 raises InvalidCommand ("Cannot change repeat while the queue is in
@@ -3276,10 +3273,12 @@ class MusicController:
                 {"entity_id": player, "repeat": "off"},
                 blocking=True,
             )
-            _LOGGER.info("Repeat cleared %s play on %s", when, player)
+            _LOGGER.debug("Repeat cleared on %s", player)
             return True
         except Exception as err:  # noqa: BLE001
-            _LOGGER.warning("Repeat not cleared %s play on %s: %s", when, player, err)
+            # Should not happen: the queue was just cleared, so it is not in
+            # dynamic mode and MA has nothing to refuse. Loud on purpose.
+            _LOGGER.warning("Repeat not cleared on %s: %s", player, err)
             return False
 
     async def _enable_shuffle(self, player: str, when: str) -> bool:
