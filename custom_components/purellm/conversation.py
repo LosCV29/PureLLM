@@ -744,6 +744,15 @@ async def _empty_stream():
     yield  # pragma: no cover — makes this a generator
 
 
+_CLAIMS_PLAYBACK = re.compile(
+    r"(?:playing|played|put on|queued|starting|started)", re.IGNORECASE)
+
+
+def _tool_ran(called_tools: set[str], name: str) -> bool:
+    """True if `name` ran this turn (called_tools holds "name:args" keys)."""
+    return any(k.split(":", 1)[0] == name for k in called_tools)
+
+
 def _parse_leaked_xml_tool_calls(content: str) -> list[dict]:
     """Parse tool calls that leaked into message content as raw markup.
 
@@ -2038,6 +2047,7 @@ class PureLLMConversationEntity(ConversationEntity):
 
         called_tools: set[str] = set()
         last_tool_speech: str | None = None
+        last_search_label = ""
         # Music-search give-up tracking. A miss used to send the model hunting
         # through spelling variants until the iteration cap, ending the turn on
         # "Sorry, the LLM failed to respond" instead of "I couldn't find it".
@@ -2263,6 +2273,13 @@ class PureLLMConversationEntity(ConversationEntity):
 
                         _LOGGER.info("Tool call: %s(%s)", tool_name, arguments)
 
+                        if tool_name == "search_music":
+                            _q = (arguments.get("query") or "").strip()
+                            _a = (arguments.get("artist") or "").strip()
+                            last_search_label = (
+                                f"{_q} by {_a}" if _q and _a else (_q or _a)
+                            )
+
                         # Deterministic loop stop: after two searches came back
                         # empty, further catalog searches this turn cannot
                         # succeed — the model is just permuting the query. Skip
@@ -2336,6 +2353,28 @@ class PureLLMConversationEntity(ConversationEntity):
 
                 # No tool calls - yield content and we're done
                 if accumulated_content:
+                    # search_music is READ-ONLY: it returns candidates and the
+                    # model is meant to follow up with control_music. When the
+                    # catalog has no real match it gets a list of near-misses,
+                    # picks one, and SAYS it is playing without ever calling
+                    # control_music — nothing plays and only the silence tells
+                    # you ("play wele wele by angelique kidjo" answered
+                    # 'Playing "We We"', 2026-09-01). If a catalog search ran
+                    # this turn and no play did, a playback claim is FALSE, so
+                    # say what actually happened instead of speaking it.
+                    if (
+                        _tool_ran(called_tools, "search_music")
+                        and not _tool_ran(called_tools, "control_music")
+                        and _CLAIMS_PLAYBACK.search(accumulated_content)
+                    ):
+                        _LOGGER.warning(
+                            "Fabricated playback claim after search_music with no "
+                            "control_music — replacing: %s", accumulated_content[:120],
+                        )
+                        label = f" {last_search_label}" if last_search_label else " that"
+                        yield {"content": f"I couldn't find{label} in the music catalog."}
+                        return
+
                     # A turn where NO tool ran has nothing factual to report —
                     # clamp to the conversational cap (see _CONVERSATIONAL_MAX_*).
                     yield {"content": _sanitize_llm_response(
