@@ -1676,8 +1676,8 @@ class MusicController:
             player: The media_player entity_id
             media_id: The URI/ID of the media to play
             media_type: The type of media (track, album, artist, playlist)
-            radio: Enable MA radio mode — after the requested media, keep
-                playing dynamically-picked similar tracks
+            radio: After the requested media, keep playing more of the same
+                artist instead of stopping after one song
             radio_artist: Artist the continuation mix is seeded from. Required
                 whenever radio is True — without it the item plays alone.
 
@@ -1719,17 +1719,22 @@ class MusicController:
             blocking=True
         )
 
-        # Then append the endless mix BEHIND it, using the dynamic playlist
-        # URI directly rather than the deprecated flag. The song plays first
-        # and similar tracks follow it, which is the intended behaviour.
+        # Then append the ARTIST'S OWN CATALOG behind it, so the song plays
+        # first and more of that artist follows.
         #
-        # The mix is seeded from the ARTIST, never from the track. A track's own
-        # "<title> Endless Mix" is frequently empty on Apple Music (interludes,
-        # intros, obscure cuts): MA returns "There is nothing to play here" and
-        # the room is left with a single-item queue. The artist's mix is always
-        # populated, because the artist was just matched in order to find the
-        # song at all - so this is one path that works every time rather than a
-        # track attempt with an artist backup.
+        # Deliberately NOT "radio_playlist://playlist/<uri>". That URI is what
+        # puts the queue into MA's dynamic mode, whose "similar tracks" engine
+        # is the source of two separate failures:
+        #   - seeded from a TRACK, the "<title> Endless Mix" is frequently empty
+        #     on Apple Music (intros, interludes, obscure cuts). MA answers "No
+        #     playable items found" and then re-resolves that same empty mix
+        #     every time the queue drains, replaying the seed forever — the
+        #     same-song-on-repeat loop, with repeat: off throughout.
+        #   - seeded from an ARTIST, it is populated but drifts hard off-genre:
+        #     "Good Morning" by John Legend was followed by MSTRKRFT electro
+        #     (2026-09-01, heard in the kitchen).
+        # Enqueuing the artist itself resolves to "artist <name> (all_tracks)",
+        # which is always populated and always actually that artist.
         if radio:
             artist_uri = await self._resolve_artist_uri(radio_artist)
             if not artist_uri:
@@ -1740,15 +1745,15 @@ class MusicController:
                 try:
                     await self._hass.services.async_call(
                         "music_assistant", "play_media",
-                        {"media_id": f"radio_playlist://playlist/{artist_uri}", "enqueue": "add"},
+                        {"media_id": artist_uri, "media_type": "artist", "enqueue": "add"},
                         target={"entity_id": player},
                         blocking=True
                     )
-                    _LOGGER.info("Queued %s radio behind '%s' on %s", radio_artist, media_id, player)
+                    _LOGGER.info("Queued %s catalog behind '%s' on %s", radio_artist, media_id, player)
                 except Exception as err:  # noqa: BLE001
                     # A missing continuation must never cost the user the song
                     # they actually asked for.
-                    _LOGGER.warning("Could not queue radio continuation for %s: %s", media_id, err)
+                    _LOGGER.warning("Could not queue continuation for %s: %s", media_id, err)
 
         return True
 
