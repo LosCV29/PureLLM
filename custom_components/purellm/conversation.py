@@ -449,12 +449,26 @@ def _sanitize_llm_response(text: str, *, conversational: bool = False) -> str:
     return text
 
 
+# 2026-09-03 (v8.6.20): the house TTS is Qwen3-TTS, which reads digits, times,
+# dates, money and percentages natively in BOTH English and Spanish, and the
+# assistant now answers in Spanglish. Spelling numbers out as ENGLISH words
+# ("Son las 3:59" -> "Son las three fifty nine") breaks every Spanish reply and
+# is unnecessary for English ones. When True, _normalize_for_tts keeps digits
+# and only handles symbols the engine garbles (° F, &, @, #, ranges, signs).
+# Flip to False to restore the full spell-out path for a digit-blind engine
+# (Pocket TTS, Piper, Chatterbox).
+_TTS_READS_NUMBERS = True
+
+
 def _normalize_for_tts(text: str) -> str:
     """Convert text to a form spoken correctly by general-purpose TTS engines.
 
     TTS engines (Chatterbox, Piper, etc.) don't normalize digits, times, currency,
     or punctuation — they read the raw token stream. This function rewrites those
     tokens into their spoken English equivalents so the audio sounds natural.
+
+    With _TTS_READS_NUMBERS set (Qwen3-TTS), digits are left for the engine and
+    only symbols are rewritten — language-neutral, so Spanish replies survive.
 
     Order matters: structured patterns (times, phones, money) are handled before
     generic numbers so we don't double-convert. Hyphens are disambiguated by
@@ -472,6 +486,26 @@ def _normalize_for_tts(text: str) -> str:
     text = _RE_MARKDOWN_BOLD.sub(r"\1", text)
     text = _RE_MARKDOWN_ITALIC.sub(r"\1", text)
     text = _RE_MARKDOWN_HEADER.sub("", text)
+
+    if _TTS_READS_NUMBERS:
+        # Digit-preserving, language-neutral path. Fahrenheit is still never
+        # spoken ("72°F" -> "72 degrees"); C/K stay meaningful.
+        def _deg_keep(m: re.Match) -> str:
+            scale = {"C": "Celsius", "K": "Kelvin"}.get(m.group(2), "")
+            return m.group(1) + " degrees" + (" " + scale if scale else "")
+
+        text = _RE_DEGREES.sub(_deg_keep, text)
+        text = _RE_DEGREES_FAHRENHEIT.sub("degrees", text)
+        text = _RE_FAHRENHEIT.sub("degrees", text)
+        text = _RE_PERCENT.sub(lambda m: m.group(1) + " percent", text)
+        text = _RE_HASH_NUMBER.sub(lambda m: "number " + m.group(1), text)
+        text = _RE_AMPERSAND.sub(" and ", text)
+        text = _RE_AT_SIGN.sub(" at ", text)
+        text = _RE_RANGE.sub(lambda m: f"{m.group(1)} to {m.group(2)}", text)
+        text = _RE_SIGNED_NUMBER.sub(
+            lambda m: ("minus " if m.group(1) in "-–—−" else "plus ") + m.group(2), text
+        )
+        return _RE_MULTI_SPACE.sub(" ", text).strip()
 
     # 2. Phone numbers (before generic number handling).
     def _phone_repl(m: re.Match) -> str:
