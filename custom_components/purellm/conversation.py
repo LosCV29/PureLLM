@@ -2782,10 +2782,26 @@ class PureLLMConversationEntity(ConversationEntity):
                                 "Provide an IANA name like 'Europe/London'."}
                     tz = resolved
                 now = datetime.now(tz)
+                # v8.6.21: no zero-padding ("04:30 PM", "September 03") — the model
+                # copied those literally into Spanish replies and the TTS read the
+                # zeros aloud. Give it clean parts plus a day-period so it can say
+                # "4:30 de la tarde" instead of "04:30 PM".
+                hour12 = now.strftime("%I").lstrip("0") or "12"
+                day_period = (
+                    "morning" if now.hour < 12 else
+                    "afternoon" if now.hour < 18 else
+                    "evening" if now.hour < 21 else "night"
+                )
                 return {
-                    "date": now.strftime("%A, %B %d, %Y"),
-                    "time": now.strftime("%I:%M %p"),
+                    "date": f"{now:%A}, {now:%B} {now.day}, {now.year}",
+                    "time": f"{hour12}:{now:%M} {now:%p}",
+                    "time_24h": now.strftime("%H:%M"),
+                    "day_period": day_period,
                     "timezone": tz_label,
+                    "speak_hint": (
+                        "Say the time naturally in the user's language. In Spanish use "
+                        "'de la mañana/tarde/noche' instead of AM/PM and never read leading zeros."
+                    ),
                 }
 
             # Sports tools (all use same pattern)
