@@ -2084,9 +2084,37 @@ class PureLLMConversationEntity(ConversationEntity):
             {"role": "system", "content": system_prompt},
         ]
 
-        if history:
-            messages.extend(history)
-        messages.append({"role": "user", "content": user_text})
+        # 2026-09-06 v8.6.24: on ACTION turns (force_tool_call=True) fold the
+        # prior exchange into the user message instead of replaying it as
+        # role messages. Replayed as messages, "Added tomatoes to the shopping
+        # list. Anything else?" is a text-only assistant turn the model
+        # imitates: under tool_choice="required" Ornith-1.5 first writes the
+        # spoken confirmation, then never reaches the tool call and repeats
+        # the sentence until max_tokens (sanitizer: "50 repeated sentences",
+        # no `Tool call:` line, item never added). Measured against the live
+        # brain: history-as-messages -> 64 tokens of preamble before the call
+        # on a short prompt and a 500-token loop on the real one; folded ->
+        # immediate clean manage_list call 6/6, list_name carried over.
+        # Conversational turns keep normal message history.
+        folded = (
+            force_tool_call
+            and history
+            and all(isinstance(m.get("content"), str) for m in history)
+        )
+        if folded:
+            ctx_parts = []
+            for m in history:
+                who = "the user said" if m.get("role") == "user" else "you replied"
+                ctx_parts.append(f'{who} "{m["content"].strip()}"')
+            ctx = " and ".join(ctx_parts)
+            messages.append({
+                "role": "user",
+                "content": "[Context: " + ctx + "]\nThe user now says: " + user_text,
+            })
+        else:
+            if history:
+                messages.extend(history)
+            messages.append({"role": "user", "content": user_text})
 
         called_tools: set[str] = set()
         last_tool_speech: str | None = None
