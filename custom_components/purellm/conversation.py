@@ -1829,7 +1829,7 @@ class PureLLMConversationEntity(ConversationEntity):
             if self.provider == PROVIDER_LM_STUDIO:
                 stream = self._stream_openai_compatible(
                     user_text, tools, system_prompt, self.max_tokens, history,
-                    force_tool_call=bool(intents),
+                    force_tool_call=bool(intents or inherited_intents),
                 )
 
                 final_response = ""
