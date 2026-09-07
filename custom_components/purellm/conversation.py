@@ -731,6 +731,7 @@ from .tools import lists as lists_tool
 from .tools import sofabaton as sofabaton_tool
 from .tools import search as search_tool
 from .tools import plants as plants_tool
+from .utils.history import fold_history_into_user
 
 if TYPE_CHECKING:
     import aiohttp
@@ -2096,21 +2097,9 @@ class PureLLMConversationEntity(ConversationEntity):
         # on a short prompt and a 500-token loop on the real one; folded ->
         # immediate clean manage_list call 6/6, list_name carried over.
         # Conversational turns keep normal message history.
-        folded = (
-            force_tool_call
-            and history
-            and all(isinstance(m.get("content"), str) for m in history)
-        )
-        if folded:
-            ctx_parts = []
-            for m in history:
-                who = "the user said" if m.get("role") == "user" else "you replied"
-                ctx_parts.append(f'{who} "{m["content"].strip()}"')
-            ctx = " and ".join(ctx_parts)
-            messages.append({
-                "role": "user",
-                "content": "[Context: " + ctx + "]\nThe user now says: " + user_text,
-            })
+        folded_user = fold_history_into_user(history, user_text) if force_tool_call else None
+        if folded_user is not None:
+            messages.append({"role": "user", "content": folded_user})
         else:
             if history:
                 messages.extend(history)
