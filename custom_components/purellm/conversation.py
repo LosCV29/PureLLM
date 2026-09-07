@@ -2133,18 +2133,6 @@ class PureLLMConversationEntity(ConversationEntity):
                 "max_tokens": max_tokens,
                 "top_p": self.top_p,
                 "stream": True,
-                # 2026-09-06 v8.6.23: never reuse a cached prompt prefix.
-                # llama.cpp restores the recurrent state of hybrid models
-                # (Ornith-1.5 / Qwen3.5-MoE) from context checkpoints on a
-                # partial-prefix hit, and that restore intermittently goes
-                # bad: the brain then loops the tool schema as text for
-                # max_tokens (twice on 2026-09-06, both shopping-list adds,
-                # survived an HA restart because the bad state lived in the
-                # server's prompt cache). Full prefill every turn removes the
-                # mechanism for ~0.9 s of extra TTFT on a ~4.7K-token prompt.
-                # Scoped to PureLLM: Hermes/Frigate keep caching. Servers
-                # that don't know the field (LM Studio, vLLM) ignore it.
-                "extra_body": {"cache_prompt": False},
             }
             if tools:
                 kwargs["tools"] = tools
