@@ -331,12 +331,13 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
                 "skip_previous ← 'previous track', 'previous song', 'go back', 'go back a song', 'skip back', 'bring it back', 'bring the track back', 'bring the song back', 'last song', 'back one'. "
                 "skip_next ← 'next', 'next track', 'next song', 'skip', 'skip ahead', 'skip this', 'forward'. "
                 "restart_track ← 'restart', 'restart the song', 'play it again', 'play that again', 'replay', 'replay this', 'from the top', 'start over', 'rewind'. "
-                "pause ← 'pause', 'pause the music', 'hold on', 'hold the music' — but 'pause/resume/stop the <device name>' (Shield, TV, Apple TV, etc.) is a DEVICE command → control_device, not control_music. "
+                "pause ← 'pause', 'pause the music', 'hold on', 'hold the music'. "
                 "resume ← 'resume', 'unpause', 'keep playing', 'continue the music', 'play it' (when something is paused). "
+                "NEVER for a named TV/video device: 'pause/resume/stop/play the Shield', 'the TV', 'the Apple TV' → control_tv, not control_music. "
                 "stop ← 'stop', 'stop the music', 'kill it', 'turn it off', 'shut the music off'. "
                 "what_playing ← 'what's playing', 'what song is this', 'who is this', 'name this song'. "
                 "transfer ← 'move it to X', 'play this in X instead', 'send it to X'. "
-                "room is OPTIONAL — default is the speaker that heard the request; pass room ONLY when the user explicitly names a different one (e.g. 'in the master bathroom', 'on the Shield'). "
+                "room is OPTIONAL — default is the speaker that heard the request; pass room ONLY when the user explicitly names a different one (e.g. 'in the master bathroom', 'on the kitchen speaker'). "
                 "For specific devices use control_device. "
                 "Curated kids playlists: pass the phrase as query — 'lullabies' (baby lullabies) and 'children's classical'/'Baby Einstein' (soothing classical for babies)."
             ),
@@ -427,6 +428,28 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
             "fan_speed": {"type": "string", "enum": ["low", "medium", "high", "auto"]}
         },
         ["action", "device"]
+    ))
+
+    # Dedicated TV/video transport tool — small and single-purpose so the brain
+    # stops sending "pause/resume the Shield" to control_music (2026-09-09: the
+    # prompt rule AND the control_music description both said "named device →
+    # control_device" and gemma still picked control_music, which only knows
+    # Music Assistant players and answered "already paused" with a Netflix
+    # stream running). Executes through control_device with domain pinned to
+    # media_player; no fallback, no re-routing.
+    tools.append(_tool(
+        "control_tv",
+        "Playback control of a NAMED TV / video device: 'pause the Shield', "
+        "'resume the Shield', 'play the TV', 'stop the Apple TV', 'next episode on "
+        "the Shield', 'mute the TV'. Use whenever pause/resume/play/stop/next/"
+        "previous/mute names a TV-like device (Shield, TV, Apple TV, Roku) — that "
+        "is video on the screen, NOT music. Do NOT use for music, 'pause the "
+        "music', or a bare 'pause' (those are control_music).",
+        {
+            "action": {"type": "string", "enum": ["pause", "resume", "play", "stop", "next", "previous", "mute", "unmute", "volume_up", "volume_down", "turn_on", "turn_off"]},
+            "device": {"type": "string", "description": "The TV device as the user named it, e.g. 'Shield', 'TV', 'Apple TV'."},
+        },
+        ["action", "device"],
     ))
 
     # Dedicated speaker/voice volume tool — small and single-purpose so weak

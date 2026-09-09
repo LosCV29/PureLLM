@@ -2855,6 +2855,12 @@ class PureLLMConversationEntity(ConversationEntity):
                     arguments, self.hass, self._current_user_query
                 ),
                 "control_device": lambda: self._execute_control_device(arguments),
+                # TV transport = control_device with the domain pinned to
+                # media_player, so "the Shield" can never land on a switch or
+                # an MA speaker. See tools/definitions.py control_tv.
+                "control_tv": lambda: self._execute_control_device(
+                    {**arguments, "domain": "media_player"}
+                ),
                 "set_speaker_volume": lambda: speaker_volume_tool.set_speaker_volume(
                     arguments, self.hass,
                     device_id=self._current_user_input.device_id if self._current_user_input else None,

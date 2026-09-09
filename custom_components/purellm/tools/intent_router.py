@@ -284,7 +284,7 @@ _INTENT_TO_TOOLS: dict[str, list[str]] = {
     "places": ["find_nearby_places"],
     "knowledge": ["calculate_age", "get_wikipedia_summary"],
     "datetime": ["get_current_datetime"],
-    "device": ["control_device", "check_device_status", "set_speaker_volume", "set_fan_speed", "set_white_noise_sound"],
+    "device": ["control_device", "control_tv", "check_device_status", "set_speaker_volume", "set_fan_speed", "set_white_noise_sound"],
     "device_status": ["check_device_status"],
     "search": ["web_search"],
     "sofabaton": ["control_sofabaton", "control_device"],
@@ -361,6 +361,9 @@ _CORE_FALLBACK_TOOLS = {
     # bathroom Voice satellite). The router must never make a wrong tool the
     # only option for a whole intent class.
     "control_music",
+    # Same reasoning for TV transport: a "pause the shield" that misses the
+    # keyword patterns must never see control_music as its only pause tool.
+    "control_tv",
 } | _ALWAYS_INCLUDE
 
 # If the full catalog is already at or under this size, filtering buys nothing
