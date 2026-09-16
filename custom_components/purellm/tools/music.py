@@ -624,9 +624,16 @@ def _artist_resolution_plausible(requested: str, canonical: str) -> bool:
     Looser than _artist_names_match because real canonicalizations can share no
     whole word at all — "Tupac" → "2Pac" is the canonical example (ratio 0.667).
 
-    The 0.6 cutoff was measured against both sets: the loosest true pair that
+    The cutoff was measured against both sets: the loosest true pair that
     _artist_names_match misses is Tupac/2Pac at 0.667, while the tightest wrong
-    pair sits at 0.476 ("oh he did"/"The Weeknd") — comfortably separated.
+    pair sat at 0.476 ("oh he did"/"The Weeknd").
+
+    Raised 0.6 → 0.65 on 2026-09-16: a misheard "N Sink" (for *NSYNC) scored
+    EXACTLY 0.600 against "P!nk" and squeaked through the >= test, so the whole
+    search then ran against P!nk and the lyric-alias path confidently played
+    "Just Give Me a Reason". 0.65 still clears Tupac/2Pac (0.667) and now
+    rejects N Sink/P!nk (0.600); the band between them is the whole budget, so
+    do not raise it further without re-measuring the true pairs.
     """
     if not requested or not canonical:
         return False
@@ -636,7 +643,7 @@ def _artist_resolution_plausible(requested: str, canonical: str) -> bool:
     b = _artist_norm_variants(canonical)[1]
     if not a or not b:
         return False
-    return SequenceMatcher(None, a, b).ratio() >= 0.6
+    return SequenceMatcher(None, a, b).ratio() >= 0.65
 
 
 def _consonant_fold(text: str) -> str:
@@ -715,6 +722,26 @@ def _artist_norm_match(norm_a: str, norm_b: str) -> bool:
     return False
 
 
+_MB_LUCENE_SPECIAL = re.compile(r'([+\-&|!(){}\[\]^"~*?:\\/])')
+
+
+def _mb_escape(text: str, quoted: bool = False) -> str:
+    """Escape Lucene query syntax in a MusicBrainz search term.
+
+    Artist names really do contain Lucene operators: "*NSYNC" opens with a
+    wildcard and "P!nk" carries a NOT. A leading wildcard is illegal, so the
+    search server rejected the WHOLE query (HTTP 503) and PureLLM fell through
+    to "not in the catalog" for a song it could otherwise have canonicalized
+    (2026-09-16). Inside a quoted phrase only the quote and the backslash need
+    escaping — the rest are already literal there.
+    """
+    if not text:
+        return text
+    if quoted:
+        return text.replace("\\", "\\\\").replace('"', '\\"')
+    return _MB_LUCENE_SPECIAL.sub(r"\\\1", text)
+
+
 async def _musicbrainz_resolve(
     session: Any,
     query: str,
@@ -738,11 +765,14 @@ async def _musicbrainz_resolve(
 
     # Try two queries: field-specific first, then general fuzzy
     queries = []
+    q_phrase = _mb_escape(query, quoted=True)
     if artist:
-        queries.append(f'{field}:"{query}" AND artist:({artist})')
-        queries.append(f"{query} {artist}")  # general fuzzy fallback
+        queries.append(f'{field}:"{q_phrase}" AND artist:({_mb_escape(artist)})')
+        # General fuzzy fallback — escaped too: an unescaped "*NSYNC" here is
+        # the same illegal leading wildcard that 503s the field query.
+        queries.append(f"{_mb_escape(query)} {_mb_escape(artist)}")
     else:
-        queries.append(f'{field}:"{query}"')
+        queries.append(f'{field}:"{q_phrase}"')
     if media_type == "album":
         queries = [q + " AND primarytype:album" if "AND" in q else q for q in queries]
 
@@ -2204,10 +2234,12 @@ class MusicController:
         # the user explicitly asked for that variant. Checked against the
         # track name, MA's version tag, and the album name (e.g. an album
         # titled "MTV Unplugged" or "Live at Wembley").
+        non_album_penalty = 0
         if not user_wants_non_album:
             if (self._NON_ALBUM_VERSION_KEYWORDS.search(item_name)
                     or self._NON_ALBUM_VERSION_KEYWORDS.search(item_version)
                     or self._NON_ALBUM_VERSION_KEYWORDS.search(item_album)):
+                non_album_penalty = -400
                 variant_penalty -= 400
                 _LOGGER.debug(
                     "MUSIC: Non-album-version penalty applied to '%s' (version='%s', album='%s')",
@@ -2241,6 +2273,23 @@ class MusicController:
             without_collab = total - collab_penalty
             if without_collab > 0:
                 total = max(1, without_collab // 10)
+
+        # Tagged-version rescue: "prefer the canonical studio cut" is a
+        # PREFERENCE, but because callers reject score <= 0 the -400 also
+        # disqualified the song outright when the catalog has no untagged copy
+        # — and then _search_miss told the user it is "NOT in the music
+        # catalog". Every Apple copy of *NSYNC's "Tearin' Up My Heart" is a
+        # "Radio Edit"/"Extended Version", so an exact name+artist match scored
+        # -260 and a song MA returns as its own #1 hit was reported as absent
+        # (2026-09-16). A radio edit / live / remaster IS the requested song;
+        # instrumental/karaoke (_VARIANT_KEYWORDS) and pre-faded DJ mixes are
+        # NOT, so those two keep disqualifying outright. Rescue only when the
+        # non-album tag is the ONLY thing holding the item under zero, and
+        # scale it down like the collab rescue so any untagged copy still wins.
+        if non_album_penalty and total <= 0 and name_score > 0 and artist_score >= 0:
+            without_non_album = total - non_album_penalty
+            if without_non_album > 0:
+                total = max(1, without_non_album // 10)
 
         return total, name_score
 

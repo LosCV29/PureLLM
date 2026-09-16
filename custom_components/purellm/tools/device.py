@@ -219,12 +219,28 @@ async def control_device(
     # control_device({'device':'media_player','action':'next'}) skipped a
     # track on the master bathroom Voice satellite). Refuse it outright.
     if device_name and "." not in device_name and device_name.lower() in known_domains:
-        _LOGGER.warning(
-            "control_device called with bare domain '%s' as device name — refusing "
-            "(no specific device was named)", device_name,
-        )
-        return {"error": f"No specific device was named. '{device_name}' is a device "
-                         f"category, not a device. Ask which device or room to use."}
+        # ...unless the category holds exactly ONE entity, in which case it is
+        # not ambiguous at all: "start the vacuum" in a house with a single
+        # vacuum names it as precisely as its friendly name does. Refusing it
+        # outright made PureLLM ask "which vacuum should I start?" when
+        # vacuum.q8_max was the only vacuum in the registry (2026-09-16). The
+        # 2026-07-26 media_player case this guard exists for had many entities,
+        # so that one still refuses — only real ambiguity is refused.
+        domain_entities = [st.entity_id for st in hass.states.async_all(device_name.lower())]
+        if len(domain_entities) == 1:
+            _LOGGER.info(
+                "control_device: bare domain '%s' resolves to its only entity %s",
+                device_name, domain_entities[0],
+            )
+            direct_entity_id = domain_entities[0]
+            device_name = ""
+        else:
+            _LOGGER.warning(
+                "control_device called with bare domain '%s' as device name — refusing "
+                "(%d entities in that category, none named)", device_name, len(domain_entities),
+            )
+            return {"error": f"No specific device was named. '{device_name}' is a device "
+                             f"category, not a device. Ask which device or room to use."}
 
     if device_name and "." in device_name:
         potential_domain = device_name.split(".")[0]
