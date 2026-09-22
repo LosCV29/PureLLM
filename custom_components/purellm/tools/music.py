@@ -417,13 +417,19 @@ def _normalize_spelled_numbers(text: str) -> str:
 # Music provider preference. Apple Music is the primary subscription; Spotify was
 # added 2026-07-26 purely as a BACKUP for things Apple's catalog doesn't carry
 # (mixtapes and indie releases — e.g. Wale's "Passive-Aggress Her", which exists
-# on Spotify and not on Apple). Lower number = preferred.
+# on Spotify and not on Apple). Tidal was added 2026-09-21 as the THIRD option,
+# reached only when neither Apple nor Spotify has an equally-good match.
+# Lower number = preferred.
 #
 # This is deliberately a TIE-BREAK, not a score penalty: the provider must never
 # override a genuinely better title/artist match, it only decides which copy of
 # an equally-good match to play. So Apple wins whenever it has the song, and
 # Spotify is reached only when Apple's candidates score lower or don't exist.
-_PROVIDER_PRIORITY = {"apple_music": 0, "spotify": 1}
+#
+# NOTE: Tidal playback through Music Assistant is PCM stereo like every other
+# provider here. Tidal's Dolby Atmos only exists in the native Tidal app on the
+# SHIELD, which does not go through MA at all — see the living-room Atmos notes.
+_PROVIDER_PRIORITY = {"apple_music": 0, "spotify": 1, "tidal": 2}
 _PROVIDER_FALLBACK_RANK = 5
 
 
