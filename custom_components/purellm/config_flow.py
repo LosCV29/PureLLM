@@ -24,6 +24,7 @@ from .const import (
     CONF_TEMPERATURE,
     CONF_MAX_TOKENS,
     CONF_TOP_P,
+    CONF_LLAMA_SLOT,
     ALL_PROVIDERS,
     PROVIDER_NAMES,
     PROVIDER_BASE_URLS,
@@ -39,6 +40,7 @@ from .const import (
     DEFAULT_TEMPERATURE,
     DEFAULT_MAX_TOKENS,
     DEFAULT_TOP_P,
+    DEFAULT_LLAMA_SLOT,
     # System settings
     CONF_SYSTEM_PROMPT,
     CONF_CUSTOM_LATITUDE,
@@ -510,6 +512,10 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_TOP_P,
                         default=current.get(CONF_TOP_P, DEFAULT_TOP_P),
                     ): vol.All(vol.Coerce(float), vol.Range(min=0.0, max=1.0)),
+                    vol.Optional(
+                        CONF_LLAMA_SLOT,
+                        default=current.get(CONF_LLAMA_SLOT, DEFAULT_LLAMA_SLOT),
+                    ): vol.All(vol.Coerce(int), vol.Range(min=-1, max=63)),
                 }
             ),
         )

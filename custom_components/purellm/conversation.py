@@ -659,6 +659,7 @@ from .const import (
     CONF_THERMOSTAT_TEMP_STEP,
     CONF_THERMOSTAT_USE_CELSIUS,
     CONF_TOP_P,
+    CONF_LLAMA_SLOT,
     CONF_NOTIFICATION_ENTITIES,
     CONF_NOTIFY_ON_PLACES,
     CONF_NOTIFY_ON_CAMERA,
@@ -974,6 +975,10 @@ class PureLLMConversationEntity(ConversationEntity):
         # any legitimate voice answer; _sanitize_llm_response trims the rest.
         self.max_tokens = min(config.get(CONF_MAX_TOKENS, 2000), 600)
         self.top_p = config.get(CONF_TOP_P, 0.95)
+        # 2026-09-23 v8.6.31: pin to one llama.cpp slot so the voice prompt's
+        # KV cache is never evicted by Frigate/Hermes traffic on the shared
+        # brain (a cold re-prefill of the ~5.4K-token prompt was +2.2-2.4 s).
+        self.llama_slot = int(config.get(CONF_LLAMA_SLOT, -1))
 
         # Base URL
         base_url = config.get(CONF_BASE_URL)
@@ -2123,6 +2128,8 @@ class PureLLMConversationEntity(ConversationEntity):
                 "top_p": self.top_p,
                 "stream": True,
             }
+            if self.llama_slot >= 0:
+                kwargs["extra_body"] = {"id_slot": self.llama_slot}
             if tools:
                 kwargs["tools"] = tools
                 # Streaming calls use "auto". OpenAI-compatible servers

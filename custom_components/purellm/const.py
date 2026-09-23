@@ -32,6 +32,11 @@ CONF_MODEL: Final = "model"
 CONF_TEMPERATURE: Final = "temperature"
 CONF_MAX_TOKENS: Final = "max_tokens"
 CONF_TOP_P: Final = "top_p"
+# llama.cpp server slot to pin every request to (sent as extra_body.id_slot).
+# Pinning each client of a shared llama-server to its own slot keeps this
+# prompt's KV cache resident instead of being overwritten (LRU) by other
+# clients' traffic. -1 = no pinning (server picks the slot).
+CONF_LLAMA_SLOT: Final = "llama_slot"
 
 # Provider choices
 PROVIDER_LM_STUDIO: Final = "lm_studio"
@@ -75,6 +80,7 @@ DEFAULT_MODEL: Final = "local-model"
 DEFAULT_TEMPERATURE: Final = 0.7
 DEFAULT_MAX_TOKENS: Final = 2000
 DEFAULT_TOP_P: Final = 0.95
+DEFAULT_LLAMA_SLOT: Final = -1
 
 # =============================================================================
 # FEATURE TOGGLES - Enable/disable function categories
