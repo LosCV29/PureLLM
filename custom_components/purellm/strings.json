@@ -55,8 +55,7 @@
           "model": "Model",
           "temperature": "Temperature (0.0 - 2.0)",
           "max_tokens": "Max Tokens",
-          "top_p": "Top P (0.0 - 1.0)",
-          "llama_slot": "llama.cpp slot to pin requests to (-1 = off)"
+          "top_p": "Top P (0.0 - 1.0)"
         }
       },
       "features": {
