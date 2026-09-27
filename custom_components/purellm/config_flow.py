@@ -111,6 +111,10 @@ from .const import (
     # Frigate
     CONF_FRIGATE_URL,
     DEFAULT_FRIGATE_URL,
+    CONF_VISION_BASE_URL,
+    CONF_VISION_MODEL,
+    DEFAULT_VISION_BASE_URL,
+    DEFAULT_VISION_MODEL,
     # SofaBaton Activities
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
@@ -599,6 +603,9 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
             # Handle Frigate URL and API key
             if CONF_FRIGATE_URL in user_input:
                 processed_input[CONF_FRIGATE_URL] = user_input[CONF_FRIGATE_URL]
+            for key in (CONF_VISION_BASE_URL, CONF_VISION_MODEL):
+                if key in user_input:
+                    processed_input[key] = (user_input[key] or "").strip()
 
             # Handle thermostat settings
             if CONF_THERMOSTAT_MIN_TEMP in user_input:
@@ -698,6 +705,14 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                             type=selector.TextSelectorType.URL,
                         )
                     ),
+                    vol.Optional(
+                        CONF_VISION_BASE_URL,
+                        default=current.get(CONF_VISION_BASE_URL, DEFAULT_VISION_BASE_URL),
+                    ): str,
+                    vol.Optional(
+                        CONF_VISION_MODEL,
+                        default=current.get(CONF_VISION_MODEL, DEFAULT_VISION_MODEL),
+                    ): str,
                     vol.Optional(
                         CONF_THERMOSTAT_MIN_TEMP,
                         default=current_min,

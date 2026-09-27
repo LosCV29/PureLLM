@@ -113,6 +113,10 @@ CONF_CAMERA_ENTITIES: Final = "camera_entities"  # Deprecated - kept for config 
 
 # Frigate settings
 CONF_FRIGATE_URL: Final = "frigate_url"
+# Optional separate vision LLM for check_camera (blank = use the main LLM).
+# Lets a text-only voice brain hand camera frames to a multimodal model.
+CONF_VISION_BASE_URL: Final = "vision_base_url"
+CONF_VISION_MODEL: Final = "vision_model"
 
 # Thermostat settings - user-configurable temperature range and step
 CONF_THERMOSTAT_MIN_TEMP: Final = "thermostat_min_temp"
@@ -125,6 +129,8 @@ DEFAULT_CALENDAR_ENTITIES: Final = ""
 DEFAULT_ROOM_PLAYER_MAPPING: Final = ""  # room:entity_id, one per line
 DEFAULT_CAMERA_ENTITIES: Final = ""
 DEFAULT_FRIGATE_URL: Final = ""
+DEFAULT_VISION_BASE_URL: Final = ""
+DEFAULT_VISION_MODEL: Final = ""
 
 # Thermostat defaults (Fahrenheit by default)
 DEFAULT_THERMOSTAT_MIN_TEMP: Final = 60

@@ -667,6 +667,8 @@ from .const import (
     DEFAULT_VOICE_SCRIPTS,
     CONF_FRIGATE_URL,
     DEFAULT_FRIGATE_URL,
+    CONF_VISION_BASE_URL,
+    CONF_VISION_MODEL,
     CONF_SOFABATON_ACTIVITIES,
     DEFAULT_SOFABATON_ACTIVITIES,
     DEFAULT_API_KEY,
@@ -1068,6 +1070,9 @@ class PureLLMConversationEntity(ConversationEntity):
         # Only the Frigate URL and optional friendly-name overrides are stored.
         self.frigate_url = config.get(CONF_FRIGATE_URL, DEFAULT_FRIGATE_URL)
         self.frigate_camera_names: dict[str, str] = {}  # populated from Frigate API
+        # check_camera sends frames here; blank = the main LLM (which must then be multimodal)
+        self.vision_base_url = (config.get(CONF_VISION_BASE_URL) or "").strip() or self.base_url
+        self.vision_model = (config.get(CONF_VISION_MODEL) or "").strip() or self.model
 
         # SofaBaton activities configuration
         self.sofabaton_activities = _parse_json_list(CONF_SOFABATON_ACTIVITIES, DEFAULT_SOFABATON_ACTIVITIES)
@@ -2894,9 +2899,9 @@ class PureLLMConversationEntity(ConversationEntity):
                 # Camera via Frigate API + local vision LLM analysis
                 "check_camera": lambda: camera_tool.check_camera(
                     arguments, self._session, self.frigate_url,
-                    llm_base_url=self.base_url,
+                    llm_base_url=self.vision_base_url,
                     llm_api_key=self.api_key,
-                    llm_model=self.model,
+                    llm_model=self.vision_model,
                     config_dir=self.hass.config.config_dir,
                 ),
                 # Web search
