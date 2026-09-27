@@ -119,14 +119,29 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "camera",
         "anyone outside", "anyone on the", "someone on the",
         "someone outside", "is there anyone", "is anyone",
-        "check the back yard", "check the backyard",
-        "check the driveway", "check the front door",
-        "check front door", "check the side gate",
+        # Outdoor camera zones as bare nouns: they subsume the old
+        # "check the driveway" / "what's on the driveway" / "check the
+        # back yard" entries. Without them "is there a car in the driveway"
+        # NO-MATCHed, never saw check_camera, and the model tried
+        # check_device_status('driveway') -> "recording" -> gave up after
+        # 3 iterations (2026-09-27). A light phrasing like "turn on the
+        # driveway lights" also matches "device", so the model still sees
+        # control_device; this only adds check_camera to what it can pick.
+        "driveway", "back yard", "backyard", "front yard", "porch",
+        "check the front door", "check front door", "check the side gate",
+        # Presence questions anchored on a location ("... at the door",
+        # "... in the yard"). Bare "somebody"/"a car" would pull chitchat
+        # ("somebody told me", "buying a car") into a forced camera check.
+        "someone at the", "anyone at the", "somebody at the", "anybody at the",
+        "someone in the", "anyone in the", "somebody in the", "anybody in the",
+        "package", "delivered", "delivery",
         "check the nursery", "check the sala", "check the kitchen",
-        "what's on the driveway", "whats on the driveway",
         "what's happening on", "whats happening on",
         "what's going on", "whats going on outside",
         "nursery cam", "sala cam", "kitchen cam",
+        # Spanish
+        "cámara", "camara", "hay alguien", "alguien en", "alguien afuera",
+        "paquete", "patio",
     ],
     "sports": [
         " game", "score", " nfl", " nba", " mlb", " nhl", " mls",
