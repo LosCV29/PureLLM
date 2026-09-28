@@ -34,6 +34,7 @@
           "sofabaton": "SofaBaton Activities",
           "music_rooms": "Music Room Mapping",
           "notifications": "Notification Settings",
+          "elevenlabs": "ElevenLabs TTS",
           "api_keys": "External API Keys",
           "location": "Location Settings",
           "advanced": "System Prompt"
@@ -154,7 +155,31 @@
         "data": {
           "system_prompt": "System Prompt"
         }
+      },
+      "elevenlabs": {
+        "title": "ElevenLabs TTS",
+        "description": "Streaming ElevenLabs text-to-speech with every voice lever. After saving, pick 'PureLLM ElevenLabs TTS' as the TTS engine in your Assist pipeline.",
+        "data": {
+          "elevenlabs_api_key": "ElevenLabs API Key",
+          "elevenlabs_voice_id": "Voice (from My Voices)",
+          "elevenlabs_model": "Model (v4 Turbo = best quality at low latency; Flash v2.5 = fastest)",
+          "elevenlabs_speed": "Speed (0.7 = slow, 1.0 = normal, 1.2 = fast)",
+          "elevenlabs_stability": "Stability (0 = expressive/variable, 1 = steady/consistent)",
+          "elevenlabs_similarity": "Similarity Boost (0 = looser, 1 = closest to the original voice)",
+          "elevenlabs_style": "Style Exaggeration (0 = none, 1 = maximum drama; adds some latency)",
+          "elevenlabs_speaker_boost": "Speaker Boost (clearer, closer to the original speaker)",
+          "elevenlabs_language": "Language (auto = follow the text; keeps Spanglish natural)",
+          "elevenlabs_text_normalization": "Text Normalization (auto / on / off: how numbers, dates and units are spelled out)",
+          "elevenlabs_output_format": "Output Format (mp3 streams straight through to satellites set to format NONE)",
+          "elevenlabs_seed": "Seed (0 = random; fixed number = repeatable delivery)",
+          "elevenlabs_sentence_streaming": "Sentence streaming (speak the first sentence immediately, prefetch the rest)",
+          "elevenlabs_keep_warm": "Keep connection warm (avoids a fresh TLS handshake before each reply)"
+        }
       }
+    },
+    "error": {
+      "elevenlabs_invalid_api_key": "Invalid ElevenLabs API key. Check your key at elevenlabs.io.",
+      "elevenlabs_voice_not_found": "Voice ID not found. Make sure the voice is in your ElevenLabs account (My Voices)."
     }
   }
 }

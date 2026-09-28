@@ -1,6 +1,7 @@
 """Config flow for PureLLM integration."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -16,6 +17,39 @@ import homeassistant.helpers.config_validation as cv
 
 from .const import (
     DOMAIN,
+    # ElevenLabs TTS
+    CONF_ELEVENLABS_API_KEY,
+    DEFAULT_ELEVENLABS_API_KEY,
+    CONF_ELEVENLABS_VOICE_ID,
+    DEFAULT_ELEVENLABS_VOICE_ID,
+    CONF_ELEVENLABS_MODEL,
+    DEFAULT_ELEVENLABS_MODEL,
+    CONF_ELEVENLABS_STABILITY,
+    DEFAULT_ELEVENLABS_STABILITY,
+    CONF_ELEVENLABS_SIMILARITY,
+    DEFAULT_ELEVENLABS_SIMILARITY,
+    CONF_ELEVENLABS_STYLE,
+    DEFAULT_ELEVENLABS_STYLE,
+    CONF_ELEVENLABS_SPEAKER_BOOST,
+    DEFAULT_ELEVENLABS_SPEAKER_BOOST,
+    CONF_ELEVENLABS_SPEED,
+    DEFAULT_ELEVENLABS_SPEED,
+    CONF_ELEVENLABS_OUTPUT_FORMAT,
+    DEFAULT_ELEVENLABS_OUTPUT_FORMAT,
+    CONF_ELEVENLABS_TEXT_NORMALIZATION,
+    DEFAULT_ELEVENLABS_TEXT_NORMALIZATION,
+    CONF_ELEVENLABS_LANGUAGE,
+    DEFAULT_ELEVENLABS_LANGUAGE,
+    CONF_ELEVENLABS_SEED,
+    DEFAULT_ELEVENLABS_SEED,
+    CONF_ELEVENLABS_SENTENCE_STREAMING,
+    DEFAULT_ELEVENLABS_SENTENCE_STREAMING,
+    CONF_ELEVENLABS_KEEP_WARM,
+    DEFAULT_ELEVENLABS_KEEP_WARM,
+    ELEVENLABS_MODELS,
+    ELEVENLABS_OUTPUT_FORMATS,
+    ELEVENLABS_TEXT_NORMALIZATION_MODES,
+    ELEVENLABS_LANGUAGES,
     # Provider settings
     CONF_PROVIDER,
     CONF_BASE_URL,
@@ -369,6 +403,7 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                 "sofabaton": "SofaBaton Activities",
                 "music_rooms": "Music Room Mapping",
                 "notifications": "Notification Settings",
+                "elevenlabs": "ElevenLabs TTS",
                 "api_keys": "API Keys",
                 "location": "Location Settings",
                 "advanced": "System Prompt",
@@ -1196,6 +1231,167 @@ class PureLLMOptionsFlowHandler(config_entries.OptionsFlow):
                     vol.Optional(
                         CONF_NOTIFY_ON_SEARCH,
                         default=current.get(CONF_NOTIFY_ON_SEARCH, DEFAULT_NOTIFY_ON_SEARCH),
+                    ): cv.boolean,
+                }
+            ),
+        )
+
+    async def _elevenlabs_get(self, api_key: str, path: str) -> Any:
+        """GET an ElevenLabs API path; None on failure."""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"https://api.elevenlabs.io{path}",
+                    headers={"xi-api-key": api_key},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as response:
+                    if response.status != 200:
+                        _LOGGER.warning("ElevenLabs %s: HTTP %s", path, response.status)
+                        return None
+                    return await response.json()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("ElevenLabs %s failed: %s", path, err)
+            return None
+
+    async def async_step_elevenlabs(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """ElevenLabs TTS: every voice lever plus the streaming/latency switches.
+
+        Models and voices are fetched live from the API once a key is saved.
+        """
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            el_api_key = str(user_input.get(CONF_ELEVENLABS_API_KEY, "")).strip()
+            el_voice_id = str(user_input.get(CONF_ELEVENLABS_VOICE_ID, "")).strip()
+            if el_api_key and el_voice_id:
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            f"https://api.elevenlabs.io/v1/voices/{el_voice_id}",
+                            headers={"xi-api-key": el_api_key},
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        ) as response:
+                            if response.status == 401:
+                                errors["base"] = "elevenlabs_invalid_api_key"
+                            elif response.status == 404:
+                                errors["base"] = "elevenlabs_voice_not_found"
+                except Exception as err:  # noqa: BLE001
+                    _LOGGER.warning("ElevenLabs validation failed: %s", err)
+            if not errors:
+                user_input[CONF_ELEVENLABS_API_KEY] = el_api_key
+                user_input[CONF_ELEVENLABS_VOICE_ID] = el_voice_id
+                user_input[CONF_ELEVENLABS_SEED] = int(user_input.get(CONF_ELEVENLABS_SEED) or 0)
+                return self.async_create_entry(title="", data={**self._entry.options, **user_input})
+
+        current = {**self._entry.data, **self._entry.options}
+        api_key = current.get(CONF_ELEVENLABS_API_KEY, DEFAULT_ELEVENLABS_API_KEY)
+        voice_id = current.get(CONF_ELEVENLABS_VOICE_ID, DEFAULT_ELEVENLABS_VOICE_ID)
+        model = current.get(CONF_ELEVENLABS_MODEL, DEFAULT_ELEVENLABS_MODEL)
+
+        models_json, voices_json = None, None
+        if api_key:
+            models_json, voices_json = await asyncio.gather(
+                self._elevenlabs_get(api_key, "/v1/models"),
+                self._elevenlabs_get(api_key, "/v1/voices"),
+            )
+
+        model_options = [
+            selector.SelectOptionDict(value=m["model_id"], label=f"{m.get('name', m['model_id'])} ({m['model_id']})")
+            for m in (models_json or [])
+            if m.get("model_id") and m.get("can_do_text_to_speech", True)
+        ] or [selector.SelectOptionDict(value=m, label=m) for m in ELEVENLABS_MODELS]
+        if model and model not in [o["value"] for o in model_options]:
+            model_options.insert(0, selector.SelectOptionDict(value=model, label=model))
+
+        voices = [v for v in (voices_json or {}).get("voices", []) if v.get("voice_id")]
+        if voices:
+            voice_options = [
+                selector.SelectOptionDict(
+                    value=v["voice_id"], label=f"{v.get('name', v['voice_id'])} ({v['voice_id'][:8]}...)"
+                )
+                for v in voices
+            ]
+            if voice_id and voice_id not in [o["value"] for o in voice_options]:
+                voice_options.insert(0, selector.SelectOptionDict(value=voice_id, label=voice_id))
+            voice_selector: Any = selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=voice_options, mode=selector.SelectSelectorMode.DROPDOWN, custom_value=True,
+                )
+            )
+        else:
+            voice_selector = selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT))
+
+        def _slider(lo: float, hi: float, step: float) -> selector.NumberSelector:
+            return selector.NumberSelector(
+                selector.NumberSelectorConfig(min=lo, max=hi, step=step, mode=selector.NumberSelectorMode.SLIDER)
+            )
+
+        def _dropdown(values: list[str]) -> selector.SelectSelector:
+            return selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[selector.SelectOptionDict(value=v, label=v) for v in values],
+                    mode=selector.SelectSelectorMode.DROPDOWN,
+                )
+            )
+
+        return self.async_show_form(
+            step_id="elevenlabs",
+            errors=errors,
+            data_schema=vol.Schema(
+                {
+                    vol.Optional(CONF_ELEVENLABS_API_KEY, default=api_key): selector.TextSelector(
+                        selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                    ),
+                    vol.Optional(CONF_ELEVENLABS_VOICE_ID, default=voice_id): voice_selector,
+                    vol.Optional(CONF_ELEVENLABS_MODEL, default=model): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=model_options, mode=selector.SelectSelectorMode.DROPDOWN, custom_value=True,
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_ELEVENLABS_SPEED, default=current.get(CONF_ELEVENLABS_SPEED, DEFAULT_ELEVENLABS_SPEED)
+                    ): _slider(0.7, 1.2, 0.05),
+                    vol.Optional(
+                        CONF_ELEVENLABS_STABILITY,
+                        default=current.get(CONF_ELEVENLABS_STABILITY, DEFAULT_ELEVENLABS_STABILITY),
+                    ): _slider(0.0, 1.0, 0.05),
+                    vol.Optional(
+                        CONF_ELEVENLABS_SIMILARITY,
+                        default=current.get(CONF_ELEVENLABS_SIMILARITY, DEFAULT_ELEVENLABS_SIMILARITY),
+                    ): _slider(0.0, 1.0, 0.05),
+                    vol.Optional(
+                        CONF_ELEVENLABS_STYLE, default=current.get(CONF_ELEVENLABS_STYLE, DEFAULT_ELEVENLABS_STYLE)
+                    ): _slider(0.0, 1.0, 0.05),
+                    vol.Optional(
+                        CONF_ELEVENLABS_SPEAKER_BOOST,
+                        default=current.get(CONF_ELEVENLABS_SPEAKER_BOOST, DEFAULT_ELEVENLABS_SPEAKER_BOOST),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_ELEVENLABS_LANGUAGE,
+                        default=current.get(CONF_ELEVENLABS_LANGUAGE, DEFAULT_ELEVENLABS_LANGUAGE),
+                    ): _dropdown(ELEVENLABS_LANGUAGES),
+                    vol.Optional(
+                        CONF_ELEVENLABS_TEXT_NORMALIZATION,
+                        default=current.get(CONF_ELEVENLABS_TEXT_NORMALIZATION, DEFAULT_ELEVENLABS_TEXT_NORMALIZATION),
+                    ): _dropdown(ELEVENLABS_TEXT_NORMALIZATION_MODES),
+                    vol.Optional(
+                        CONF_ELEVENLABS_OUTPUT_FORMAT,
+                        default=current.get(CONF_ELEVENLABS_OUTPUT_FORMAT, DEFAULT_ELEVENLABS_OUTPUT_FORMAT),
+                    ): _dropdown(ELEVENLABS_OUTPUT_FORMATS),
+                    vol.Optional(
+                        CONF_ELEVENLABS_SEED, default=current.get(CONF_ELEVENLABS_SEED, DEFAULT_ELEVENLABS_SEED)
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=0, max=4294967295, step=1, mode=selector.NumberSelectorMode.BOX)
+                    ),
+                    vol.Optional(
+                        CONF_ELEVENLABS_SENTENCE_STREAMING,
+                        default=current.get(CONF_ELEVENLABS_SENTENCE_STREAMING, DEFAULT_ELEVENLABS_SENTENCE_STREAMING),
+                    ): cv.boolean,
+                    vol.Optional(
+                        CONF_ELEVENLABS_KEEP_WARM,
+                        default=current.get(CONF_ELEVENLABS_KEEP_WARM, DEFAULT_ELEVENLABS_KEEP_WARM),
                     ): cv.boolean,
                 }
             ),

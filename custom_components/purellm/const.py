@@ -263,3 +263,62 @@ DEFAULT_SOFABATON_ACTIVITIES: Final = "[]"
 # API TIMEOUT - Shared timeout for external API calls
 # =============================================================================
 API_TIMEOUT: Final = 15  # seconds
+
+# =============================================================================
+# ELEVENLABS TTS SETTINGS
+# =============================================================================
+# Restored 2026-09-28 (removed in 7cd0513 when the subscription lapsed), now with
+# streaming: sentence-by-sentence synthesis on a kept-warm connection.
+CONF_ELEVENLABS_API_KEY: Final = "elevenlabs_api_key"
+CONF_ELEVENLABS_VOICE_ID: Final = "elevenlabs_voice_id"
+CONF_ELEVENLABS_MODEL: Final = "elevenlabs_model"
+CONF_ELEVENLABS_STABILITY: Final = "elevenlabs_stability"
+CONF_ELEVENLABS_SIMILARITY: Final = "elevenlabs_similarity"
+CONF_ELEVENLABS_STYLE: Final = "elevenlabs_style"
+CONF_ELEVENLABS_SPEAKER_BOOST: Final = "elevenlabs_speaker_boost"
+CONF_ELEVENLABS_SPEED: Final = "elevenlabs_speed"
+CONF_ELEVENLABS_OUTPUT_FORMAT: Final = "elevenlabs_output_format"
+CONF_ELEVENLABS_TEXT_NORMALIZATION: Final = "elevenlabs_text_normalization"
+CONF_ELEVENLABS_LANGUAGE: Final = "elevenlabs_language"
+CONF_ELEVENLABS_SEED: Final = "elevenlabs_seed"
+CONF_ELEVENLABS_SENTENCE_STREAMING: Final = "elevenlabs_sentence_streaming"
+CONF_ELEVENLABS_KEEP_WARM: Final = "elevenlabs_keep_warm"
+
+DEFAULT_ELEVENLABS_API_KEY: Final = ""
+DEFAULT_ELEVENLABS_VOICE_ID: Final = ""
+DEFAULT_ELEVENLABS_MODEL: Final = "eleven_v4_turbo"
+DEFAULT_ELEVENLABS_STABILITY: Final = 0.5
+DEFAULT_ELEVENLABS_SIMILARITY: Final = 0.75
+DEFAULT_ELEVENLABS_STYLE: Final = 0.0
+DEFAULT_ELEVENLABS_SPEAKER_BOOST: Final = True
+DEFAULT_ELEVENLABS_SPEED: Final = 1.0
+DEFAULT_ELEVENLABS_OUTPUT_FORMAT: Final = "mp3_44100_128"
+DEFAULT_ELEVENLABS_TEXT_NORMALIZATION: Final = "auto"
+# "auto" = send no language_code, so the model follows the text (Spanglish code-switching).
+# Forcing the pipeline language ("en") would read Spanish words with English phonetics.
+DEFAULT_ELEVENLABS_LANGUAGE: Final = "auto"
+DEFAULT_ELEVENLABS_SEED: Final = 0  # 0 = random
+DEFAULT_ELEVENLABS_SENTENCE_STREAMING: Final = True
+DEFAULT_ELEVENLABS_KEEP_WARM: Final = True
+
+ELEVENLABS_TEXT_NORMALIZATION_MODES: Final = ["auto", "on", "off"]
+
+ELEVENLABS_LANGUAGES: Final = ["auto", "en", "es", "pt", "fr", "de", "it"]
+
+# Static fallback when the models API can't be reached from the options screen.
+ELEVENLABS_MODELS: Final = [
+    "eleven_v4_turbo",
+    "eleven_v4",
+    "eleven_flash_v2_5",
+    "eleven_turbo_v2_5",
+    "eleven_v3",
+    "eleven_multilingual_v2",
+]
+
+# Streaming always needs a container HA can pass through or transcode: mp3 only.
+ELEVENLABS_OUTPUT_FORMATS: Final = [
+    "mp3_44100_128",
+    "mp3_44100_192",
+    "mp3_44100_64",
+    "mp3_22050_32",
+]
