@@ -371,6 +371,11 @@ _RE_SENTENCE_CHUNK = re.compile(r"[^.!?\n]+(?:[.!?…]+|\n+|$)\s*")
 # runaway generation.
 _RESPONSE_MAX_CHARS = 1200
 
+# 2026-09-28 v8.8.0: release the post-tool synthesis reply sentence by sentence
+# (utils/sentence_stream.py) so TTS starts on the first sentence instead of the
+# last token. False restores whole-reply buffering exactly.
+_STREAM_SENTENCES = True
+
 # Ceiling for turns that called NO tools (chitchat, mishears, compliments).
 # 2026-07-24 incident: "You're beautiful." → no intent match → all 24 tools
 # offered → every brain tested (qwen and gemma alike) answered with a
@@ -734,6 +739,7 @@ from .tools import sofabaton as sofabaton_tool
 from .tools import search as search_tool
 from .tools import plants as plants_tool
 from .utils.history import fold_history_into_user
+from .utils.sentence_stream import SpokenSentenceStreamer
 
 if TYPE_CHECKING:
     import aiohttp
@@ -2201,6 +2207,26 @@ class PureLLMConversationEntity(ConversationEntity):
                 # already in accumulated_content / tool_calls_buffer.
                 stream = None if forced else await self.client.chat.completions.create(**kwargs)
 
+                # Sentence streaming (v8.8.0): only the synthesis turn AFTER a
+                # tool ran, and never when the fabricated-playback guard below
+                # could fire (search_music ran, control_music did not) — that
+                # guard needs the whole reply before anything is spoken.
+                streamer = None
+                if (
+                    _STREAM_SENTENCES
+                    and stream is not None
+                    and called_tools
+                    and not (
+                        _tool_ran(called_tools, "search_music")
+                        and not _tool_ran(called_tools, "control_music")
+                    )
+                ):
+                    streamer = SpokenSentenceStreamer(
+                        max_chars=_RESPONSE_MAX_CHARS,
+                        garbled_reply=_GARBLED_SPEECH_REPLY,
+                        emoji_re=_RE_EMOJI,
+                    )
+
                 try:
                     async for chunk in (stream if stream is not None else _empty_stream()):
                         if not chunk.choices:
@@ -2211,6 +2237,9 @@ class PureLLMConversationEntity(ConversationEntity):
                         # Accumulate content (yield later only if no tool calls)
                         if delta.content:
                             accumulated_content += delta.content
+                            if streamer is not None and not tool_calls_buffer:
+                                for sentence in streamer.feed(delta.content):
+                                    yield {"content": sentence}
 
                         # Accumulate tool calls (new format)
                         if delta.tool_calls:
@@ -2318,6 +2347,11 @@ class PureLLMConversationEntity(ConversationEntity):
                     return
 
                 if unique_tool_calls:
+                    if streamer is not None and streamer.emitted_any:
+                        _LOGGER.warning(
+                            "Sentence streaming already spoke %d chars before the model "
+                            "called a tool on iteration %d", streamer.emitted_chars, iteration,
+                        )
                     _LOGGER.info("Executing %d tool call(s)", len(unique_tool_calls))
 
                     # Add assistant message with tool calls to conversation
@@ -2415,6 +2449,20 @@ class PureLLMConversationEntity(ConversationEntity):
 
                     # Continue to next iteration to get LLM's response after tools
                     continue
+
+                # Sentence-streamed reply: everything spoken so far went out as
+                # it completed; release the unterminated tail and finish. If a
+                # "<" put the streamer on hold, the held text gets the normal
+                # whole-text sanitizer. If nothing was released at all, fall
+                # through to the unchanged whole-reply path below.
+                if streamer is not None and streamer.emitted_any:
+                    for sentence in streamer.finish():
+                        yield {"content": sentence}
+                    if streamer.held and streamer.buffer.strip():
+                        tail = _sanitize_llm_response(streamer.buffer)
+                        if tail:
+                            yield {"content": tail}
+                    return
 
                 # No tool calls - yield content and we're done
                 if accumulated_content:
