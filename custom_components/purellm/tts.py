@@ -20,6 +20,7 @@ from collections import deque
 from collections.abc import AsyncGenerator
 import logging
 import re
+import struct
 import time
 from typing import Any
 
@@ -128,6 +129,40 @@ def schedule_chunks(sentences: list[str], schedule: list[int]) -> list[str]:
         chunks.append(" ".join(sentences[:take]))
         del sentences[:take]
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# Audio container helpers
+# ---------------------------------------------------------------------------
+_WAV_STREAM_SIZE = 0xFFFFFFFF  # open-ended: readers play until EOF
+
+
+def pcm_sample_rate(output_format: str) -> int | None:
+    """Sample rate of a ``pcm_<rate>`` output format, else None."""
+    fmt = str(output_format)
+    if not fmt.startswith("pcm_"):
+        return None
+    try:
+        return int(fmt[4:])
+    except ValueError:
+        return None
+
+
+def wav_header(sample_rate: int, data_len: int | None = None) -> bytes:
+    """44-byte header for 16-bit mono PCM; ``data_len=None`` = streaming (unknown length)."""
+    data_size = _WAV_STREAM_SIZE if data_len is None else data_len
+    riff_size = _WAV_STREAM_SIZE if data_len is None else 36 + data_len
+    return (
+        b"RIFF" + struct.pack("<I", riff_size) + b"WAVE"
+        + b"fmt " + struct.pack("<IHHIIHH", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16)
+        + b"data" + struct.pack("<I", data_size)
+    )
+
+
+async def _prepend(head: bytes, stream: AsyncGenerator[bytes]) -> AsyncGenerator[bytes]:
+    yield head
+    async for data in stream:
+        yield data
 
 
 # ---------------------------------------------------------------------------
@@ -306,10 +341,8 @@ class PureLLMElevenLabsTTS(TextToSpeechEntity):
         request_id: list[str | None],
     ) -> None:
         """Synthesize one chunk, pushing audio bytes into ``queue`` (None = done)."""
-        output_format = self._get(CONF_ELEVENLABS_OUTPUT_FORMAT, DEFAULT_ELEVENLABS_OUTPUT_FORMAT)
-        if not str(output_format).startswith("mp3"):
-            output_format = DEFAULT_ELEVENLABS_OUTPUT_FORMAT
-        url = f"{API_BASE}/v1/text-to-speech/{voice_id}/stream"
+        output_format = self._output_format()
+        url =f"{API_BASE}/v1/text-to-speech/{voice_id}/stream"
         try:
             for attempt in (1, 2):
                 body = self._request_body(text, model, previous_ids)
@@ -439,10 +472,21 @@ class PureLLMElevenLabsTTS(TextToSpeechEntity):
         model = options.get(ATTR_MODEL) or self._get(CONF_ELEVENLABS_MODEL, DEFAULT_ELEVENLABS_MODEL)
         return voice_id, model
 
+    def _output_format(self) -> str:
+        """mp3_* passes through; pcm_<rate> is wrapped in WAV (HA then only packs FLAC)."""
+        output_format = str(self._get(CONF_ELEVENLABS_OUTPUT_FORMAT, DEFAULT_ELEVENLABS_OUTPUT_FORMAT))
+        if output_format.startswith("mp3") or pcm_sample_rate(output_format):
+            return output_format
+        return DEFAULT_ELEVENLABS_OUTPUT_FORMAT
+
     async def async_stream_tts_audio(self, request: TTSAudioRequest) -> TTSAudioResponse:
         """Stream speech for text that may itself still be streaming in."""
         voice_id, model = self._resolve(request.options)
-        return TTSAudioResponse("mp3", self._synthesize_stream(request.message_gen, voice_id, model))
+        audio = self._synthesize_stream(request.message_gen, voice_id, model)
+        rate = pcm_sample_rate(self._output_format())
+        if rate is None:
+            return TTSAudioResponse("mp3", audio)
+        return TTSAudioResponse("wav", _prepend(wav_header(rate), audio))
 
     async def async_get_tts_audio(
         self, message: str, language: str, options: dict[str, Any] | None = None
@@ -459,4 +503,9 @@ class PureLLMElevenLabsTTS(TextToSpeechEntity):
         audio = bytearray()
         async for data in self._synthesize_stream(_one(), voice_id, model):
             audio.extend(data)
-        return ("mp3", bytes(audio)) if audio else (None, None)
+        if not audio:
+            return (None, None)
+        rate = pcm_sample_rate(self._output_format())
+        if rate is None:
+            return ("mp3", bytes(audio))
+        return ("wav", wav_header(rate, len(audio)) + bytes(audio))

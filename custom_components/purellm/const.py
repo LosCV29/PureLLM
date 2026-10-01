@@ -321,4 +321,5 @@ ELEVENLABS_OUTPUT_FORMATS: Final = [
     "mp3_44100_192",
     "mp3_44100_64",
     "mp3_22050_32",
+    "pcm_48000",  # raw PCM wrapped in WAV: satellites' 48 kHz FLAC needs no decode/resample
 ]

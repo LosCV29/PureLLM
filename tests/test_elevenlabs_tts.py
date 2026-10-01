@@ -92,6 +92,22 @@ class TestTextHelpers(unittest.TestCase):
         chunks = tts.schedule_chunks(["A.", "B.", "C.", "D.", "E."], schedule)
         self.assertEqual(chunks, ["A.", "B. C.", "D. E."])
 
+    def test_pcm_sample_rate(self):
+        self.assertEqual(tts.pcm_sample_rate("pcm_48000"), 48000)
+        self.assertIsNone(tts.pcm_sample_rate("mp3_44100_128"))
+        self.assertIsNone(tts.pcm_sample_rate("pcm_bogus"))
+
+    def test_wav_header_parses(self):
+        import io
+        import wave
+        pcm = b"\x01\x00" * 480
+        with wave.open(io.BytesIO(tts.wav_header(48000, len(pcm)) + pcm)) as w:
+            self.assertEqual((w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()),
+                             (1, 2, 48000, 480))
+        streaming = tts.wav_header(48000)
+        self.assertEqual(len(streaming), 44)
+        self.assertEqual(streaming[40:44], b"\xff\xff\xff\xff")
+
 
 class _FakeHass:
     def async_create_background_task(self, coro, name=None):
