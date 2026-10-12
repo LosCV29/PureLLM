@@ -2364,6 +2364,10 @@ class PureLLMConversationEntity(ConversationEntity):
                     # Execute tools in parallel
                     tool_tasks = []
                     for tool_call in unique_tool_calls:
+                        # Some backends emit the name with stray whitespace
+                        # (" get_sports_info") — the model chose a real tool,
+                        # so match it by its trimmed name.
+                        tool_call["function"]["name"] = tool_call["function"]["name"].strip()
                         tool_name = tool_call["function"]["name"]
                         try:
                             arguments = json.loads(tool_call["function"]["arguments"])

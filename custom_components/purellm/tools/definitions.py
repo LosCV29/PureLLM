@@ -144,7 +144,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     if config.enable_sports:
         tools.append(_tool(
             "get_sports_info",
-            "Team schedule, scores, standings, and playoff series state. Use for 'next/last game', 'record', 'seed', 'series score', 'playoff series', 'how many games up'. Works for club teams AND national/international soccer teams (e.g. USMNT, USWNT, Mexico, Brazil, England) including World Cup, friendlies, qualifiers, Nations League, Gold Cup, Euros, and Copa America. Do NOT use Wikipedia for these. Include sport for ambiguous names; include 'Champions League' for European club games.",
+            "Team schedule, LIVE in-progress scores, final scores, standings, and playoff series state (ESPN). Every call also returns the live game if one is in progress. Use for 'what's the score', 'current/live score', 'are they winning', 'next/last game', 'record', 'seed', 'series score', 'playoff series', 'how many games up'. Works for club teams AND national/international soccer teams (e.g. USMNT, USWNT, Mexico, Brazil, England) including World Cup, friendlies, qualifiers, Nations League, Gold Cup, Euros, and Copa America. Do NOT use Wikipedia for these. Include sport for ambiguous names; include 'Champions League' for European club games.",
             {
                 "team_name": {"type": "string", "description": "Team + sport/competition (e.g. 'Miami Heat', 'USMNT', 'Mexico national team')"},
                 "query_type": {"type": "string", "enum": ["last_game", "next_game", "standings", "schedule", "both"]}
@@ -522,7 +522,7 @@ def build_tools(config: "ToolConfig", hass: "HomeAssistant | None" = None) -> li
     # ===== WEB SEARCH =====
     if config.enable_search and config.tavily_api_key:
         tools.append(_tool(
-            "web_search", "General web search to ANSWER factual questions — current events, news, reviews, prices, and how/when/should/can questions, advice, and recommendations. Prefer this for any question Wikipedia cannot directly answer (anything beyond background on a single named entity).",
+            "web_search", "General web search to ANSWER factual questions — current events, news, reviews, prices, and how/when/should/can questions, advice, and recommendations. Prefer this for any question Wikipedia cannot directly answer (anything beyond background on a single named entity). NOT for a team's scores, live games, schedule, standings or odds — use get_sports_info.",
             {
                 "query": {"type": "string"},
                 "days": {"type": "integer", "description": "Limit to last N days"},
