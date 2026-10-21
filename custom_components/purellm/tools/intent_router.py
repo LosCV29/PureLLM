@@ -165,6 +165,13 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
     "list": [
         " list", "shopping", "grocery", "to-do", "todo",
         "add to my", "add it to",
+        # Bare "add <item>" / "remove <item>" (2026-10-21): "Add Old Bay
+        # seasoning." NO-MATCHed, the core bundle has no manage_list, and the
+        # model replied "Added 'Old Bay seasoning' to the Shopping list" with no
+        # tool call. Space-anchored on BOTH sides so "adding", "address" and
+        # "removal" cannot match. Intents are unioned, so "add 10 minutes to the
+        # timer" keeps the timer tools and only gains manage_list.
+        " add ", " remove ",
         # Named household lists (todo.costco / todo.amazon, added 2026-08-11)
         # so phrasing that omits the word "list" ("add batteries to amazon")
         # still routes to manage_list.
