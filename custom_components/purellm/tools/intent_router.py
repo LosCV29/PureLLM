@@ -110,6 +110,21 @@ _INTENT_PATTERNS: dict[str, list[str]] = {
         "turn up the", "turn down the",
         "set it to", "degrees",
         "heat mode", "cool mode",
+        # Indoor-temperature questions (2026-10-27): "what's the temperature
+        # inside" only matched device_status's generic "what's the ", so the
+        # model never saw control_thermostat. About half the time it called
+        # web_search("indoor temperature sensor home assistant") instead —
+        # a 4-6 s Tavily round trip, a search push to both phones, and "I
+        # don't have an indoor sensor". Anchored to inside/indoor/house/here
+        # so "temperature outside" stays weather-only; intents are unioned,
+        # so "how warm is it inside" keeps get_weather_forecast too.
+        "temperature inside", "temperature in here", "temperature in the house",
+        "inside temp", "indoor temp", "temp inside", "temp in here",
+        "house temp", "home temp", "room temp",
+        "warm in here", "cold in here", "hot in here",
+        "warm inside", "cold inside", "hot inside",
+        # "how warm is it inside" — the adjective and "inside" are split.
+        " is it inside", " is it in here", " is it in the house",
         # Spanish
         "termostato", "aire acondicionado",
         "grados", "temperatura",
