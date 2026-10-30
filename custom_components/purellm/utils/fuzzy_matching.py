@@ -221,8 +221,12 @@ def normalize_cover_query(query: str) -> list[str]:
     return result
 
 
-def _words_match(query: str, target: str) -> bool:
-    """Check if all query words appear in target (with synonym and number expansion)."""
+def _words_match(query: str, target: str, expand_synonyms: bool = True) -> bool:
+    """Check if all query words appear in target (with synonym and number expansion).
+
+    expand_synonyms=False requires the literal words, so callers can rank a
+    target that really says "lamp" above one that only matches via lamp->light.
+    """
     query_words = set(query.lower().split()) - STOPWORDS
     target_words = set(target.lower().split()) - STOPWORDS
 
@@ -236,9 +240,10 @@ def _words_match(query: str, target: str) -> bool:
 
     # Expand target words with their synonyms for matching
     expanded_target = set(target_words) | target_words_normalized
-    for word in target_words:
-        if word in DEVICE_SYNONYMS:
-            expanded_target.update(DEVICE_SYNONYMS[word])
+    if expand_synonyms:
+        for word in target_words:
+            if word in DEVICE_SYNONYMS:
+                expanded_target.update(DEVICE_SYNONYMS[word])
 
     # All query words (or their number-normalized forms) must be in expanded target
     return query_words_normalized <= expanded_target
@@ -261,11 +266,10 @@ def find_entity_by_name(
 ) -> tuple[str | None, str | None]:
     """Search for entity by name.
 
-    Priority order:
-    1-2: Exposed entities - exact/partial match on aliases
-    3-4: Exposed entities - exact/partial match on friendly name
-    5-6: All entities (fallback) - exact/partial match on aliases
-    7-8: All entities (fallback) - exact/partial match on friendly name
+    Priority order (exposed entities first; non-exposed are the same tiers +10):
+    1-3: exact match on alias / friendly name / entity_id suffix
+    4-5: partial match on alias / friendly name, literal words
+    6-7: partial match on alias / friendly name, only via DEVICE_SYNONYMS
 
     preferred_domains, when given, demotes (never excludes) candidates outside
     those domains, so an explicit domain or an implied one from the device noun
@@ -320,7 +324,25 @@ def _find_entity_by_query(
     all_states = {s.entity_id: s for s in hass.states.async_all()}
 
     # partial_matches: (match_priority, domain_priority, entity_id, friendly_name)
+    # match_priority tiers — every exact match outranks every partial one, and
+    # a literal-word partial outranks one that only matched via a synonym.
+    # (A synonym-expanded alias used to outrank an exact name: "bedroom lamp"
+    # hit alias "All Master Bedroom Lights" over the device named "Bedroom Lamp".)
+    #   1 exact alias   2 exact friendly name   3 exact entity_id suffix
+    #   4 literal partial alias   5 literal partial friendly name
+    #   6 synonym partial alias   7 synonym partial friendly name
     partial_matches: list[tuple[int, int, str, str]] = []
+
+    def partial_tier(target_lower: str, literal_pri: int) -> int | None:
+        """Tier for a non-exact match against target, or None if no match."""
+        if _words_match(query_lower, target_lower, expand_synonyms=False):
+            return literal_pri
+        if " " in target_lower and target_lower.replace(" ", "") == query_lower.replace(" ", ""):
+            # Despaced match: LLM collapses spaces, e.g. "backdoor" -> "Back Door"
+            return literal_pri
+        if _words_match(query_lower, target_lower):
+            return literal_pri + 2
+        return None
 
     def get_domain_priority(entity_id: str) -> int:
         """Get priority for an entity's domain (lower = better for device control)."""
@@ -341,39 +363,32 @@ def _find_entity_by_query(
         # Priority offset: exposed entities get 0, non-exposed get +10
         pri_offset = 0 if exposed else 10
 
-        # PRIORITY 1/11: Exact match on entity registry alias
+        # PRIORITY 1 / 4 / 6 (+10 non-exposed): entity registry alias
         if entity_entry.aliases:
             for alias in entity_entry.aliases:
                 alias = str(alias)
                 if alias.lower() == query_lower:
                     _LOGGER.info("Exact alias match%s: '%s' -> %s", "" if exposed else " (non-exposed)", alias, entity_entry.entity_id)
                     partial_matches.append((1 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or alias))
-                elif _words_match(query_lower, alias.lower()):
-                    _LOGGER.info("Partial alias match%s: '%s' contains '%s' -> %s", "" if exposed else " (non-exposed)", alias, query_lower, entity_entry.entity_id)
-                    partial_matches.append((2 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or alias))
-                elif " " in alias and alias.lower().replace(" ", "") == query_lower.replace(" ", ""):
-                    # Despaced match: LLM collapses spaces, e.g. "backdoor" -> alias "Back Door"
-                    _LOGGER.info("Despaced alias match%s: '%s' ~ '%s' -> %s", "" if exposed else " (non-exposed)", alias, query_lower, entity_entry.entity_id)
-                    partial_matches.append((2 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or alias))
+                elif (tier := partial_tier(alias.lower(), 4)) is not None:
+                    _LOGGER.info("Partial alias match%s (tier %d): '%s' ~ '%s' -> %s", "" if exposed else " (non-exposed)", tier, alias, query_lower, entity_entry.entity_id)
+                    partial_matches.append((tier + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or alias))
 
-        # PRIORITY 3/13: Exact match on friendly name
+        # PRIORITY 2 / 5 / 7 (+10 non-exposed): friendly name
         if friendly_name:
             fn_lower = friendly_name.lower()
             if fn_lower == query_lower:
-                partial_matches.append((3 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
-            elif _words_match(query_lower, fn_lower):
-                partial_matches.append((4 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
-            elif " " in friendly_name and fn_lower.replace(" ", "") == query_lower.replace(" ", ""):
-                # Despaced match: "backdoor" -> friendly name "Back Door"
-                partial_matches.append((4 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
+                partial_matches.append((2 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
+            elif (tier := partial_tier(fn_lower, 5)) is not None:
+                partial_matches.append((tier + pri_offset, domain_pri, entity_entry.entity_id, friendly_name))
 
-        # PRIORITY 5/15: Exact match on entity_id suffix (the part after the dot).
+        # PRIORITY 3 (+10 non-exposed): Exact match on entity_id suffix (the part after the dot).
         # LLM sometimes passes entity_id suffixes as device names
         # (e.g. "master_dimmer_switch_light" for light.master_dimmer_switch_light).
         entity_suffix = entity_entry.entity_id.split(".", 1)[-1].lower()
         query_as_suffix = query_lower.replace(" ", "_")
         if entity_suffix == query_lower or entity_suffix == query_as_suffix:
-            partial_matches.append((5 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or entity_suffix))
+            partial_matches.append((3 + pri_offset, domain_pri, entity_entry.entity_id, friendly_name or entity_suffix))
 
     # Check states not in entity registry.
     # The id set is built once: rebuilding it inside the loop made this
@@ -388,9 +403,9 @@ def _find_entity_by_query(
             if friendly_name:
                 fn_lower = friendly_name.lower()
                 if fn_lower == query_lower:
-                    partial_matches.append((3 + pri_offset, domain_pri, entity_id, friendly_name))
-                elif _words_match(query_lower, fn_lower):
-                    partial_matches.append((4 + pri_offset, domain_pri, entity_id, friendly_name))
+                    partial_matches.append((2 + pri_offset, domain_pri, entity_id, friendly_name))
+                elif (tier := partial_tier(fn_lower, 5)) is not None:
+                    partial_matches.append((tier + pri_offset, domain_pri, entity_id, friendly_name))
 
     # Return best match - sort by match priority first, then domain priority
     if partial_matches:
